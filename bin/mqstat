@@ -1,0 +1,204 @@
+#!/usr/bin/env python3.4
+
+# Must be python3.4-compatible since that is what is on the lyra base
+
+# Script to more easily submit jobs to the QUT HPC queuing system
+
+__author__ = "Ben Woodcroft"
+__copyright__ = "Copyright 2020"
+__credits__ = ["Ben Woodcroft"]
+__license__ = "GPL3"
+__maintainer__ = "Ben Woodcroft"
+__email__ = "benjwoodcroft near gmail.com"
+__status__ = "Development"
+
+import argparse
+import logging
+import sys
+import os
+import tempfile
+import subprocess
+import getpass
+import shutil
+import re
+from datetime import date
+import json
+import time
+from smtplib import SMTP
+
+## TODO: Code below copied from the mqsub script. Code shouldn't really be copied but imported.
+
+def run(command, stdin=None):
+    '''
+    Run a subprocess.check_output() with the given command with
+    'bash -c command'
+    returning the stdout. If the command fails (i.e. has a non-zero exitstatus),
+    raise a ExternCalledProcessError that includes the $stderr as part of
+    the error message
+
+    Parameters
+    ----------
+    command: str
+        command to run
+    stdin: str or None
+        stdin to be provided to the process, to subprocess.communicate.
+
+    Returns
+    -------
+    Standard output of the run command
+
+    Exceptions
+    ----------
+    extern.ExternCalledProcessError including stdout and stderr of the run
+    command should it return with non-zero exit status.
+    '''
+    #logging.debug("Running extern cmd: %s" % command)
+
+    using_stdin = stdin is not None
+    process = process = subprocess.Popen(
+        ["bash",'-o','pipefail',"-c", command],
+        stdin= (subprocess.PIPE if using_stdin else None),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = process.communicate(stdin)
+
+    if process.returncode != 0:
+        raise ExternCalledProcessError(process, command, stdout.decode(), stderr.decode())
+    return stdout
+
+class ExternCalledProcessError(subprocess.CalledProcessError):
+    def __init__(self, completed_process, command, stdout, stderr):
+        self.command = command
+        self.returncode = completed_process.returncode
+        self.stderr = stderr
+        self.stdout = stdout
+        self.completed_process = completed_process
+
+    def __str__(self):
+        return "Command %s returned non-zero exit status %i.\n"\
+            "STDERR was: %sSTDOUT was: %s" % (
+                self.command,
+                self.returncode,
+                self.stderr,
+                self.stdout)
+
+
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--debug', help='output debug information', action="store_true")
+    #parser.add_argument('--version', help='output version information and quit',  action='version', version=repeatm.__version__)
+    parser.add_argument('--quiet', help='only output errors', action="store_true")
+
+    parser.add_argument('--list', help='output all jobs on the microbiome queue [default: Provide overview]', action="store_true")
+
+    args = parser.parse_args()
+
+    # Setup logging
+    if args.debug:
+        loglevel = logging.DEBUG
+    elif args.quiet:
+        loglevel = logging.ERROR
+    else:
+        loglevel = logging.INFO
+    logging.basicConfig(level=loglevel, format='%(asctime)s %(levelname)s: %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
+
+    overall_json = json.loads(run('qstat -f -F json').decode())['Jobs']
+    microbiome_jobs = list([(jid, j) for (jid, j) in overall_json.items() if j['queue']=='microbiome'])
+
+    user_replace_regex = re.compile('@.*')
+    server_regex = re.compile('/.*')
+
+    ## TODO:
+    # Use full name not short job status
+    # Report names not IDs for users
+    # Add amount of current runtime, rather than when it was started
+
+    if args.list:
+        print("\t".join([
+            'ID',
+            'owner',
+            'state',
+            'CPUs',
+            'RAM',
+            'walltime (hrs)',
+            'runtime',
+        ]))
+        for (jid, j) in microbiome_jobs:
+            if j['job_state']=='R':
+                try:
+                    runtime = 'started at {}'.format(j['stime'])
+                except KeyError:
+                    # Occasional KeyError, maybe when the job just started?
+                    runtime = '-'
+            else:
+                runtime = '-'
+            print("\t".join([
+                jid,
+                user_replace_regex.sub('',j['Job_Owner']),
+                j['job_state'],
+                str(j['Resource_List']['ncpus']),
+                j['Resource_List']['mem'],
+                j['Resource_List']['walltime'].replace(':00:00',''),
+                runtime,
+            ]))
+    else:
+        num_jobs = len(microbiome_jobs)
+        num_cpus_not_running = sum([m[1]['Resource_List']['ncpus'] for m in microbiome_jobs if m[1]['job_state']!='R'])
+
+        queue_nodes = ['cl5n010','cl5n011','cl5n012','cl5n013']
+        total_cpus = 128*len(queue_nodes)
+
+        num_jobs_running = sum([1 for m in microbiome_jobs if m[1]['job_state']=='R'])
+        num_cpus_running = sum([m[1]['Resource_List']['ncpus'] for m in microbiome_jobs if m[1]['job_state']=='R'])
+
+        print("Microbiome group jobs running: {} / {} ({:.2f}%)".format(num_jobs_running, num_jobs, num_jobs_running/num_jobs*100))
+        print("Microbiome group CPUs utilized: {} / {} ({:.2f}%)".format(num_cpus_running, total_cpus, num_cpus_running/total_cpus*100))
+        print("Microbiome group CPUs queued: {}".format(num_cpus_not_running))
+
+        import getpass
+        user = getpass.getuser()
+
+        my_jobs = []#list([m[1] for m in microbiome_jobs if user_replace_regex.sub('',m[1]['Job_Owner'])==user])
+        for m in microbiome_jobs:
+            if user_replace_regex.sub('',m[1]['Job_Owner'])==user:
+                my_jobs.append(m)
+        num_jobs = len(my_jobs)
+        num_cpus_not_running = sum([m[1]['Resource_List']['ncpus'] for m in my_jobs if m[1]['job_state']!='R'])
+        num_cpus_running = sum([m[1]['Resource_List']['ncpus'] for m in my_jobs if m[1]['job_state']=='R'])
+        num_jobs_running = len([1 for m in my_jobs if m[1]['job_state']=='R'])
+
+        print("{} jobs running: {} / {} ({:.1f}%)".format(user, num_jobs_running, num_jobs, num_jobs_running/num_jobs*100 if num_jobs > 0 else 0))
+        print("{} CPUs running: {} / {} ({:.1f}%)".format(user, num_cpus_running, total_cpus, num_cpus_running/total_cpus*100 if total_cpus > 0 else 0))
+        print("{} CPUs queued: {}".format(user, num_cpus_not_running))
+
+        my_comments = {}
+        for m in my_jobs:
+            try:
+                comment = m[1]['comment']
+                if 'Job run at' not in comment:
+                    if comment in my_comments:
+                        my_comments[comment] += 1
+                    else:
+                        my_comments[comment] = 1
+            except KeyError:
+                pass
+        if len(my_comments) > 0:
+            for (comment, count) in my_comments.items():
+                print("{} job comment: \"{}\" ({} jobs)".format(user, comment, count))
+
+        other_running_jobs = list([(jid, j) for (jid, j) in overall_json.items() if j['queue']!='microbiome' and j['job_state']=='R'])
+        non_microbiome_jobs_on_our_nodes = []
+        for m in other_running_jobs:
+            if server_regex.sub('',m[1]['exec_host']) in queue_nodes:
+                non_microbiome_jobs_on_our_nodes.append(m)
+        num_non_microbiome_cpus_running = sum([m[1]['Resource_List']['ncpus'] for m in non_microbiome_jobs_on_our_nodes])
+        print("Non-microbiome group jobs / CPU: {} / {} ({:.1f}%)".format(
+            len(non_microbiome_jobs_on_our_nodes),
+            num_non_microbiome_cpus_running,
+            num_non_microbiome_cpus_running/total_cpus*100 if total_cpus > 0 else 0))
+
+
+
+
+    

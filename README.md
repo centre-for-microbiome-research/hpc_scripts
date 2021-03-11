@@ -43,8 +43,9 @@ optional arguments:
                         ask for a GPU [default: Not used]
   -q QUEUE, --queue QUEUE
                         Name of queue to send to, or '-' to not specify
-                        [default: microbiome]
+                        [default: '-']
   --hours HOURS         Hours to run for [default: 1 week]
+  --weeks WEEKS         Weeks to run for [default 1]
   --name NAME           Name of the job [default: first word of command]
   --dry-run             Print script to STDOUT and do not lodge it with qsub
   --bg                  Submit the job, then quit [default: wait until job is
@@ -61,4 +62,7 @@ optional arguments:
   --poll-interval POLL_INTERVAL
                         Poll the PBS server once every this many seconds
                         [default: 30]
+  --no-executable-check
+                        Usually mqsub checks the executable is currently
+                        available. Don't do this [default: do check]
 ```

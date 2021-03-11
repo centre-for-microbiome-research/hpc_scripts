@@ -1,0 +1,4 @@
+echo "The process '`history | tail -n1 | sed 's/.*notify/notify/' | cut -d " " -f2`' has finished successfully."
+echo "The process '`history | tail -n1 | sed 's/.*notify/notify/' | cut -d " " -f2`' on the server '$HOSTNAME' in directory '$PWD' at `date` has finished successfully.
+
+Command run was: " `history | tail -n1` | mail -s "Job Complete" `whoami`@qut.edu.au

@@ -62,15 +62,15 @@ def run(command, stdin=None):
     stdout, stderr = process.communicate(stdin)
 
     if process.returncode != 0:
-        raise ExternCalledProcessError(process, command)
+        raise ExternCalledProcessError(process, command, stdout.decode(), stderr.decode())
     return stdout
 
 class ExternCalledProcessError(subprocess.CalledProcessError):
-    def __init__(self, completed_process, command):
+    def __init__(self, completed_process, command, stdout, stderr):
         self.command = command
         self.returncode = completed_process.returncode
-        self.stderr = completed_process.stderr
-        self.stdout = completed_process.stdout
+        self.stderr = stderr
+        self.stdout = stdout
         self.completed_process = completed_process
 
     def __str__(self):
@@ -128,8 +128,10 @@ if __name__ == '__main__':
     parser.add_argument('-t','--cpus',default=1,type=int, help="Number of CPUs to queue job with [default: 1]")
     parser.add_argument('-m','--mem','--ram',type=int, help="GB of RAM to ask for [default: 4*num_cpus]")
     parser.add_argument('--directive', help="Arbitrary PBS directory to add e.g. '-l ngpus=1' to ask for a GPU [default: Not used]")
-    parser.add_argument('-q','--queue', default='microbiome', help="Name of queue to send to, or '-' to not specify [default: microbiome]")
-    parser.add_argument('--hours',default=24*7,type=int, help="Hours to run for [default: 1 week]")
+    parser.add_argument('-q','--queue', default="-", help="Name of queue to send to, or '-' to not specify [default: '-']")
+    walltime_group = parser.add_mutually_exclusive_group()
+    walltime_group.add_argument('--hours',default=24*7,type=int, help="Hours to run for [default: 1 week]")
+    walltime_group.add_argument('--weeks',type=int,help="Weeks to run for [default 1]")
     parser.add_argument('--name', help="Name of the job [default: first word of command]")
     parser.add_argument('--dry-run',action='store_true', help="Print script to STDOUT and do not lodge it with qsub")
     parser.add_argument('--bg',action='store_true', help="Submit the job, then quit [default: wait until job is finished before exiting]")
@@ -183,7 +185,6 @@ if __name__ == '__main__':
                 jobname = os.path.basename(args.script)
         else:
             jobname = cmd[0]
-        logging.debug("Naming job as: {}".format(jobname))
 
         whoami = getpass.getuser()
         email = '{}@qut.edu.au'.format(whoami)
@@ -194,7 +195,7 @@ if __name__ == '__main__':
                 logging.debug("Skipping executable check as requested")
             else:
                 exe = cmd[0]
-                environment_setting = re.compile('^[A-Z]+=')
+                environment_setting = re.compile('^[A-Z_]+=')
                 exe_index = 0
 
                 # Deal with e.g. PATH=extra:$PATH ...
@@ -204,6 +205,7 @@ if __name__ == '__main__':
                         raise Exception("Failed to parse an executable from the command given")
                     exe_index += 1
                     exe = cmd[exe_index]
+                    jobname = exe
 
                 logging.debug("Testing if executable {} is available in $PATH".format(exe))
                 if shutil.which(exe) is None:
@@ -212,11 +214,20 @@ if __name__ == '__main__':
         else:
             logging.debug("Not checking for executable availability as args.command not defined")
 
+        jobname = jobname.replace("/","_")
+        logging.debug("Naming job as: {}".format(jobname))
+
+        hours = 'programming_error'
+        if args.weeks is not None:
+            hours = 168*args.weeks
+        else:
+            hours = args.hours
+
         print('#!/bin/bash -l',file=tf)
         print('#PBS -N {}'.format(jobname),file=tf)
         print('#PBS -l ncpus={}'.format(args.cpus),file=tf)
         print('#PBS -l mem={}gb'.format(mem),file=tf)
-        print('#PBS -l walltime={}:00:00'.format(args.hours),file=tf)
+        print('#PBS -l walltime={}:00:00'.format(hours),file=tf)
         if args.bg and not args.no_email:
             print('#PBS -m ae',file=tf)
         print('#PBS -M {}'.format(email),file=tf)
@@ -260,6 +271,10 @@ if __name__ == '__main__':
 
         tf.flush()
 
+        def report_running_host(jobinfo):
+            if jobinfo['job_state'] == 'R':
+                logging.info("Job is running on exec_host {}".format(jobinfo['exec_host']))
+
         if args.dry_run:
             logging.info("Not running qsub since this is a dry run")
             sys.exit(0)
@@ -273,16 +288,20 @@ if __name__ == '__main__':
                 else:
                     job_id = match_result.group(1)
 
-                last_status = PbsJobInfo.json(job_id)['job_state']
+                last_jobinfo = PbsJobInfo.json(job_id)
+                last_status = last_jobinfo['job_state']
                 logging.info('First status of job is {}: {}'.format(last_status, PbsJobInfo.job_status_english(last_status)))
+                report_running_host(last_jobinfo)
                 while True:
                     if last_status == 'F':
                         break
 
-                    current_job_status = PbsJobInfo.json(job_id)['job_state']
+                    current_job_info = PbsJobInfo.json(job_id)
+                    current_job_status = current_job_info['job_state']
                     if current_job_status != last_status:
                         logging.debug("last was '{}', current was '{}'".format(last_status, current_job_status))
                         logging.info('Now status of job is {}: {}'.format(current_job_status, PbsJobInfo.job_status_english(current_job_status)))
+                        report_running_host(current_job_info)
                         last_status = current_job_status
 
                     if last_status == 'F':

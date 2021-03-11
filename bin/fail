@@ -1,0 +1,6 @@
+echo "The process '`history | tail -n1 | sed 's/.*notify/notify/' | cut -d " " -f2`' has failed."
+echo "The process '`history | tail -n1 | sed 's/.*notify/notify/' | cut -d " " -f2`' on the server '$HOSTNAME' in directory '$PWD' at `date` has failed.
+
+Command run was: " `history | tail -n1` | mail -s "Job Failed" `whoami`@qut.edu.au
+
+
