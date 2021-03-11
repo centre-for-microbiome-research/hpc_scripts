@@ -106,6 +106,9 @@ if __name__ == '__main__':
     overall_json = json.loads(run('qstat -f -F json').decode())['Jobs']
     microbiome_jobs = list([(jid, j) for (jid, j) in overall_json.items() if j['queue']=='microbiome'])
 
+    queue_nodes = ['cl5n010','cl5n011','cl5n012','cl5n013']
+    other_jobs = list([(jid, j) for (jid, j) in overall_json.items() if j['job_state'] =='R' and j['exec_host'].split('/')[0] in queue_nodes])
+    
     user_replace_regex = re.compile('@.*')
     server_regex = re.compile('/.*')
 
@@ -142,11 +145,21 @@ if __name__ == '__main__':
                 j['Resource_List']['walltime'].replace(':00:00',''),
                 runtime,
             ]))
+        for (jid, j) in other_jobs:
+            if j['queue']!='microbiome':    
+                print("\t".join([
+                jid,
+                user_replace_regex.sub('',j['Job_Owner']),
+                j['job_state'],
+                str(j['Resource_List']['ncpus']),
+                j['Resource_List']['mem'],
+                j['Resource_List']['walltime'].replace(':00:00',''),
+                runtime,
+            ]))            
     else:
         num_jobs = len(microbiome_jobs)
         num_cpus_not_running = sum([m[1]['Resource_List']['ncpus'] for m in microbiome_jobs if m[1]['job_state']!='R'])
 
-        queue_nodes = ['cl5n010','cl5n011','cl5n012','cl5n013']
         total_cpus = 128*len(queue_nodes)
 
         num_jobs_running = sum([1 for m in microbiome_jobs if m[1]['job_state']=='R'])
