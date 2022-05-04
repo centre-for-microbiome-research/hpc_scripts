@@ -80,7 +80,9 @@ if __name__ == '__main__':
     ''',formatter_class=RawTextHelpFormatter)
     parser.add_argument('folder',help='folder to apply permissions to')
     parser.add_argument('-g', help='Add permissions for this group', required=True)
-    parser.add_argument('--no-continue', help='DO not keep running commands after one fails', action='store_true')
+    parser.add_argument('--no-continue', help='Do not keep running commands after one fails', action='store_true')
+    parser.add_argument('--no-group-write', help='Do not add group write permissions', action='store_true')
+    parser.add_argument('--dry-run', help='Do not actually run commands', action='store_true')
     args = parser.parse_args()
     
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
@@ -91,10 +93,13 @@ if __name__ == '__main__':
     logging.info("Setting permissions on folder {} for group {}".format(folder,owner_group))
     folder2 = "'{}'".format(folder)
 
-    cmd1 = 'setfacl -R -m g:microbiome-admin:rwx,g::rwx,u::rwx,o::--- {}'.format(folder2)
-    cmd2 = 'setfacl -R -dm g:microbiome-admin:rwx,g::rwx,u::rwx,o::--- {}'.format(folder2)
+    group_permissions = 'rwx'
+    if args.no_group_write:
+        group_permissions = 'r-x'
+    cmd1 = 'setfacl -R -m g:microbiome-admin:rwx,g::{},u::rwx,o::--- {}'.format(group_permissions, folder2)
+    cmd2 = 'setfacl -R -dm g:microbiome-admin:rwx,g::{},u::rwx,o::--- {}'.format(group_permissions, folder2)
     cmd3 = 'chgrp -R {} {}'.format(owner_group, folder2)
-    cmd4 = 'chmod g+s {}'.format(folder2)
+    cmd4 = 'chmod -R g+s {}'.format(folder2)
 
     if not os.path.exists(folder):
         raise Exception("Folder {} does not exist".format(folder))
@@ -102,20 +107,21 @@ if __name__ == '__main__':
     for cmd in [cmd1, cmd2, cmd3, cmd4]:
         logging.info('Running: {}'.format(cmd))
 
-        try:
-            run(cmd)
-        except ExternCalledProcessError as e:
-            if args.no_continue:
-                logging.error("Not continuing to run further commands due to --no-continue")
-                raise e
+        if not args.dry_run:
+            try:
+                run(cmd)
+            except ExternCalledProcessError as e:
+                if args.no_continue:
+                    logging.error("Not continuing to run further commands due to --no-continue")
+                    raise e
 
-            logging.error("CMD FAILED: {}".format(cmd))
-            logging.error(e)
-            logging.error("Command failed: {}".format(cmd))
-            logging.error("Command stdout: {}".format(e.stdout))
-            logging.error("Command stderr: {}".format(e.stderr))
-            logging.error("Command return code: {}".format(e.returncode))
-            logging.error("Command completed process: {}".format(e.completed_process))
-            
-            logging.info("Continuing with other commands, if there are any ..")
+                logging.error("CMD FAILED: {}".format(cmd))
+                logging.error(e)
+                logging.error("Command failed: {}".format(cmd))
+                logging.error("Command stdout: {}".format(e.stdout))
+                logging.error("Command stderr: {}".format(e.stderr))
+                logging.error("Command return code: {}".format(e.returncode))
+                logging.error("Command completed process: {}".format(e.completed_process))
+                
+                logging.info("Continuing with other commands, if there are any ..")
     
