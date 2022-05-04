@@ -1,0 +1,121 @@
+#!/usr/bin/env python3.4
+
+# Must be python3.4-compatible since that is what is on the lyra base
+
+# Script to more easily submit jobs to the QUT HPC queuing system
+
+__author__ = "Ben Woodcroft"
+__copyright__ = "Copyright 2022"
+__credits__ = ["Ben Woodcroft"]
+__license__ = "GPL3"
+__maintainer__ = "Peter Sternes"
+__email__ = "b.woodcroft near qut.edu.au"
+__status__ = "Development"
+
+import argparse
+import logging
+import subprocess
+import os
+from argparse import RawTextHelpFormatter
+
+def run(command, stdin=None):
+    '''
+    Run a subprocess.check_output() with the given command with
+    'bash -c command'
+    returning the stdout. If the command fails (i.e. has a non-zero exitstatus),
+    raise a ExternCalledProcessError that includes the $stderr as part of
+    the error message
+
+    Parameters
+    ----------
+    command: str
+        command to run
+    stdin: str or None
+        stdin to be provided to the process, to subprocess.communicate.
+
+    Returns
+    -------
+    Standard output of the run command
+
+    Exceptions
+    ----------
+    extern.ExternCalledProcessError including stdout and stderr of the run
+    command should it return with non-zero exit status.
+    '''
+    #logging.debug("Running extern cmd: %s" % command)
+
+    using_stdin = stdin is not None
+    process = process = subprocess.Popen(
+        ["bash",'-o','pipefail',"-c", command],
+        stdin= (subprocess.PIPE if using_stdin else None),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = process.communicate(stdin)
+
+    if process.returncode != 0:
+        raise ExternCalledProcessError(process, command, stdout.decode(), stderr.decode())
+    return stdout
+
+class ExternCalledProcessError(subprocess.CalledProcessError):
+    def __init__(self, completed_process, command, stdout, stderr):
+        self.command = command
+        self.returncode = completed_process.returncode
+        self.stderr = stderr
+        self.stdout = stdout
+        self.completed_process = completed_process
+
+    def __str__(self):
+        return "Command %s returned non-zero exit status %i.\n"\
+            "STDERR was: %sSTDOUT was: %s" % (
+                self.command,
+                self.returncode,
+                self.stderr,
+                self.stdout)
+
+## TODO: Code below copied from the mqsub script. Code shouldn't really be copied but imported.
+            
+#%% parse
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='''                                                                                                        
+    Create an environment using the latest version of a package.
+    ''',formatter_class=RawTextHelpFormatter)
+    parser.add_argument('folder',help='folder to apply permissions to')
+    parser.add_argument('-g', help='Add permissions for this group', required=True)
+    parser.add_argument('--no-continue', help='DO not keep running commands after one fails', action='store_true')
+    args = parser.parse_args()
+    
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
+
+    folder=args.folder
+    owner_group=args.g
+    # owner_user=run('whoami').strip()
+    logging.info("Setting permissions on folder {} for group {}".format(folder,owner_group))
+    folder2 = "'{}'".format(folder)
+
+    cmd1 = 'setfacl -R -m g:microbiome-admin:rwx,g::rwx,u::rwx,o::--- {}'.format(folder2)
+    cmd2 = 'setfacl -R -dm g:microbiome-admin:rwx,g::rwx,u::rwx,o::--- {}'.format(folder2)
+    cmd3 = 'chgrp -R {} {}'.format(owner_group, folder2)
+    cmd4 = 'chmod g+s {}'.format(folder2)
+
+    if not os.path.exists(folder):
+        raise Exception("Folder {} does not exist".format(folder))
+
+    for cmd in [cmd1, cmd2, cmd3, cmd4]:
+        logging.info('Running: {}'.format(cmd))
+
+        try:
+            run(cmd)
+        except ExternCalledProcessError as e:
+            if args.no_continue:
+                logging.error("Not continuing to run further commands due to --no-continue")
+                raise e
+
+            logging.error("CMD FAILED: {}".format(cmd))
+            logging.error(e)
+            logging.error("Command failed: {}".format(cmd))
+            logging.error("Command stdout: {}".format(e.stdout))
+            logging.error("Command stderr: {}".format(e.stderr))
+            logging.error("Command return code: {}".format(e.returncode))
+            logging.error("Command completed process: {}".format(e.completed_process))
+            
+            logging.info("Continuing with other commands, if there are any ..")
+    
