@@ -4,3 +4,4 @@ jobs: 10000
 cluster-cancel: qdel
 use-conda: true
 conda-frontend: mamba
+rerun-incomplete: true
