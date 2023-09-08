@@ -311,7 +311,7 @@ def setup_segregated_logs_directory(command_name):
         num_logs_dirs = 0
     segregated_logs_dir = os.path.join(logs_dir1, command_name+'-'+str(num_logs_dirs + 1))
     logging.info("Creating segregated log directory {}".format(segregated_logs_dir))
-    os.makedirs(segregated_logs_dir)
+    os.makedirs(segregated_logs_dir, exist_ok=True)
     
     return segregated_logs_dir
 
