@@ -81,7 +81,7 @@ if __name__ == '__main__':
     threads = job_properties['threads']
     if 'mem_mb' in job_properties['resources']:
         mem_mb = job_properties['resources']['mem_mb']
-        mem_gb = int(mem_mb / 1000)
+        mem_gb = int(mem_mb / 1024)
         mem_argument = "-m {}".format(mem_gb)
     else:
         mem_argument = ''
