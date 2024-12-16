@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+
+# Script for active monitoring of jobs on the HPC cluster with summary statistics
+
+__author__ = "Joshua Mitchell"
+__copyright__ = "Copyright 2024"
+__credits__ = ["Joshua Mitchell"]
+__license__ = "GPL3"
+__maintainer__ = "Joshua Mitchell"
+__email__ = "n9985158 near qut.edu.au"
+__status__ = "Development"
+
+
+import subprocess
+import time
+import curses
+import argparse
+
+# functions
+# ---------
+
+def convert_kb_to_gb(kb_str):
+    if kb_str == '0b':
+        return 0
+    kb_value = int(kb_str.lower().replace('kb', ''))
+    gb_value = kb_value / (1024 * 1024)
+    return gb_value
+
+
+def query_and_parse():
+    target_info = [
+        'Job_Name',
+        'job_state',
+        'Resource_List.mem',
+        'Resource_List.ncpus',
+        'Resource_List.walltime',
+        'resources_used.cpupercent',
+        'resources_used.mem',
+        'resources_used.walltime',
+    ]
+
+    grep_str = '\\|'.join(target_info)
+
+    cmd = f'qstat -u $(whoami) -wf | grep "{grep_str}"'
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    output = result.stdout.splitlines()
+    
+    if not output:
+        return None
+
+    parsed_output = [x.replace(' ', '').split('=') for x in output]
+    # Create sublists for each job
+    jobs = {}
+
+    for item in parsed_output:
+        if item[0] == 'Job_Name':
+            current_job = {}
+            current_job['name'] = item[1]
+            jobs[current_job['name']] = {}
+        else:
+            if item[0] == 'resources_used.mem':
+                current_job['used_mem'] = f"{convert_kb_to_gb(item[1]):.1f}"
+            elif item[0] == 'Resource_List.mem':
+                current_job['total_mem'] = item[1].replace('gb', '')
+            elif item[0] == 'resources_used.walltime':
+                time = item[1].split(':')
+                if time[0] == '00':
+                    current_job['used_walltime'] = f"{time[1]}m"
+                else:
+                    current_job['used_walltime'] = f"{int(time[0])}h {time[1]}m"
+            elif item[0] == 'Resource_List.walltime':
+                current_job['total_walltime'] = f"{int(item[1].split(':')[0])}h"
+            elif item[0] == 'Resource_List.ncpus':
+                current_job['ncpus'] = int(item[1])
+            elif item[0] == 'resources_used.cpupercent':
+                current_job['cpu_percent'] = round((float(item[1]) /100), 2)
+            elif item[0] == 'job_state':
+                current_job['state'] = item[1]
+
+        jobs[current_job['name']] = current_job
+
+    # parsing to account for multidigit total vars
+    max_lengths = {
+        'memory':   max([len(info['total_mem']) for info in jobs.values()]),
+        'walltime': max([len(info['total_walltime']) for info in jobs.values()]),
+        'cpus':     max([len(str(info['ncpus'])) for info in jobs.values()])
+    }
+
+    keys_to_delete = []
+
+    for info in jobs.values():
+        if set(info.keys()) == {'name', 'used_mem', 'total_mem', 'used_walltime', 'total_walltime', 'ncpus', 'cpu_percent', 'state'}:
+            info['memory']      = f"{info['used_mem']} / {info['total_mem']:<{max_lengths['memory']}}"
+            info['walltime']    = f"{info['used_walltime']} / {info['total_walltime']:<{max_lengths['walltime']}}"
+            info['cpus']        = f"{info['cpu_percent']} / {info['ncpus']:<{max_lengths['cpus']}}"
+        elif set(info.keys()) == {'name', 'total_mem', 'total_walltime', 'ncpus', 'state'}:
+            info['memory']      = f"{info['total_mem']:<{max_lengths['memory']}}"
+            info['walltime']    = f"{info['total_walltime']:<{max_lengths['walltime']}}"
+            info['cpus']        = f"{info['ncpus']:<{max_lengths['cpus']}}"
+        else:
+            keys_to_delete.append(info['name'])
+
+    for key in keys_to_delete:
+        del jobs[key]
+
+    return jobs
+
+
+def display_jobs(stdscr, jobs):
+    stdscr.clear()
+
+    # Get terminal dimensions
+    height, width = stdscr.getmaxyx()
+
+    if jobs is None:
+        message = "No jobs found :("
+        stdscr.addstr(0, 0, message[:width])
+        stdscr.refresh()
+
+    else:
+        # Determine the maximum length for each column
+        max_lengths = {
+            'name': max([len(name) for name in jobs.keys()]),
+            'state': max([len(info['state']) for info in jobs.values()] + [len('S')]),
+            'memory': max([len(info['memory']) for info in jobs.values()] + [len('Mem (G)')]),
+            'walltime': max([len(info['walltime']) for info in jobs.values()] + [len('Walltime')]),
+            'cpus': max([len(str(info['cpus'])) for info in jobs.values()] + [len('CPUs')])
+        }
+
+        # Create a dictionary to hold the dashes for each column
+        dashes = {}
+        for key, length in max_lengths.items():
+            dashes[key] = '-' * length
+
+        # Print the header
+        header = f"{'Name':<{max_lengths['name']}}   {'S':<{max_lengths['state']}}   {'Mem (G)':<{max_lengths['memory']}}   {'Walltime':<{max_lengths['walltime']}}   {'CPUs':<{max_lengths['cpus']}}"
+        stdscr.addstr(0, 0, header[:width])
+        header_dashes = f"{dashes['name']:>{max_lengths['name']}}   {dashes['state']:>{max_lengths['state']}}   {dashes['memory']:>{max_lengths['memory']}}   {dashes['walltime']:>{max_lengths['walltime']}}   {dashes['cpus']:>{max_lengths['cpus']}}"
+        stdscr.addstr(1, 0, header_dashes[:width])
+
+        summaries = {
+            'total_running': len([info for info in jobs.values() if info['state'] == 'R']),
+            'used_mem': sum([float(info.get('used_mem', 0)) for info in jobs.values()]),
+            'allocated_mem': sum([float(info.get('total_mem', '0')) for info in jobs.values() if info['state'] == 'R']),
+            'requested_mem': sum([float(info['total_mem']) for info in jobs.values()]),
+            'used_walltime': sum([
+                int(info.get('used_walltime', '00h 00m').split('h')[0]) / 24 + 
+                int(info.get('used_walltime', '00h 00m').split('h')[1].split('m')[0]) / (60 * 24)
+                if 'h' in info.get('used_walltime', '') 
+                else int(info.get('used_walltime', '00m').split('m')[0]) / (60 * 24)
+                for info in jobs.values()
+                ]),
+            'allocated_walltime': sum([int(info.get('total_walltime', '00h').replace('h', '')) / 24 for info in jobs.values() if info['state'] == 'R']),
+            'requested_walltime': sum([int(info['total_walltime'].replace('h', '')) / 24 for info in jobs.values()]),
+            'used_cpus': sum([float(info.get('cpu_percent', '0.00')) for info in jobs.values() if info['state'] == 'R']),
+            'allocated_cpus': sum([info.get('ncpus') for info in jobs.values() if info['state'] == 'R']),
+            'requested_cpus': sum([info['ncpus'] for info in jobs.values()]),
+        }
+
+        total_running = f"{summaries['total_running']}/{len(jobs)} running"
+
+        if len(header) > width:
+            requested_mem_str       = ''
+            requested_walltime_str  = ''
+            requested_cpus_str      = ''
+
+        else:
+            requested_mem_str       = f" ({summaries['requested_mem']:.0f})" if int(summaries['requested_mem']) != int(summaries['allocated_mem']) else ''
+            requested_walltime_str  = f" ({summaries['requested_walltime']:.0f})" if int(summaries['requested_walltime']) != int(summaries['allocated_walltime']) else ''
+            requested_cpus_str      = f" ({summaries['requested_cpus']})" if int(summaries['requested_cpus']) != int(summaries['allocated_cpus']) else ''
+
+
+        mem_summary = f"{summaries['used_mem']:.0f}/{summaries['allocated_mem']:.0f}{requested_mem_str} GB"
+        walltime_summary = f"{summaries['used_walltime']:.0f}/{summaries['allocated_walltime']:.0f}{requested_walltime_str} days"
+        cpus_summary = f"{summaries['used_cpus']:.0f}/{summaries['allocated_cpus']}{requested_cpus_str} CPUs"
+
+        footer = f"{total_running}   {mem_summary}   {walltime_summary}   {cpus_summary}"
+
+        # Print the job information``
+        row = 2
+        for name, info in jobs.items():
+            if row == height-3:
+                stdscr.addstr(row, 0, '-'*min([len(header), width]))
+                row += 1
+            elif row == height-2:
+                stdscr.addstr(row, 0, f"{footer[:width]:^{min([len(header), width])}}")
+                break
+            else:
+                job_info = f"{name:<{max_lengths['name']}}   {info['state']:>{max_lengths['state']}}   {info['memory']:>{max_lengths['memory']}}   {info['walltime']:>{max_lengths['walltime']}}   {info['cpus']:>{max_lengths['cpus']}}"
+                stdscr.addstr(row, 0, job_info[:width])
+                row += 1
+
+        stdscr.refresh()
+
+def main(stdscr):
+    curses.curs_set(0)  # Hide the cursor
+    curses.use_default_colors()
+    stdscr.nodelay(True)  # Make getch non-blocking
+    while True:
+        jobs = query_and_parse()
+        display_jobs(stdscr, jobs)
+        time.sleep(2)
+        
+        # Check for user input
+        key = stdscr.getch()
+        if key == ord('q'):
+            break
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="""
+                    _       _           
+                   | |     | |          
+     __      ____ _| |_ ___| |__   __ _ 
+     \ \ /\ / / _` | __/ __| '_ \ / _` |
+      \ V  V / (_| | || (__| | | | (_| |
+       \_/\_/ \__,_|\__\___|_| |_|\__, |
+                                     | |
+                                     |_|
+
+    Actively monitor jobs on the HPC cluster with summary statistics. 
+    Press 'q' to quit.
+    """, formatter_class=argparse.RawTextHelpFormatter)
+    args = parser.parse_args()
+    curses.wrapper(main)

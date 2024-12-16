@@ -71,6 +71,9 @@ if __name__ == '__main__':
     parser.add_argument('--segregated-log-files', action='store_true', help='Put log files in ~/qsub_logs/<date>/<directory> instead of the current working directory.')
     # --dry-run
     parser.add_argument('--dry-run', action='store_true')
+
+    parser.add_argument('--basedir')
+
     parser.add_argument('jobscript', help='Script to submit')
 
     args = parser.parse_args()
@@ -111,7 +114,9 @@ if __name__ == '__main__':
 
     # Change the name because otherwise 'snakemake' takes all the characters on screen
     # But currently mqsub ignores this anyway, so definiting --name has no effect.
-    job_name = os.path.basename(jobscript).replace('snakemake','')
+    # TODO: fix the other script so that it uses`lstrip` to remove leading '.' and remove the hidden '.' in the jobscript var
+    # unedited e.g. snakejob.eggnog_mapper.sh | edited e.g. workflow..eggnog_mapper
+    job_name = f'{os.path.basename(args.basedir)}.{os.path.basename(jobscript)}'.replace('snakejob','').replace('.sh','')
 
     cmd = "mqsub --no-email --quiet --bg --name {job_name} -t {threads} {mem} {hours} --script {script} {queue} {segregated_log_files_arg} {extra_mqsub_args} 2>&1".format(
         job_name=job_name, extra_mqsub_args=extra_mqsub_args,
