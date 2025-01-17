@@ -140,6 +140,11 @@ class script_format:
         if args.bg and not args.no_email and not args.command_file and not (args.chunk_num or args.chunk_size):
             print('#PBS -m ae',file=outfile) # disbled emailing when running chunks. Too spammy
         print('#PBS -M {}'.format(email),file=outfile)
+        if args.array:
+            # normalize array format so that both "x-y" and "y" are accepted (with the latter being expanded to "1-y")
+            if '-' not in args.array:
+                args.array = '1-{}'.format(args.array)
+            print('#PBS -J {}'.format(args.array),file=outfile)
         if args.directive:
             print('#PBS {}'.format(args.directive),file=outfile)
         print('#PBS -q {}'.format(args.queue),file=outfile)
@@ -339,6 +344,7 @@ Example usage:
     parser.add_argument('--quiet', help='only output errors', action="store_true")
     parser.add_argument('-t','--cpus',default=1,type=int, help="Number of CPUs to queue job with [default: 1]")
     parser.add_argument('-g','--gpu',type=int,default=0, help="Number of GPUs to use [default: 0]")    
+    parser.add_argument('--array', help="Submit as an array job with the given number of tasks [default: Not used]")
     parser.add_argument('-m','--mem','--ram',type=int, help="GB of RAM to ask for [default: 8*num_cpus]")
     parser.add_argument('--directive', help="Arbitrary PBS directory to add e.g. '-l ngpus=1' to ask for a GPU [default: Not used]")
     parser.add_argument('-q','--queue', default='aqua', help="Name of queue to send to [default: aqua]")
