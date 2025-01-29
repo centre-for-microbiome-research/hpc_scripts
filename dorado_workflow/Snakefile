@@ -1,0 +1,75 @@
+import os
+import pandas as pd
+
+"""
+Update config.yaml
+Ensure that the dorado_exec path points to the dorado executable.
+Run 'snakemake --scheduler greedy --cores 32 --use-conda --profile mqsub-lyra --configfile config.yaml'
+"""
+
+dorado = config["dorado_exec"]
+outfolder = config["output_dir"]
+
+# Create necessary directories
+os.makedirs(f"{outfolder}logs", exist_ok=True)
+os.makedirs(f"{outfolder}basecalled", exist_ok=True)
+
+# Read POD5 file list
+pod5_files = pd.DataFrame(columns=["pod_id", "filepath"])
+with open(config["pod5_sample_list"]) as r:
+    for filepath in r:
+        pod5_files = pd.concat([pod5_files, pd.DataFrame({"pod_id": [os.path.basename(filepath.strip())], "filepath": [filepath.strip()]})])
+
+wildcard_constraints:
+    podfile = r".+\.pod5"  # Ensure the wildcard matches valid POD5 filenames
+
+localrules: cat_bamfiles, dorado_demux
+
+rule all:
+    input:
+        outfolder + "demux.done"
+
+rule dorado_basecaller:
+    input:
+        pod5_file = lambda wildcards: pod5_files[pod5_files["pod_id"] == wildcards.podfile].iloc[0]["filepath"]
+    params:
+        model = "sup",
+        base_mods = "5mC_5hmC 6mA",
+        kit_name = "SQK-NBD114-24"
+    output:
+        outfolder + "basecalled/{podfile}.bam"
+    log:
+        outfolder + "logs/{podfile}.log"
+    threads: 32
+    resources:
+        mem_mb=128*1024,
+        gpu=1,
+        runtime=24*60*2
+    shell:
+        "{dorado} basecaller {params.model} {input.pod5_file} --modified-bases {params.base_mods} --kit-name {params.kit_name} > {output} 2> {log}"
+
+rule cat_bamfiles:
+    input:
+        expand(outfolder + "basecalled/{pod_id}.bam", pod_id=pod5_files["pod_id"])
+    output:
+        outfolder + "basecalls.bam"
+    conda:
+        "envs/samtools.yml"
+    log:
+        outfolder + "logs/cat_bamfiles.log"
+    shell:
+        "samtools merge {output} {input} 2> {log}"
+
+rule dorado_demux:
+    input:
+        outfolder + "basecalls.bam"
+    params:
+        options = "--no-classify",
+    output:
+        outfolder = outfolder + "final_bamfiles",
+        done = touch(outfolder + "demux.done")
+    log:
+        outfolder + "logs/demux.log"
+    threads: 1
+    shell:
+        "{dorado} demux {input} {params.options} --output-dir {output.outfolder} 2> {log}"

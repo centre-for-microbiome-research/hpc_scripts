@@ -1,0 +1,3 @@
+dorado_exec: "/mnt/weka/scratch/microbiome/n10927662/dorado-0.9.0-linux-x64/bin/dorado"
+pod5_sample_list: "/mnt/hpccs01/work/microbiome/arctic/data/20240910/dorado-v0.9.0/test_snake/pod5_sample_list.txt"  # text file of POD5 sample filepaths
+output_dir: "/mnt/hpccs01/work/microbiome/arctic/data/20240910/dorado-v0.9.0/test_snake/"
