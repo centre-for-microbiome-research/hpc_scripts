@@ -27,17 +27,18 @@ wildcard_constraints:
 
 rule all:
     input:
-        join(outfolder, "demux.done")
+        join(outfolder, "demux.done"),
+        join(outfolder, "final_fastq.done")
 
 rule dorado_basecaller:
     input:
         pod5_file = lambda wildcards: pod5_files[pod5_files["pod_id"] == wildcards.podfile].iloc[0]["filepath"]
     params:
         model = "sup",
-        base_mods = "5mC_5hmC 6mA",
+        base_mods = "4mC_5mC 6mA", # from nanomotif preprint - note that it has changed between versions
         kit_name = "SQK-NBD114-24"
     output:
-        join(outfolder, "basecalled", "{podfile}.bam")
+        temp(join(outfolder, "basecalled", "{podfile}.bam"))
     log:
         join(outfolder, "logs", "{podfile}.log")
     threads: 6
@@ -52,7 +53,7 @@ rule cat_bamfiles:
     input:
         expand(join(outfolder, "basecalled/{pod_id}.bam"), pod_id=pod5_files["pod_id"])
     output:
-        join(outfolder, "basecalls.bam")
+        temp(join(outfolder, "basecalls.bam"))
     conda:
         "envs/samtools.yml"
     log:
@@ -80,3 +81,34 @@ rule dorado_demux:
         gpus=1, # Possible it might work in CPU mode, but doesn't at least of the box.
     shell:
         "{dorado} demux {input} {params.options} --output-dir {output.outfolder} 2> {log}"
+
+rule emit_fastq: # probably better to just use samtools after demux, but would need a checkpoint
+    input:
+        join(outfolder, "basecalls.bam")
+    params:
+        options = "--no-classify --emit-fastq", # basically the same as dorado demux, but there you only get .fastq or .bam, not both
+    output:
+        outfolder = directory(join(outfolder, "fastq")),
+        done = touch(join(outfolder, "emit_fastq.done"))
+    log:
+        join(outfolder, "logs", "emit_fastq.log")
+    threads: 1
+    resources:
+        mem_mb=8*1024, # guess work
+        runtime=12*60, # 12 hours - more than enough I think
+        gpus=1, # Possible it might work in CPU mode, but doesn't at least of the box.
+    shell:
+        "{dorado} demux {input} {params.options} --output-dir {output.outfolder} 2> {log}"
+
+rule compress_fastq:
+    input:
+        infolder = join(outfolder, "fastq"),
+        done = join(outfolder, "emit_fastq.done")
+    output:
+        touch(join(outfolder, "final_fastq.done"))
+    threads: 8
+    resources:
+        mem_mb=8*1024, # guesswork
+        runtime=4*60 # 4 hours should be enough
+    shell:
+        "pigz -p {threads} {input.infolder}/*.fastq"

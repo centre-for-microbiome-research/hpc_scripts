@@ -8,5 +8,4 @@ snakemake --profile aqua --snakefile /work/microbiome/sw/hpc_scripts/dorado_work
 
 Improvements for the future:
 * Pipe samtools merge -u into dorado demux, to avoid a large intermediate file
-* Add a step to remove intermediate files, currently uses 3x the storage
-* Possibly add fastq.gz output
+* Generate fastq files with samtools fastq from demux output instead
