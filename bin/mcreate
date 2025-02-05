@@ -1,6 +1,6 @@
-#!/usr/bin/env python3.4
+#!/usr/bin/env python3
 
-# Must be python3.4-compatible since that is what is on the lyra base
+# Must be python3.4-compatible since that is what is on the lyra base. However, can no longer specify python3.4 otherwise mcreate fails on aquarius.
 
 # Script to more easily submit jobs to the QUT HPC queuing system
 
@@ -8,8 +8,8 @@ __author__ = "Peter Sternes"
 __copyright__ = "Copyright 2024"
 __credits__ = ["Peter Sternes"]
 __license__ = "GPL3"
-__maintainer__ = "Peter Sternes"
-__email__ = "peter.sternes near qut.edu.au"
+__maintainer__ = "Ben Woodcroft"
+__email__ = "b.woodcroft near qut.edu.au"
 __status__ = "Development"
 
 import argparse
@@ -79,7 +79,6 @@ if __name__ == '__main__':
     Create an environment using the latest version of a package.
     ''',formatter_class=RawTextHelpFormatter)
     parser.add_argument('package',help='package to be installed')
-    parser.add_argument('-c', help='Use conda instead of the default mamba to install', action='store_true', default=False, dest='c')
     parser.add_argument('-v', help='Display latest version of package without installing', action='store_true', default=False, dest='v')
     parser.add_argument('--prefix', help='Set the conda prefix something other than the currently active env', default=False, dest='prefix')
     args = parser.parse_args()
@@ -87,10 +86,7 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
     
 #%% main command
-    if args.c is True:
-        installer = 'conda'
-    else:
-        installer = 'mamba'
+    installer = 'conda' # always use conda, because on my version of mamba the newest version is first from the search, not last, so the script logic is silently broken.
     
     package = args.package
     
