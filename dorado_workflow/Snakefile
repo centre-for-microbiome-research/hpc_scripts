@@ -49,24 +49,9 @@ rule dorado_basecaller:
     shell:
         "bash -c 'nvidia-smi 1>&2 && {dorado} basecaller {params.model} {input.pod5_file} --modified-bases {params.base_mods} --kit-name {params.kit_name} --models-directory {models_directory} > {output}' 2> {log}"
 
-rule cat_bamfiles:
-    input:
-        expand(join(outfolder, "basecalled/{pod_id}.bam"), pod_id=pod5_files["pod_id"])
-    output:
-        temp(join(outfolder, "basecalls.bam"))
-    conda:
-        "envs/samtools.yml"
-    log:
-        join(outfolder, "logs", "cat_bamfiles.log")
-    resources:
-        mem_mb=8*1024,
-        runtime=12*60
-    shell:
-        "samtools merge {output} {input} 2> {log}"
-
 rule dorado_demux:
     input:
-        join(outfolder, "basecalls.bam")
+        bam_files = expand(join(outfolder, "basecalled/{pod_id}.bam"), pod_id=pod5_files["pod_id"])
     params:
         options = "--no-classify",
     output:
@@ -74,41 +59,36 @@ rule dorado_demux:
         done = touch(join(outfolder, "demux.done"))
     log:
         join(outfolder, "logs", "demux.log")
+    conda:
+        "envs/samtools.yml"
     threads: 1
     resources:
         mem_mb=8*1024, # guess work
         runtime=12*60, # 12 hours - more than enough I think
         gpus=1, # Possible it might work in CPU mode, but doesn't at least of the box.
     shell:
-        "{dorado} demux {input} {params.options} --output-dir {output.outfolder} 2> {log}"
+        "samtools merge -u - {input.bam_files} | {dorado} demux - {params.options} --output-dir {output.outfolder} 2> {log}"
 
-rule emit_fastq: # probably better to just use samtools after demux, but would need a checkpoint
+rule generate_fastq:
     input:
-        join(outfolder, "basecalls.bam")
-    params:
-        options = "--no-classify --emit-fastq", # basically the same as dorado demux, but there you only get .fastq or .bam, not both
+        bam_folder = join(outfolder, "final_bamfiles"),
+        done = join(outfolder, "demux.done")
     output:
-        outfolder = directory(join(outfolder, "fastq")),
-        done = touch(join(outfolder, "emit_fastq.done"))
+        fastq_folder = directory(join(outfolder, "fastq")),
+        done = touch(join(outfolder, "final_fastq.done"))
     log:
-        join(outfolder, "logs", "emit_fastq.log")
-    threads: 1
-    resources:
-        mem_mb=8*1024, # guess work
-        runtime=12*60, # 12 hours - more than enough I think
-        gpus=1, # Possible it might work in CPU mode, but doesn't at least of the box.
-    shell:
-        "{dorado} demux {input} {params.options} --output-dir {output.outfolder} 2> {log}"
-
-rule compress_fastq:
-    input:
-        infolder = join(outfolder, "fastq"),
-        done = join(outfolder, "emit_fastq.done")
-    output:
-        touch(join(outfolder, "final_fastq.done"))
+        join(outfolder, "logs", "generate_fastq.log")
+    conda:
+        "envs/samtools.yml"
     threads: 8
     resources:
         mem_mb=8*1024, # guesswork
         runtime=4*60 # 4 hours should be enough
     shell:
-        "pigz -p {threads} {input.infolder}/*.fastq"
+        """
+        mkdir -p {output.fastq_folder}
+        for bam_file in {input.bam_folder}/*.bam; do
+            base=$(basename "$bam_file" .bam)
+            samtools fastq -@ {threads} "$bam_file" | pigz -p {threads} > {output.fastq_folder}/"$base".fastq.gz
+        done
+        """
