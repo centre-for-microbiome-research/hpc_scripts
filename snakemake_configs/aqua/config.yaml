@@ -1,4 +1,4 @@
-cluster: snakemake_mqsub --segregated-log-files --queue aqua
+cluster: "snakemake_mqsub --segregated-log-files --queue aqua --depend \"{dependencies}\""
 cluster-status: snakemake_mqstat
 jobs: 10000
 cluster-cancel: qdel

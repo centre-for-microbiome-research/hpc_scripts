@@ -1,5 +1,5 @@
 executor: cluster-generic
-cluster-generic-submit-cmd: snakemake_mqsub --segregated-log-files --queue aqua
+cluster-generic-submit-cmd: "snakemake_mqsub --segregated-log-files --queue aqua --depend \"{dependencies}\""
 cluster-generic-status-cmd: snakemake_mqstat
 jobs: 10000
 cluster-generic-cancel-cmd: qdel

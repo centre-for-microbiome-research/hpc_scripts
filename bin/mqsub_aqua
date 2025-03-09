@@ -1,7 +1,5 @@
 #!/usr/bin/env python3.9
 
-# Must be python3.4-compatible since that is what is on the lyra base
-
 # Script to more easily submit jobs to the QUT HPC queuing system
 
 __author__ = "Ben Woodcroft, Peter Sternes"
@@ -149,6 +147,9 @@ class script_format:
             print('#PBS -J {}'.format(args.array),file=outfile)
         if args.directive:
             print('#PBS {}'.format(args.directive),file=outfile)
+        if args.depend:
+            depend = ":".join(args.depend.split(" "))
+            print('#PBS -W depend=afterok:{}'.format(depend),file=outfile)
         print('#PBS -q {}'.format(args.queue),file=outfile)
         if segregated_logs_dir:
             print('#PBS -o {}'.format(segregated_logs_dir),file=outfile)
@@ -370,6 +371,7 @@ Example usage:
     parser.add_argument('--prelude', help='Code from this file will be run before each chunk')
     parser.add_argument('--scratch-data', dest='scratch_data', nargs='+', help='Data to be copied to a scratch space prior to running the main command(s). Useful for databases used in large chunks of jobs.')
     parser.add_argument('--run-tmp-dir', dest='run_tmp_dir',action='store_true', help='Executes your command(s) on the local SSD ($TMPDIR/mqsub_processing) of a node. IMPORTANT: Use absolute paths for your input files, and a relative path for your output.')
+    parser.add_argument('--depend', help='Space separated list of ids for jobs this job should depend on.')
     parser.add_argument('--segregated-log-files', action='store_true', help='Put log files in ~/qsub_logs/<date>/<directory> instead of the current working directory.')
     parser.add_argument('command',nargs='*',help='command to be run')
     parser.epilog = '''

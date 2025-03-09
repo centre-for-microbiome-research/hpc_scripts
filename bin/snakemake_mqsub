@@ -69,6 +69,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--queue', help='Queue to submit to [default = mqsub default]')
     parser.add_argument('--segregated-log-files', action='store_true', help='Put log files in ~/qsub_logs/<date>/<directory> instead of the current working directory.')
+    parser.add_argument('--depend', help='Space separated list of ids for jobs this job should depend on.')
     # --dry-run
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('jobscript', help='Script to submit')
@@ -117,6 +118,11 @@ if __name__ == '__main__':
     else:
         extra_mqsub_args = ''
 
+    if args.depend:
+        depend = '--depend ' + args.depend
+    else:
+        depend = ''
+
     # Change the name because otherwise 'snakemake' takes all the characters on screen
     # But currently mqsub ignores this anyway, so definiting --name has no effect.
     job_name = os.path.basename(jobscript).replace('snakemake','')
@@ -125,11 +131,11 @@ if __name__ == '__main__':
     if args.queue == 'aqua':
         mqsub_command = 'mqsub_aqua'
 
-    cmd = "{mqsub_command} --no-email --quiet --bg --name {job_name} -t {threads} {mem} {gpu_arg} {hours} --script {script} {queue} {segregated_log_files_arg} {extra_mqsub_args} 2>&1".format(
+    cmd = "{mqsub_command} --no-email --quiet --bg --name {job_name} -t {threads} {mem} {gpu_arg} {hours} --script {script} {queue} {depend} {segregated_log_files_arg} {extra_mqsub_args} 2>&1".format(
         mqsub_command=mqsub_command,
         job_name=job_name, extra_mqsub_args=extra_mqsub_args,
         threads=threads, script=jobscript, mem=mem_argument, hours=runtime_hours, queue=queue, 
-        segregated_log_files_arg=segregated_log_files_arg,
+        depend=depend, segregated_log_files_arg=segregated_log_files_arg,
         gpu_arg=gpu_arg)
 
     if args.dry_run:
