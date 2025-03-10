@@ -6,5 +6,3 @@ cluster-generic-cancel-cmd: qdel
 use-conda: true
 conda-frontend: mamba
 rerun-incomplete: true # Without this, snakemake will attempt to resume when rerunning a rule, which fails immediately without error
-immediate-submit: true
-notemp: true
