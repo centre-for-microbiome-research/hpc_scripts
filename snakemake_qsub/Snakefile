@@ -1,4 +1,7 @@
 rule sleep:
+    input:
+        "snakemake_qsub2.done",
+        "snakemake_qsub3.done",
     output:
         done = "snakemake_qsub.done"
     threads: 2
@@ -7,3 +10,23 @@ rule sleep:
         runtime = "120m",
     shell:
         "sleep 3 && touch {output.done}"
+
+rule sleep2:
+    output:
+        done = "snakemake_qsub2.done"
+    threads: 2
+    resources:
+        mem = "3GB",
+        runtime = "120m",
+    shell:
+        "sleep 30 && touch {output.done}"
+
+rule sleep3:
+    output:
+        done = "snakemake_qsub3.done"
+    threads: 2
+    resources:
+        mem = "3GB",
+        runtime = "120m",
+    shell:
+        "sleep 30 && touch {output.done}"

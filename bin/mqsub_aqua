@@ -148,7 +148,7 @@ class script_format:
         if args.directive:
             print('#PBS {}'.format(args.directive),file=outfile)
         if args.depend:
-            depend = ":".join(args.depend.split(" "))
+            depend = ":".join(args.depend)
             print('#PBS -W depend=afterok:{}'.format(depend),file=outfile)
         print('#PBS -q {}'.format(args.queue),file=outfile)
         if segregated_logs_dir:
@@ -371,7 +371,7 @@ Example usage:
     parser.add_argument('--prelude', help='Code from this file will be run before each chunk')
     parser.add_argument('--scratch-data', dest='scratch_data', nargs='+', help='Data to be copied to a scratch space prior to running the main command(s). Useful for databases used in large chunks of jobs.')
     parser.add_argument('--run-tmp-dir', dest='run_tmp_dir',action='store_true', help='Executes your command(s) on the local SSD ($TMPDIR/mqsub_processing) of a node. IMPORTANT: Use absolute paths for your input files, and a relative path for your output.')
-    parser.add_argument('--depend', help='Space separated list of ids for jobs this job should depend on.')
+    parser.add_argument('--depend', nargs='+', help='Space separated list of ids for jobs this job should depend on.')
     parser.add_argument('--segregated-log-files', action='store_true', help='Put log files in ~/qsub_logs/<date>/<directory> instead of the current working directory.')
     parser.add_argument('command',nargs='*',help='command to be run')
     parser.epilog = '''
