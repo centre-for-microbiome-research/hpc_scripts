@@ -80,7 +80,7 @@ if __name__ == '__main__':
     job_properties = read_job_properties(jobscript)
 
     threads = job_properties['threads']
-    if 'mem_mb' in job_properties['resources']:
+    if 'mem_mb' in job_properties['resources'] and job_properties['resources']['mem_mb'] != '<TBD>':
         mem_mb = job_properties['resources']['mem_mb']
         mem_gb = int(mem_mb / 1024)
         if mem_gb < 1:
@@ -89,7 +89,7 @@ if __name__ == '__main__':
     else:
         mem_argument = ''
 
-    if 'runtime' in job_properties['resources']:
+    if 'runtime' in job_properties['resources'] and job_properties['resources']['runtime'] != '<TBD>':
         runtime_mins = job_properties['resources']['runtime'] # Fails with snakemake == 7.16.0, but works with 7.30.1
         runtime_hours = "--hours {}".format(int(runtime_mins / 60))
     else:
