@@ -96,7 +96,8 @@ def parse_pbsnodeinfo():
 def parse_qstat():
     """Parse qstat output to get job information."""
     # Full format for detailed information
-    output = run_command("qstat -f")
+    # Add -t to expand job arrays into individual jobs
+    output = run_command("qstat -f -t")
     if not output:
         return []
     
