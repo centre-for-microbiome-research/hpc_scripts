@@ -5,7 +5,7 @@ from os.path import join
 """
 Update config.yaml
 Ensure that the dorado_exec path points to the dorado executable.
-Run 'snakemake --scheduler greedy --cores 32 --use-conda --profile mqsub-lyra --configfile config.yaml'
+Run 'snakemake --scheduler greedy --cores 32 --use-conda --profile aqua --configfile config.yaml'
 """
 
 dorado = config["dorado_exec"]
@@ -35,8 +35,8 @@ rule dorado_basecaller:
         pod5_file = lambda wildcards: pod5_files[pod5_files["pod_id"] == wildcards.podfile].iloc[0]["filepath"]
     params:
         model = "sup",
-        base_mods = "4mC_5mC 6mA", # from nanomotif preprint - note that it has changed between versions
-        kit_name = "SQK-NBD114-24"
+        base_mods = "" if not config.get("base_mods") else "--modified-bases " + config["base_mods"],
+        kit_name = config["kit_name"]
     output:
         temp(join(outfolder, "basecalled", "{podfile}.bam"))
     log:
@@ -47,7 +47,7 @@ rule dorado_basecaller:
         gpus=1,
         runtime=24*60*2
     shell:
-        "bash -c 'nvidia-smi 1>&2 && {dorado} basecaller {params.model} {input.pod5_file} --modified-bases {params.base_mods} --kit-name {params.kit_name} --models-directory {models_directory} > {output}' 2> {log}"
+        "bash -c 'nvidia-smi 1>&2 && {dorado} basecaller {params.model} {input.pod5_file} {params.base_mods} --kit-name {params.kit_name} --models-directory {models_directory} > {output}' 2> {log}"
 
 rule dorado_demux:
     input:

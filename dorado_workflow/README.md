@@ -1,6 +1,14 @@
 A snakemake workflow for basecalling nanopore reads using dorado.
 
-To use, copy the config.yaml file to your working directory and edit the parameters as needed, then run the following command:
+To use, create and activate the snakemake conda environment as follows:
+
+```
+conda create -n snakemake -c bioconda snakemake
+conda activate snakemake
+conda install -c bioconda snakemake-executor-plugin-cluster-generic conda
+```
+
+Then copy the config.yaml file to your working directory and edit the parameters as needed, then run the following command:
 
 ```
 snakemake --profile aqua --snakefile /work/microbiome/sw/hpc_scripts/dorado_workflow/Snakefile --configfile config.yaml
