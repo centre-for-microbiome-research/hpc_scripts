@@ -422,8 +422,8 @@ Further information can also be found in the CMR Compute Notes -  https://tinyur
     else:
         raise Exception("Must specify either --script-stdin, command, or a --command-file to chunk")
 
-    if os.path.exists('/pkg/hpc/scripts/time_until_outage.sh'):
-        time_left = run('bash /pkg/hpc/scripts/time_until_outage.sh').decode().rstrip().split(':')[0]
+    if os.path.exists('/usr/local/bin/time_until_outage.sh'):
+        time_left = run('bash /usr/local/bin/time_until_outage.sh').decode().rstrip().split(':')[0]
     else:
         time_left = int(7890000) 
     if args.hours is not None:
