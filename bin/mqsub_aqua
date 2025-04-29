@@ -161,6 +161,17 @@ class script_format:
         print("cd '{}'".format(os.getcwd()), file=outfile) # cd to current directory      
         if prelude:
             print(prelude+'\n\n',file=outfile)
+        if args.scratch_data:
+            for dir in args.scratch_data:
+                if os.path.exists(os.path.abspath(dir)):
+                    print("\n#Copy scratch-data to /scratch for processing",file=outfile)
+                    print("export MSCRATCH=/scratch/cmr/",file=outfile)
+                    print("mkdir -p $MSCRATCH",file=outfile)
+                    print("cp -r -L '{}' $MSCRATCH".format(os.path.abspath(dir)),file=outfile)
+                    print("CP_EXITSTATUS=$?",file=outfile)
+                    print("if [[ $CP_EXITSTATUS -eq 0 ]]; then : ; else  echo 'Exit status $CP_EXITSTATUS. Exitted due to failed cp command'; exit $CP_EXITSTATUS ; fi",file=outfile)
+                else:
+                    raise Exception('{} not found. Exiting'.format(dir))
         if args.tmp_data:
             for dir in args.tmp_data:
                 if os.path.exists(os.path.abspath(dir)):
@@ -369,6 +380,7 @@ Example usage:
     parser.add_argument('--chunk-num',type=int,dest='chunk_num', help='Number of chunks to divide the commands (from --command-file) into')
     parser.add_argument('--chunk-size',type=int,dest='chunk_size', help='Number of commands (from --command-file) per a chunk ')
     parser.add_argument('--prelude', help='Code from this file will be run before each chunk')
+    parser.add_argument('--scratch-data', dest='scratch_data', nargs='+', help='Data to be copied to a scratch space prior to running the main command(s). Useful for databases used in large chunks of jobs.')
     parser.add_argument('--tmp-data', dest='tmp_data', nargs='+', help='Data to be copied to a tmp space prior to running the main command(s). Useful for databases used in large chunks of jobs. tmp space can fill up if you are running many in parallel, in which case use --scratch-data instead.')
     parser.add_argument('--run-tmp-dir', dest='run_tmp_dir',action='store_true', help='Executes your command(s) on the local SSD ($TMPDIR/mqsub_processing) of a node. IMPORTANT: Use absolute paths for your input files, and a relative path for your output.')
     parser.add_argument('--depend', nargs='+', help='Space separated list of ids for jobs this job should depend on.')
@@ -430,7 +442,7 @@ Further information can also be found in the CMR Compute Notes -  https://tinyur
         mem = int(DEFAULT_RAM_TO_CPU_RATIO*args.cpus)
     else:
         mem = args.mem
-    if mem < 8 and args.queue == 'lyra' and (args.tmp_data or args.run_tmp_dir):
+    if mem < 8 and args.queue == 'aqua' and (args.scratch_data or args.tmp_data or args.run_tmp_dir):
         mem = 8
         logging.debug("Using RAM {}".format(mem))
 
