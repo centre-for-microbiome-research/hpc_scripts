@@ -1,412 +1,644 @@
-#!/usr/bin/env python3.4
+#!/usr/bin/env python3
+"""
+Cluster Usage Monitor
 
-# Must be python3.4-compatible since that is what is on the lyra base
+This script analyzes PBS node information and job statistics to provide a summary of:
+1. Overall cluster resource usage with ASCII art visualization
+2. Nodes running at high CPU/RAM/GPU utilization (>80%)
+3. Current user's resource consumption
+4. Resource usage by all users in the "microbiome" group
+"""
 
-# Script to more easily submit jobs to the QUT HPC queuing system
-
-__author__ = "Ben Woodcroft"
-__copyright__ = "Copyright 2020"
-__credits__ = ["Ben Woodcroft"]
-__license__ = "GPL3"
-__maintainer__ = "Ben Woodcroft"
-__email__ = "benjwoodcroft near gmail.com"
-__status__ = "Development"
-
-import argparse
-import logging
-import os
 import subprocess
-import getpass
 import re
-from datetime import datetime, timedelta
-import datetime
-import json
+import os
+import pwd
+import grp
+import sys
+from collections import defaultdict
 
-## TODO: Code below copied from the mqsub script. Code shouldn't really be copied but imported.
+# ANSI color codes
+class Colors:
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
 
-def run(command, stdin=None):
-    '''
-    Run a subprocess.check_output() with the given command with
-    'bash -c command'
-    returning the stdout. If the command fails (i.e. has a non-zero exitstatus),
-    raise a ExternCalledProcessError that includes the $stderr as part of
-    the error message
-
-    Parameters
-    ----------
-    command: str
-        command to run
-    stdin: str or None
-        stdin to be provided to the process, to subprocess.communicate.
-
-    Returns
-    -------
-    Standard output of the run command
-
-    Exceptions
-    ----------
-    extern.ExternCalledProcessError including stdout and stderr of the run
-    command should it return with non-zero exit status.
-    '''
-    #logging.debug("Running extern cmd: %s" % command)
-
-    using_stdin = stdin is not None
-    process = process = subprocess.Popen(
-        ["bash",'-o','pipefail',"-c", command],
-        stdin= (subprocess.PIPE if using_stdin else None),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    stdout, stderr = process.communicate(stdin)
-
+def run_command(command):
+    """Execute a shell command and return the output."""
+    process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = process.communicate()
     if process.returncode != 0:
-        raise ExternCalledProcessError(process, command, stdout.decode(), stderr.decode())
-    return stdout
+        print(f"Error executing command: {command}")
+        print(stderr.decode('utf-8'))
+        return None
+    return stdout.decode('utf-8')
 
-class ExternCalledProcessError(subprocess.CalledProcessError):
-    def __init__(self, completed_process, command, stdout, stderr):
-        self.command = command
-        self.returncode = completed_process.returncode
-        self.stderr = stderr
-        self.stdout = stdout
-        self.completed_process = completed_process
-
-    def __str__(self):
-        return "Command %s returned non-zero exit status %i.\n"\
-            "STDERR was: %sSTDOUT was: %s" % (
-                self.command,
-                self.returncode,
-                self.stderr,
-                self.stdout)
-
-def printTable(myDict, colList=None):
-   if not colList: colList = list(myDict[0].keys() if myDict else [])
-   myList = [colList] # 1st row = header
-   for item in myDict: myList.append([str(item[col] if item[col] is not None else '') for col in colList])
-   colSize = [max(map(len,col)) for col in zip(*myList)]
-   formatStr = ' | '.join(["{{:<{}}}".format(i) for i in colSize])
-   myList.insert(1, ['-' * i for i in colSize]) # Seperating line
-   for item in myList: print(formatStr.format(*item))
-   
-def strfdelta(tdelta, fmt):
-    d = {"days": tdelta.days}
-    d["hours"], rem = divmod(tdelta.seconds, 3600)
-    d["minutes"], d["seconds"] = divmod(rem, 60)
-    return fmt.format(**d)
-
-class JobsCount:
-    def __init__(self):
-        self.num_running = 0
-        self.num_queued = 0
-        self.num_other = 0
-        self.num_running_cpus = 0
-        self.num_total_cpus = 0
-        self.ram_running = 0
-        self.ram_total = 0
-
-def get_non_microbiome_jobs():
-    all_my_jobs = run('qstat -u `whoami`').decode('latin-1').split('\n')[5:]
-    jc = JobsCount()
-    for row in all_my_jobs:
-        splits = list(row.split())
-        if len(splits) == 0:
+def parse_pbsnodeinfo():
+    """Parse pbsnodeinfo output to get node resource usage data."""
+    output = run_command("pbsnodeinfo")
+    if not output:
+        return []
+    
+    nodes = []
+    # Updated pattern to match the actual pbsnodeinfo output format
+    cpu_pattern = re.compile(r'^(\S+)\s+:.*?;\s*(\d+)\s*/\s*(\d+)\s*cpus;\s*(\d+)\s*/\s*(\d+)\s*GB')
+    # New GPU pattern that matches the format in the example
+    gpu_pattern = re.compile(r';\s*(\d+)\s*/\s*(\d+)\s*gpus')
+    
+    for line in output.splitlines():
+        # Skip header lines
+        if "Node" in line or "===" in line:
             continue
-        if len(splits) != 11:
-            raise Exception("Unexpected qstat output: %s" % row)
-        if 'microbi' in splits[2]:
+            
+        cpu_match = cpu_pattern.search(line)
+        if cpu_match:
+            node_name = cpu_match.group(1)
+            used_cpu = int(cpu_match.group(2))
+            total_cpu = int(cpu_match.group(3))
+            used_mem = int(cpu_match.group(4))
+            total_mem = int(cpu_match.group(5))
+            
+            # Calculate usage percentages
+            cpu_percentage = (used_cpu / total_cpu * 100) if total_cpu > 0 else 0
+            mem_percentage = (used_mem / total_mem * 100) if total_mem > 0 else 0
+            
+            # Check for GPUs - look for the gpu usage pattern
+            gpu_match = gpu_pattern.search(line)
+            used_gpu = 0
+            total_gpu = 0
+            gpu_percentage = 0
+            
+            if gpu_match:
+                used_gpu = int(gpu_match.group(1))
+                total_gpu = int(gpu_match.group(2))
+                gpu_percentage = (used_gpu / total_gpu * 100) if total_gpu > 0 else 0
+            
+            nodes.append({
+                'name': node_name,
+                'cpu_usage': cpu_percentage,
+                'ram_usage': mem_percentage,
+                'gpu_usage': gpu_percentage,
+                'used_cpu': used_cpu,
+                'total_cpu': total_cpu,
+                'used_mem': used_mem,
+                'total_mem': total_mem,
+                'used_gpu': used_gpu,
+                'total_gpu': total_gpu,
+                'state': 'free' if used_cpu == 0 else 'job-busy'
+            })
+    
+    return nodes
+
+def parse_pbsnodes_output():
+    """Parse the output of `pbsnodes -a` into structured resource usage data."""
+    output = run_command("pbsnodes -a")
+    if not output:
+        raise Exception("Failed to run pbsnodes -a")
+    nodes = []
+    current_node = {}
+    node_name = None
+
+    for line in output.splitlines():
+        if not line.strip():  # empty line signifies possible end of a node block
+            if current_node and node_name:
+                nodes.append(current_node)
+                current_node = {}
+                node_name = None
             continue
-        else:
-            cpus = int(splits[6])
-            ram = int(splits[7].replace('gb','').replace('g',''))
-            jc.num_total_cpus += cpus
-            jc.ram_total += ram
-            if splits[9] == 'R':
-                jc.num_running += 1
-                jc.num_running_cpus += cpus
-                jc.ram_running += ram
-            elif splits[9] == 'Q':
-                jc.num_queued += 1
-            else:
-                jc.num_other += 1
-    return jc
 
+        if not line.startswith(" "):  # new node
+            if current_node and node_name:
+                nodes.append(current_node)
+                current_node = {}
+            node_name = line.strip()
+            current_node["name"] = node_name
+            current_node["used_cpu"] = 0
+            current_node["total_cpu"] = 0
+            current_node["used_mem"] = 0
+            current_node["total_mem"] = 0
+            current_node["used_gpu"] = 0
+            current_node["total_gpu"] = 0
+            current_node["state"] = "unknown"
+            continue
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--debug', help='output debug information', action="store_true")
-    #parser.add_argument('--version', help='output version information and quit',  action='version', version=repeatm.__version__)
-    parser.add_argument('--quiet', help='only output errors', action="store_true")
-    parser.add_argument('--list', help='output all jobs on the microbiome queue [default: Provide overview]', action="store_true")
-    parser.add_argument('--avail', help='output the amount of spare resources per node [default: Provide overview]', action="store_true")
-    args = parser.parse_args()
+        line = line.strip()
+        if line.startswith("resources_available.ncpus"):
+            current_node["total_cpu"] = int(line.split("=")[-1].strip())
+        elif line.startswith("resources_assigned.ncpus"):
+            current_node["used_cpu"] = int(line.split("=")[-1].strip())
+        elif line.startswith("resources_available.mem"):
+            kb = int(line.split("=")[-1].strip().replace("kb", ""))
+            current_node["total_mem"] = kb // (1024 * 1024)  # convert to GB
+        elif line.startswith("resources_assigned.mem"):
+            kb = int(line.split("=")[-1].strip().replace("kb", ""))
+            current_node["used_mem"] = kb // (1024 * 1024)  # convert to GB
+        elif line.startswith("resources_available.ngpus"):
+            current_node["total_gpu"] = int(line.split("=")[-1].strip())
+        elif line.startswith("resources_assigned.ngpus"):
+            current_node["used_gpu"] = int(line.split("=")[-1].strip())
+        elif line.startswith("state"):
+            current_node["state"] = line.split("=")[-1].strip()
 
-    # Setup logging
-    if args.debug:
-        loglevel = logging.DEBUG
-    elif args.quiet:
-        loglevel = logging.ERROR
-    else:
-        loglevel = logging.INFO
-    logging.basicConfig(level=loglevel, format='%(asctime)s %(levelname)s: %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
+    # Append last node if needed
+    if current_node and node_name:
+        nodes.append(current_node)
 
-    try:    
-        overall_json = json.loads(run('qstat -f -F json microbiome').decode('latin-1'))
-    except:
-        raise Exception('Malformed qstat JSON detected. Unable to parse output')
-    if 'Jobs' in overall_json:
-        overall_json = overall_json['Jobs']
-    else:
-        overall_json = {}
-    microbiome_jobs = list([(jid, j) for (jid, j) in overall_json.items() if j['queue']=='microbiome'])
-    queue_nodes = ['cl5n010','cl5n011','cl5n012','cl5n013']
-    other_jobs = list([(jid, j) for (jid, j) in overall_json.items() if j['job_state'] =='R' and j['exec_host'].split('/')[0] in queue_nodes])
+    # Post-processing for percentages
+    for node in nodes:
+        total_cpu = node["total_cpu"]
+        total_mem = node["total_mem"]
+        total_gpu = node["total_gpu"]
+        used_cpu = node["used_cpu"]
+        used_mem = node["used_mem"]
+        used_gpu = node["used_gpu"]
+
+        node["cpu_usage"] = (used_cpu / total_cpu * 100) if total_cpu else 0
+        node["ram_usage"] = (used_mem / total_mem * 100) if total_mem else 0
+        node["gpu_usage"] = (used_gpu / total_gpu * 100) if total_gpu else 0
+
+        # Derive state
+        node["state"] = "free" if used_cpu == 0 else "job-busy"
+
+    return nodes
+
+def parse_qstat():
+    """Parse qstat output to get job information."""
+    # Full format for detailed information
+    # Add -t to expand job arrays into individual jobs
+    output = run_command("qstat -f -t")
+    if not output:
+        return []
     
-    time_left = run('bash /pkg/hpc/scripts/time_until_outage.sh').decode().rstrip()
+    jobs = []
+    current_job = None
     
-    user_replace_regex = re.compile('@.*')
-    server_regex = re.compile('/.*')
+    for line in output.splitlines():
+        # Match job ID line
+        job_match = re.match(r'^Job Id: (.+)$', line)
+        if job_match:
+            if current_job:
+                jobs.append(current_job)
+            current_job = {'id': job_match.group(1), 'user': None, 'ncpus': 0, 'cpu_usage': 0, 'mem_usage': 0, 'gpu_usage': 0, 'state': None}
+            continue
+            
+        if not current_job:
+            continue
 
-    ## TODO:
-    # Use full name not short job status
+        # Match queue
+        queue_match = re.search(r'queue = (.+)', line)
+        if queue_match:
+            current_job['queue'] = queue_match.group(1)
+            
+        # Match job owner
+        owner_match = re.search(r'Job_Owner = (.+)@', line)
+        if owner_match:
+            current_job['user'] = owner_match.group(1)
+            
+        # Match job state
+        state_match = re.search(r'job_state = ([A-Z])', line)
+        if state_match:
+            current_job['state'] = state_match.group(1)
+            
+        # Match resource usage
+        if 'resources_used' in line or 'Resource_List' in line:
+            # CPU time - not right since e.g. not shown for queued jobs
+            # cpu_match = re.search(r'resources_used.cput = (\d+):(\d+):(\d+)', line)
+            # if cpu_match:
+            #     h, m, s = map(int, cpu_match.groups())
+            #     current_job['cpu_usage'] = h * 3600 + m * 60 + s
 
-    if args.list:
-        dicts=[]
-        for (jid, j) in microbiome_jobs:
-            if j['job_state']=='R':
-                try:
-                    rawtime = datetime.datetime.strptime(j['stime'], '%a %b %d %H:%M:%S %Y')
-                    walltime = timedelta(hours=int(j['Resource_List']['walltime'].replace(':00:00','')))
-                    runtime = j['stime']
-                    elapsedtime = datetime.datetime.now() - rawtime
-                    perctime = int(elapsedtime / walltime * 100)
-                    elapsedtime2 = strfdelta(elapsedtime, '{days} days, {hours} hrs, {minutes} mins')
-                    node=j['exec_host']
-                except KeyError:
-                    # Occasional KeyError, maybe when the job just started?
-                    runtime = '-'
-                    elapsedtime = '-'
-                    elapsedtime2 = '-'
-                    rawtime = '-'
-                    perctime = '-'
-                    node = '-'
-            else:
-                runtime = '-'
-                elapsedtime = '-'
-                elapsedtime2 = '-'
-                rawtime = '-'
-                perctime = '-'
-                node = '-'
-            job = {'PBS ID':jid,
-                   #'job name': j[''],
-                   'username':user_replace_regex.sub('',j['Job_Owner']),
-                   'state':j['job_state'],
-                   'CPUs':str(j['Resource_List']['ncpus']),
-                   'RAM':j['Resource_List']['mem'],
-                   'walltime (hrs)':j['Resource_List']['walltime'].replace(':00:00',''),
-                   'start time':runtime,
-                   'timer':elapsedtime,
-                   'elapsed time':elapsedtime2,
-                   '% walltime':perctime,
-                   'microbiome queue':"yes",
-                   'node':node,
-                   'name': ', '.join(os.popen("finger {} | grep 'Name:' | awk '{{print $4, $5}}'".format(user_replace_regex.sub('',j['Job_Owner']))).read().splitlines())
-                   }
-            dicts.append(job)
-        for (jid, j) in other_jobs:
-            if j['queue']!='microbiome':    
-                job = {'PBS ID':jid,
-                   'username':user_replace_regex.sub('',j['Job_Owner']),
-                   'state':j['job_state'],
-                   'CPUs':str(j['Resource_List']['ncpus']),
-                   'RAM':j['Resource_List']['mem'],
-                   'walltime (hrs)':j['Resource_List']['walltime'].replace(':00:00',''),
-                   'start time':runtime,
-                   'timer':elapsedtime,
-                   'elapsed time':elapsedtime2,
-                   '% walltime':perctime,
-                   'microbiome queue':"no",
-                   'node':node,
-                   'name': ', '.join(os.popen("finger {} | grep 'Name:' | awk '{{print $4, $5}}'".format(user_replace_regex.sub('',j['Job_Owner']))).read().splitlines())
-                   }
-            dicts.append(job)
-        dicts = [i for n, i in enumerate(dicts) if i not in dicts[n + 1:]] #remove duplicates
-        dicts_sorted = sorted(dicts, key=lambda d: (d['state'], d['username'], d['elapsed time']), reverse = True)
-        print('\nList of jobs in queue:')
-        print('----------------------')
-        printTable(dicts_sorted, colList=('PBS ID','username', 'name', 'state', 'CPUs', 'RAM', 'walltime (hrs)', 'start time', 'elapsed time', '% walltime','node'))
-        print('\nTime left until maintenance (hr:min:sec): ' + time_left + '\n')
-   
-    elif args.avail:
-        dicts=[]
-        for (jid, j) in microbiome_jobs:
-            if j['job_state']=='R':
-                job = {'PBS ID':jid,
-                   'CPUs':int(j['Resource_List']['ncpus']),
-                   'RAM':int(j['Resource_List']['mem'].replace('gb','')),
-                   'node':j['exec_host'].split('/')[0]
-                   }
-                dicts.append(job)
-        for (jid, j) in other_jobs:
-            if j['queue']!='microbiome':    
-                job = {'PBS ID':jid,
-                   'CPUs':int(j['Resource_List']['ncpus']),
-                   'RAM':int(j['Resource_List']['mem'].replace('gb','').replace('000mb','')),
-                   'node':j['exec_host'].split('/')[0]
-                   }
-                dicts.append(job)
-        dicts = [i for n, i in enumerate(dicts) if i not in dicts[n + 1:]] #remove duplicates   
+            # ncpus
+            cpu_match = re.search(r'Resource_List.ncpus = (\d+)', line)
+            if cpu_match:
+                current_job['ncpus'] = int(cpu_match.group(1))
+
+            # CPU percentage
+            cpu_match = re.search(r'resources_used.cpupercent = (\d+)', line)
+            if cpu_match:
+                current_job['cpupercent'] = int(cpu_match.group(1))
+                
+            # Memory usage
+            if 'resources_used.mem' in line:
+                mem_match1 = re.search(r'resources_used.mem = (\d+)kb', line)
+                mem_match2 = re.search(r'resources_used.mem = (\d+)gb', line)
+                mem_match3 = re.search(r'resources_used.mem = 0b', line)
+                if mem_match1:
+                    current_job['mem_usage'] = int(mem_match1.group(1))
+                elif mem_match2:
+                    current_job['mem_usage'] = int(mem_match2.group(1)) * 1024 * 1024
+                elif mem_match3:
+                    current_job['mem_usage'] = 0
+                else:
+                    raise Exception("Unknown memory unit from line: " + line)
+                
+            # GPU
+            gpu_match = re.search(r'Resource_List.ngpus = (\d+)', line)
+            if gpu_match:
+                current_job['ngpus'] = int(gpu_match.group(1))
+
+            # walltime
+            walltime_match = re.search(r'resources_used.walltime = (\d+):(\d+):(\d+)', line)
+            if walltime_match:
+                h, m, s = map(int, walltime_match.groups())
+                current_job['walltime_used'] = h * 3600 + m * 60 + s
+
+            # Requested walltime
+            walltime_match = re.search(r'Resource_List.walltime = (\d+):(\d+):(\d+)', line)
+            if walltime_match:
+                h, m, s = map(int, walltime_match.groups())
+                requested_walltime = h * 3600 + m * 60 + s
+                # Deduct the time already used, if already running
+                if 'walltime_used' in current_job:
+                    current_job['walltime'] = requested_walltime - current_job['walltime_used']
+                else:
+                    current_job['walltime'] = requested_walltime
+                # The true cpu time ncpus * walltime
+                current_job['cpu_usage_remaining'] = current_job['ncpus'] * current_job['walltime']
+                # gpus
+                if 'ngpus' in current_job:
+                    current_job['gpu_usage_remaining'] = current_job['ngpus'] * current_job['walltime']
+    
+    # Add the last job
+    if current_job:
+        jobs.append(current_job)
         
-        cl5n010_ram=0
-        cl5n010_cpu=0
-        for line in dicts:
-            if 'cl5n010' in line['node']:
-                cl5n010_cpu += line['CPUs']
-                cl5n010_ram += line['RAM']
-        cl5n011_ram=0
-        cl5n011_cpu=0
-        for line in dicts:
-            if 'cl5n011' in line['node']:
-                cl5n011_cpu += line['CPUs']
-                cl5n011_ram += line['RAM']
-        cl5n012_ram=0
-        cl5n012_cpu=0
-        for line in dicts:
-            if 'cl5n012' in line['node']:
-                cl5n012_cpu += line['CPUs']
-                cl5n012_ram += line['RAM']
-        cl5n013_ram=0
-        cl5n013_cpu=0
-        for line in dicts:
-            if 'cl5n013' in line['node']:
-                cl5n013_cpu += line['CPUs']
-                cl5n013_ram += line['RAM']
-       
-        node_table=[]      
-        node_summary = {'node':str('cl5n010'),
-                'CPU': str(124-cl5n010_cpu) + str(' threads'),
-                'RAM':str(1006-cl5n010_ram) + str(' GB')}
-        node_table.append(node_summary)
-        node_summary = {'node':str('cl5n011'),
-                'CPU': str(124-cl5n011_cpu) + str(' threads'),
-                'RAM':str(1006-cl5n011_ram) + str(' GB')}
-        node_table.append(node_summary)
-        node_summary = {'node':str('cl5n012'),
-                'CPU': str(124-cl5n012_cpu) + str(' threads'),
-                'RAM':str(1006-cl5n012_ram) + str(' GB')}
-        node_table.append(node_summary)
-        node_summary = {'node':str('cl5n013'),
-                'CPU': str(124-cl5n013_cpu) + str(' threads'),
-                'RAM':str(1006-cl5n013_ram) + str(' GB')}
-        node_table.append(node_summary)
-        
-        print('Available resources:')
-        print('--------------------')
-        printTable(node_table, colList=('node','CPU', 'RAM'))
+    return jobs
+
+def get_job_status_counts(jobs):
+    """Count jobs by status (running, queued, held)."""
+    status_counts = defaultdict(int)
     
-    else:
-        num_jobs = len(microbiome_jobs)
-        num_cpus_not_running = sum([m[1]['Resource_List']['ncpus'] for m in microbiome_jobs if m[1]['job_state']!='R'])
-
-        total_cpus = 124*len(queue_nodes)
-
-        num_jobs_running = sum([1 for m in microbiome_jobs if m[1]['job_state']=='R'])
-        num_cpus_running = sum([m[1]['Resource_List']['ncpus'] for m in microbiome_jobs if m[1]['job_state']=='R'])
-
-        non_microbiome_jobs = get_non_microbiome_jobs()
-
-        if num_jobs > 0:
-            frac_jobs_running = num_jobs_running/num_jobs
+    for job in jobs:
+        state = job.get('state')
+        if state == 'R':
+            status_counts['running'] += 1
+        elif state == 'Q':
+            status_counts['queued'] += 1
+        elif state == 'H':
+            status_counts['held'] += 1
         else:
-            frac_jobs_running = 0
-        print("Microbiome group jobs running: {} / {} ({:.2f}%)".format(num_jobs_running, num_jobs, frac_jobs_running*100))
-        print("Microbiome group CPUs utilized: {} / {} ({:.2f}%)".format(num_cpus_running, total_cpus, num_cpus_running/total_cpus*100))
-        print("Microbiome group CPUs queued: {}".format(num_cpus_not_running))
+            status_counts['other'] += 1
+    
+    total = sum(status_counts.values())
+    running_percent = (status_counts['running'] / total * 100) if total > 0 else 0
+    
+    return {
+        'running': status_counts['running'],
+        'queued': status_counts['queued'],
+        'held': status_counts['held'],
+        'other': status_counts['other'],
+        'total': total,
+        'running_percent': running_percent
+    }
 
-        import getpass
-        user = getpass.getuser()
+def get_unix_group_members(group_name):
+    """Get all users belonging to a Unix group."""
+    try:
+        group = grp.getgrnam(group_name)
+        return group.gr_mem
+    except KeyError:
+        print(f"Group '{group_name}' not found")
+        return []
 
-        my_jobs = []#list([m[1] for m in microbiome_jobs if user_replace_regex.sub('',m[1]['Job_Owner'])==user])
-        for m in microbiome_jobs:
-            if user_replace_regex.sub('',m[1]['Job_Owner'])==user:
-                my_jobs.append(m)
-        num_jobs = len(my_jobs)
-        num_cpus_not_running = sum([m[1]['Resource_List']['ncpus'] for m in my_jobs if m[1]['job_state']!='R'])
-        num_cpus_running = sum([m[1]['Resource_List']['ncpus'] for m in my_jobs if m[1]['job_state']=='R'])
-        num_jobs_running = len([1 for m in my_jobs if m[1]['job_state']=='R'])
+def get_real_name(username):
+    """Get the real name for a username."""
+    try:
+        pwd_entry = pwd.getpwnam(username)
+        gecos = pwd_entry.pw_gecos
+        real_name = gecos.split(',')[0] if gecos else username
+        return real_name if real_name else username
+    except KeyError:
+        return username
 
-        print("{} jobs running: {} / {} ({:.1f}%)".format(user, num_jobs_running, num_jobs, num_jobs_running/num_jobs*100 if num_jobs > 0 else 0))
-        print("{} CPUs running: {} / {} ({:.1f}%)".format(user, num_cpus_running, total_cpus, num_cpus_running/total_cpus*100 if total_cpus > 0 else 0))
-        print("{} CPUs queued: {}".format(user, num_cpus_not_running))
-        print("{} lyra queue jobs running: {} / {} ({:.1f}%)".format(
-            user,
-            non_microbiome_jobs.num_running,
-            non_microbiome_jobs.num_running + non_microbiome_jobs.num_queued + non_microbiome_jobs.num_other,
-            non_microbiome_jobs.num_running/(non_microbiome_jobs.num_running + non_microbiome_jobs.num_queued + non_microbiome_jobs.num_other)*100 if (non_microbiome_jobs.num_running + non_microbiome_jobs.num_queued + non_microbiome_jobs.num_other) > 0 else 0))
-        print("{} lyra queue CPUs running: {} / {} ({:.1f}%)".format(
-            user,
-            non_microbiome_jobs.num_running_cpus,
-            non_microbiome_jobs.num_total_cpus,
-            non_microbiome_jobs.num_running_cpus/non_microbiome_jobs.num_total_cpus*100 if non_microbiome_jobs.num_total_cpus > 0 else 0))
-        print("{} lyra queue RAM running: {} / {} GB ({:.1f}%)".format(
-            user,
-            non_microbiome_jobs.ram_running,
-            non_microbiome_jobs.ram_total,
-            non_microbiome_jobs.ram_running/non_microbiome_jobs.ram_total*100 if non_microbiome_jobs.ram_total > 0 else 0))
-        if non_microbiome_jobs.num_other > 0:
-            print("NOTE: {} non-microbiome jobs of {} were neither running nor queued".format(non_microbiome_jobs.num_other, user))
+def calculate_cluster_stats(nodes):
+    """Calculate summary statistics about cluster usage."""
+    total_nodes = len(nodes)
+    active_nodes = sum(1 for node in nodes if node['used_cpu'] > 0)
+    
+    high_cpu_nodes = sum(1 for node in nodes if node['cpu_usage'] >= 80)
+    high_ram_nodes = sum(1 for node in nodes if node['ram_usage'] >= 80)
+    high_gpu_nodes = sum(1 for node in nodes if node['gpu_usage'] >= 80 and node['total_gpu'] > 0)
+    
+    total_cpu_cores = sum(node['total_cpu'] for node in nodes)
+    used_cpu_cores = sum(node['used_cpu'] for node in nodes)
+    
+    total_memory_gb = sum(node['total_mem'] for node in nodes)
+    used_memory_gb = sum(node['used_mem'] for node in nodes)
+    
+    total_gpus = sum(node['total_gpu'] for node in nodes)
+    used_gpus = sum(node['used_gpu'] for node in nodes)
+    
+    avg_cpu = sum(node['cpu_usage'] for node in nodes) / total_nodes if total_nodes else 0
+    avg_ram = sum(node['ram_usage'] for node in nodes) / total_nodes if total_nodes else 0
+    
+    # Only include nodes with GPUs in the GPU averages
+    gpu_nodes = sum(1 for node in nodes if node['total_gpu'] > 0)
+    avg_gpu = sum(node['gpu_usage'] for node in nodes if node['total_gpu'] > 0) / gpu_nodes if gpu_nodes else 0
+    
+    return {
+        'total_nodes': total_nodes,
+        'active_nodes': active_nodes,
+        'high_cpu_nodes': high_cpu_nodes,
+        'high_cpu_percentage': (high_cpu_nodes / total_nodes * 100) if total_nodes else 0,
+        'high_ram_nodes': high_ram_nodes,
+        'high_ram_percentage': (high_ram_nodes / total_nodes * 100) if total_nodes else 0,
+        'high_gpu_nodes': high_gpu_nodes,
+        'high_gpu_percentage': (high_gpu_nodes / gpu_nodes * 100) if gpu_nodes else 0,
+        'avg_cpu': avg_cpu,
+        'avg_ram': avg_ram,
+        'avg_gpu': avg_gpu,
+        'total_cpu_cores': total_cpu_cores,
+        'used_cpu_cores': used_cpu_cores,
+        'cpu_utilization': (used_cpu_cores / total_cpu_cores * 100) if total_cpu_cores else 0,
+        'total_memory_gb': total_memory_gb,
+        'used_memory_gb': used_memory_gb,
+        'memory_utilization': (used_memory_gb / total_memory_gb * 100) if total_memory_gb else 0,
+        'total_gpus': total_gpus,
+        'used_gpus': used_gpus,
+        'gpu_utilization': (used_gpus / total_gpus * 100) if total_gpus else 0
+    }
 
-        my_comments = {}
-        for m in my_jobs:
-            try:
-                comment = m[1]['comment']
-                if 'Job run at' not in comment:
-                    if comment in my_comments:
-                        my_comments[comment] += 1
-                    else:
-                        my_comments[comment] = 1
-            except KeyError:
-                pass
-        if len(my_comments) > 0:
-            for (comment, count) in my_comments.items():
-                print("{} job comment: \"{}\" ({} jobs)".format(user, comment, count))
+def calculate_user_stats(jobs, user=None, group_members=None, ignore_interactive=False):
+    """Calculate statistics for a specific user or group."""
+    if ignore_interactive:
+        jobs = [job for job in jobs if not job['queue'] in ('cpu_inter_exec','gpu_inter_exec')]
+    if user:
+        user_jobs = [job for job in jobs if job['user'] == user]
+    elif group_members:
+        user_jobs = [job for job in jobs if job['user'] in group_members]
+    else:
+        return None
+    
+    job_status = get_job_status_counts(user_jobs)
+    total_jobs = len(user_jobs)
+    total_cpu = sum(job['cpu_usage_remaining'] for job in user_jobs)
+    total_mem = sum(job['mem_usage'] for job in user_jobs)
+    total_gpu = sum(job['gpu_usage'] for job in user_jobs)
+    running_cpu = sum(job['ncpus'] for job in user_jobs if job['state'] == 'R')
+    running_gpu = sum(job['ngpus'] for job in user_jobs if job['state'] == 'R')
+    total_ncpus = sum(job['ncpus'] for job in user_jobs)
+    total_ngpus = sum(job['ngpus'] for job in user_jobs)
+    total_walltime = sum(job['walltime'] for job in user_jobs)
 
-        other_running_jobs = list([(jid, j) for (jid, j) in overall_json.items() if j['queue']!='microbiome' and j['job_state']=='R'])
-        non_microbiome_jobs_on_our_nodes = []
-        for m in other_running_jobs:
-            if server_regex.sub('',m[1]['exec_host']) in queue_nodes:
-                non_microbiome_jobs_on_our_nodes.append(m)
-        num_non_microbiome_cpus_running = sum([m[1]['Resource_List']['ncpus'] for m in non_microbiome_jobs_on_our_nodes])
-        if num_non_microbiome_cpus_running > 0:
-            print("NOTE: Non-microbiome group jobs / CPU: {} / {} ({:.1f}%)".format(
-                len(non_microbiome_jobs_on_our_nodes),
-                num_non_microbiome_cpus_running,
-                num_non_microbiome_cpus_running/total_cpus*100 if total_cpus > 0 else 0))
+    # already a %
+    # Sometimes get R but no 'cpupercent' key, I guess they are just starting?
+    running_cpu_util_total = sum(job['cpupercent'] for job in user_jobs if job['state'] == 'R' and 'cpupercent' in job)
+    running_cpu_utilisation = running_cpu_util_total / running_cpu if len(user_jobs) > 0 and running_cpu > 0 else 0
 
-        # Get an overall state of the cluster
-        pbsnodeinfo = run('pbsnodeinfo').decode()
-        # Node    :   cputype |        cpuarch ;    cpu usage;    mem usage; gputype; gpu usage
-        # =====================================================================================
-        # cl4n001 : E7-8890v4 |       avx,avx2 ;  6 / 192 cpus; 500 / 5794 GB
-        # cl4n002 :      6140 |avx,avx2,avx512 ;  8 / 36 cpus;  32 / 186 GB;  P100; 1 / 4 gpus
-        # cl4n003 :      6140 |avx,avx2,avx512 ;  0 / 36 cpus;   0 / 186 GB;  P100; 0 / 4 gpus
-        # cl4n007 :      6140 |avx,avx2,avx512 ; 35 / 36 cpus; 324 / 376 GB   
-        line_re = re.compile(r'^(cl\d)\S+ *: *.*?; *(\d+) / (\d+) cpus')
-        cpu_usage = {}
-        for line in pbsnodeinfo.split('\n'):
-            if line.startswith('Node') or line.startswith('===') or line.strip() == '':
-                continue
-            matches = line_re.match(line)
-            if matches:
-                node_group = matches.group(1)
-                num_cpus_used = int(matches.group(2))
-                num_cpus = int(matches.group(3))
-                if node_group not in cpu_usage:
-                    cpu_usage[node_group] = {'used': 0, 'total': 0}
-                cpu_usage[node_group]['used'] += num_cpus_used
-                cpu_usage[node_group]['total'] += num_cpus
-            else:
-                print("WARNING: Could not parse pbsnodeinfo line: {}".format(line))
-        for node_group in sorted(cpu_usage.keys()):
-            print("Node group {}: {} / {} CPUs ({:.1f}%)".format(
-                node_group,
-                cpu_usage[node_group]['used'],
-                cpu_usage[node_group]['total'],
-                cpu_usage[node_group]['used']/cpu_usage[node_group]['total']*100 if cpu_usage[node_group]['total'] > 0 else 0))
+    # speed is roughly running cpus/ Total is cpu_usage_remaining
+    eta = total_cpu / running_cpu if running_cpu > 0 else 0
+    
+    return {
+        'job_status': job_status,
+        'total_jobs': total_jobs,
+        'total_cpu_seconds': total_cpu,
+        'total_cpu_hours': total_cpu / 3600,
+        'total_memory_kb': total_mem,
+        'total_memory_gb': total_mem / (1024 * 1024),
+        'total_gpus': total_gpu,
+        'avg_cpu_per_job': total_cpu / total_jobs if total_jobs else 0,
+        'avg_mem_per_job': total_mem / total_jobs if total_jobs else 0,
+        'avg_gpu_per_job': total_gpu / total_jobs if total_jobs else 0,
+        'running_cpu': running_cpu,
+        'running_gpu': running_gpu,
+        'total_ncpus': total_ncpus,
+        'total_ngpus': total_ngpus,
+        'total_walltime': total_walltime,
+        'eta': eta,
+        'running_cpu_utilisation': running_cpu_utilisation,
+    }
+
+def format_time_hours(seconds, descriptor=""):
+    """Format seconds into hours, days, months, years or millenia."""
+    hours = seconds / 3600
+    descriptor = f" {descriptor}" if descriptor else ""
+    if hours >= 876000:  # 1 millenia = 876000 hours
+        millenia = hours / 876000
+        return f"{millenia:.1f}{descriptor} millenia"
+    elif hours >= 8760:  # 1 year = 8760 hours
+        years = hours / 8760
+        return f"{years:.1f}{descriptor} years"
+    elif hours >= 730:  # 1 month = 730 hours (approx)
+        months = hours / 730
+        return f"{months:.1f}{descriptor} months"
+    elif hours >= 24:
+        days = hours / 24
+        return f"{days:.1f}{descriptor} days"
+    else:
+        return f"{hours:.1f}{descriptor} hours"
+
+def create_ascii_bar(percentage, width=40, reverse=False, colour_text=None):
+    """Create an ASCII progress bar with color based on percentage."""
+    filled_width = int(percentage / 100 * width)
+    empty_width = width - filled_width
+    
+    if reverse:
+        if percentage < 40:
+            color = Colors.RED
+        elif percentage < 70:
+            color = Colors.YELLOW
+        else:
+            color = Colors.GREEN
+    else:
+        if percentage < 50:
+            color = Colors.GREEN
+        elif percentage < 80:
+            color = Colors.YELLOW
+        else:
+            color = Colors.RED
+
+    bar = f"{color}{'█' * filled_width}{Colors.ENDC}{'░' * empty_width} {percentage:.1f}%"
+    if colour_text:
+        bar = coloured_text(colour_text, color) + bar
+    
+    return bar
+
+def coloured_text(text, color):
+    """Apply color to text."""
+    return f"{color}{text}{Colors.ENDC}"
+
+def main():
+    # parse -u option from args
+    if len(sys.argv) > 1 and sys.argv[1] == '-u':
+        current_user = sys.argv[2]
+    else:
+        # Get current username
+        current_user = os.getlogin()
+
+    current_user_real_name = get_real_name(current_user)
+    
+    # Get node data
+    nodes = parse_pbsnodes_output()
+    
+    if not nodes:
+        print("Failed to gather node information. Check if pbsnodeinfo is available.")
+        return
+    
+    # Calculate cluster stats
+    cluster_stats = calculate_cluster_stats(nodes)
+    
+    # Get job data
+    jobs = parse_qstat()
+    
+    if not jobs:
+        print("Failed to gather job information. Check if qstat is available.")
+        return
+    
+    # Get overall job status
+    overall_job_status = get_job_status_counts(jobs)
+    
+    # Get microbiome group members
+    microbiome_members = get_unix_group_members("microbiome")
+    # skip admins
+    microbiome_members = [member for member in microbiome_members if member not in [
+        'thomsonv',
+    ]]
+    
+    # Calculate user stats
+    user_stats = calculate_user_stats(jobs, user=current_user, ignore_interactive=True)
+    group_stats = calculate_user_stats(jobs, group_members=microbiome_members)
+    
+    print("\n=== YOU ===")
+    if user_stats and user_stats['total_jobs'] > 0:
+        job_status = user_stats['job_status']
+        # ETA
+        print(f"ETA: {format_time_hours(user_stats['eta'])}")
+        print(f"Walltime remaining: {format_time_hours(user_stats['total_walltime'])}")
+        print(f"CPU hours remaining: {format_time_hours(user_stats['total_cpu_seconds'])}")
+        print()
+        print(f"Jobs: {job_status['running']} of {job_status['total']} running")
+        # print(f"Run:   {create_ascii_bar(job_status['running_percent'], reverse=True)}")
+        print(f"{create_ascii_bar(job_status['running_percent'], reverse=True, colour_text='Run:   ')}")
+        print(f"{create_ascii_bar(user_stats['running_cpu_utilisation'], reverse=True, colour_text='Util:  ')}")
+
+        if job_status['held'] > 0:
+            print(f"Jobs held: {job_status['held']} !!")
+
+        # print(f"Jobs: {job_status['total']} total ({job_status['running']} running, {job_status['queued']} queued, {job_status['held']} held, {job_status['running_percent']:.1f}% running)")
+        # print(f"CPU:   {create_ascii_bar(user_stats['running_cpu'] / user_stats['total_ncpus'] * 100)}")
+        # if user_stats['total_gpus'] > 0:
+        #     print(f"GPU:   {create_ascii_bar(user_stats['running_gpu'] / cluster_stats['total_gpus'] * 100)}")
+        # print(f"Total memory usage: {user_stats['total_memory_gb']:.2f} GB")
+        # if user_stats['total_gpus'] > 0:
+        #     print(f"Total GPU usage: {user_stats['total_gpus']} GPUs")
+    else:
+        print(f"No batch jobs found for user: {current_user_real_name}")
+    
+    print("\n\n=== CMR ===")
+    if group_stats and group_stats['total_jobs'] > 0:
+        # Calculate the fraction of cluster resources currently being used by the microbiome group
+        # For running jobs, not the total jobs
+        microbiome_running_jobs = [job for job in jobs if job['user'] in microbiome_members and job.get('state') == 'R']
+        
+        # Calculate current CPU usage percentage (relative to total cluster CPU cores)
+        microbiome_used_cpu = sum(job['ncpus'] for job in microbiome_running_jobs)
+        microbiome_cpu_percent = microbiome_used_cpu / cluster_stats['total_cpu_cores'] * 100
+        
+        # Calculate current memory usage percentage (relative to total cluster memory)
+        microbiome_used_mem = sum(job['mem_usage'] for job in microbiome_running_jobs)
+        microbiome_mem_percent = (microbiome_used_mem / (1024 * 1024)) / cluster_stats['total_memory_gb'] * 100
+        
+        # Calculate current GPU usage percentage (relative to total cluster GPUs)
+        microbiome_used_gpu = sum(job['ngpus'] for job in microbiome_running_jobs)
+        microbiome_gpu_percent = microbiome_used_gpu / cluster_stats['total_gpus'] * 100 if cluster_stats['total_gpus'] > 0 else 0
+        
+        print(f"CPU:   {create_ascii_bar(microbiome_cpu_percent)}")
+        print(f"RAM:   {create_ascii_bar(microbiome_mem_percent)}")
+        if cluster_stats['total_gpus'] > 0 and microbiome_used_gpu > 0:
+            print(f"GPU:   {create_ascii_bar(microbiome_gpu_percent)}")
+        print(f"Requested CPU hours: {format_time_hours(group_stats['total_cpu_seconds'])}")
+        print(f"{create_ascii_bar(group_stats['running_cpu_utilisation'], reverse=True, colour_text='Util:  ')}")
+        
+        job_status = group_stats['job_status']
+        print()
+        print(f"Jobs: {job_status['running']} of {job_status['total']} running")
+        print(f"Run:   {create_ascii_bar(job_status['running_percent'])}")
+
+        # print(f"\nJobs: {job_status['total']} total ({job_status['running']} running, {job_status['queued']} queued, {job_status['held']} held, {job_status['running_percent']:.1f}% running)")
+        # print(f"Requested memory usage: {group_stats['total_memory_gb']:.2f} GB")
+        # if group_stats['total_gpus'] > 0:
+        #     print(f"Total GPU usage: {group_stats['total_gpus']} GPUs")
+        
+        # Calculate individual stats for group members
+        member_stats = {}
+        for member in microbiome_members:
+            member_jobs = [job for job in jobs if job['user'] == member and job['queue'] not in ('cpu_inter_exec','gpu_inter_exec')]
+            if member_jobs:
+                member_job_status = get_job_status_counts(member_jobs)
+                cpu_seconds = sum(job['cpu_usage_remaining'] for job in member_jobs)
+                mem_kb = sum(job['mem_usage'] for job in member_jobs)
+                mem_kb_total = sum(job['mem_usage'] * job['walltime'] for job in member_jobs)
+                gpu_count = sum(job['ngpus'] for job in member_jobs)
+                gpu_count_total = sum(job['gpu_usage_remaining'] for job in member_jobs)
+                # Calculate score using cpu*8+ram where cpu is in hours and ram in GB
+                score = (cpu_seconds / 3600) * 8 + (mem_kb_total / (1024 * 1024)) + (gpu_count_total * 10)
+                real_name = get_real_name(member)
+                member_stats[member] = {
+                    'real_name': real_name,
+                    'jobs': member_job_status,
+                    'cpu_seconds': cpu_seconds,
+                    'mem_kb': mem_kb,
+                    'gpu_count': gpu_count,
+                    'score': score
+                }
+        
+        # Print top users from microbiome group by score
+        if member_stats:
+            print("\nBatch job scoreboard:")  # Just a newline before top users
+            top_users = sorted(member_stats.items(), key=lambda x: x[1]['score'], reverse=True, )[:5]
+            for i, (username, stats) in enumerate(top_users, 1):
+                job_status = stats['jobs']
+                gpu_info = f"{stats['gpu_count']} GPUs, " if stats['gpu_count'] > 0 else ""
+                print(f"{i}. {stats['real_name']}: "#Score: {stats['score']:.2f}, "
+                      f"{format_time_hours(stats['cpu_seconds'], 'CPU')}, "
+                      f"{gpu_info}"
+                      f"{job_status['total']} jobs ({job_status['running_percent']:.1f}% running)")
+        else:
+            print("No active jobs found for microbiome group members")
+    else:
+        print("No active jobs found for microbiome group members")
+
+    # Print the report
+    print("\n\n=== CLUSTER ===")
+    
+    # ASCII art utilization bars
+    print(f"CPU:   {create_ascii_bar(cluster_stats['cpu_utilization'])}")
+    print(f"RAM:   {create_ascii_bar(cluster_stats['memory_utilization'])}")
+    if cluster_stats['total_gpus'] > 0:
+        print(f"GPU:   {create_ascii_bar(cluster_stats['gpu_utilization'])}")
+    print(f'Nodes: {create_ascii_bar(cluster_stats["active_nodes"]/cluster_stats["total_nodes"]*100)}')
+    print()
+    
+    # print(f"\nTotal nodes: {cluster_stats['total_nodes']}")
+    # print(f"Active nodes: {cluster_stats['active_nodes']} ({cluster_stats['active_nodes']/cluster_stats['total_nodes']*100:.1f}%)")
+    # print(f"CPU utilization: {cluster_stats['cpu_utilization']:.1f}%")
+    # print(f"Memory utilization: {cluster_stats['memory_utilization']:.1f}%")
+    # if cluster_stats['total_gpus'] > 0:
+    #     print(f"GPU utilization: {cluster_stats['gpu_utilization']:.1f}%")
+    
+    # print(f"Nodes with high CPU (>80%): {cluster_stats['high_cpu_nodes']} ({cluster_stats['high_cpu_percentage']:.1f}%)")
+    # print(f"Nodes with high RAM (>80%): {cluster_stats['high_ram_nodes']} ({cluster_stats['high_ram_percentage']:.1f}%)")
+    # if cluster_stats['total_gpus'] > 0:
+    #     print(f"Nodes with high GPU (>80%): {cluster_stats['high_gpu_nodes']} ({cluster_stats['high_gpu_percentage']:.1f}%)")
+    
+    # print("\n=== JOB STATUS SUMMARY ===")
+    print(f"Jobs: {overall_job_status['running']} of {overall_job_status['total']} running")
+    print(f"Run:   {create_ascii_bar(overall_job_status['running_percent'])}")
+    # print(f"Running: {overall_job_status['running']} ({overall_job_status['running_percent']:.1f}%)")
+    # print(f"Queued: {overall_job_status['queued']}")
+    # print(f"Held: {overall_job_status['held']}")
+    # if overall_job_status['other'] > 0:
+    #     print(f"Other states: {overall_job_status['other']}")
+
+    # Num cpus, total ram, gpus
+    ram_tb = cluster_stats['total_memory_gb'] / 1024
+    print(f"\nTotal {cluster_stats['total_cpu_cores']} CPUs, {ram_tb:.1f} TB RAM, {cluster_stats['total_gpus']} GPUs")
+
+    print()
+
+if __name__ == "__main__":
+    main()

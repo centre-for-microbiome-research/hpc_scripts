@@ -1,11 +1,9 @@
-#!/usr/bin/env python3.4
-
-# Must be python3.4-compatible since that is what is on the lyra base
+#!/usr/bin/env python3.9
 
 # Script to more easily submit jobs to the QUT HPC queuing system
 
 __author__ = "Ben Woodcroft, Peter Sternes"
-__copyright__ = "Copyright 2022"
+__copyright__ = "Copyright 2022-2025"
 __credits__ = ["Ben Woodcroft, Peter Sternes"]
 __license__ = "GPL3"
 __maintainer__ = "Ben Woodcroft, Peter Sternes"
@@ -27,6 +25,8 @@ import json
 import time
 from smtplib import SMTP
 import datetime
+
+DEFAULT_RAM_TO_CPU_RATIO = 1495.0 / 192.0
 
 ## Code below copied from the extern python package. Copy the code here so there are no dependencies.
 
@@ -140,6 +140,11 @@ class script_format:
         if args.bg and not args.no_email and not args.command_file and not (args.chunk_num or args.chunk_size):
             print('#PBS -m ae',file=outfile) # disbled emailing when running chunks. Too spammy
         print('#PBS -M {}'.format(email),file=outfile)
+        if args.array:
+            # normalize array format so that both "x-y" and "y" are accepted (with the latter being expanded to "1-y")
+            if '-' not in args.array:
+                args.array = '1-{}'.format(args.array)
+            print('#PBS -J {}'.format(args.array),file=outfile)
         if args.directive:
             print('#PBS {}'.format(args.directive),file=outfile)
         if args.depend:
@@ -214,7 +219,7 @@ class script_format:
             qsub_stdout = run("qsub {}".format(outfile.name)).decode()
             logging.info("qsub stdout was: {}".format(qsub_stdout.rstrip()))
             if not args.bg:
-                match_result = re.compile('^(\d+\.pbs)\n$').match(qsub_stdout)
+                match_result = re.compile('^(\d+\.aqua)\n$').match(qsub_stdout)
                 if match_result is None:
                     raise Exception("Unexpected output from qsub: {}".format(qsub_stdout))
                 else:
@@ -335,20 +340,22 @@ if __name__ == '__main__':
                | |                
                |_|       
 Example usage:
-    mqsub -t 24 -m 250 --hours 168 -- aviary recover --pe-1 $R1 --pe-2 $R2 --max-threads 24 --n-cores 24 --output $runID.aviary.output 
-    mqsub -t 8 -m 32 --hours 168 --command-file file.txt --chunk-num 5''',formatter_class=RawTextHelpFormatter)    
+    mqsub -t 24 -m 250 --hours 48 -- aviary recover --pe-1 $R1 --pe-2 $R2 --max-threads 24 --n-cores 24 --output $runID.aviary.output 
+    mqsub -t 8 -m 32 --hours 48 --command-file file.txt --chunk-num 5''',formatter_class=RawTextHelpFormatter)    
     parser.add_argument('--debug', help='output debug information', action="store_true")
     #parser.add_argument('--version', help='output version information and quit',  action='version', version=repeatm.__version__)
     parser.add_argument('--quiet', help='only output errors', action="store_true")
     parser.add_argument('-t','--cpus',default=1,type=int, help="Number of CPUs to queue job with [default: 1]")
-    parser.add_argument('-g','--gpu',type=int,default=0, help="Number of GPUs to use [default: 0]")    
-    parser.add_argument('-m','--mem','--ram',type=int, help="GB of RAM to ask for [default: 8*num_cpus]")
+    parser.add_argument('-g','--gpu',type=int,default=0, help="Number of GPUs to use [default: 0]")
+    ram_ratio = round(DEFAULT_RAM_TO_CPU_RATIO, 2)
+    parser.add_argument('-m','--mem','--ram',type=int, help=f"GB of RAM to ask for [default: num_cpus*{ram_ratio} rounded down to the nearest GB]")
+    parser.add_argument('--array', help="Submit as an array job with the given number of tasks [default: Not used]")
     parser.add_argument('--directive', help="Arbitrary PBS directory to add e.g. '-l ngpus=1' to ask for a GPU [default: Not used]")
-    parser.add_argument('-q','--queue', default="microbiome", help="Name of queue to send to [default: 'microbiome']")
+    parser.add_argument('-q','--queue', default='aqua', help="Name of queue to send to [default: aqua]")
     walltime_group = parser.add_mutually_exclusive_group()
-    walltime_group.add_argument('--hours',default=24*7,type=int, help="Hours to run for [default: 1 week]")
-    walltime_group.add_argument('--days',type=int,help="Days to run for [default: 1 week]")
-    walltime_group.add_argument('--weeks',type=int,help="Weeks to run for [default 1]")
+    walltime_group.add_argument('--hours',default=48,type=int, help="Hours to run for [default: 48 hours]")
+    walltime_group.add_argument('--days',type=int,help="Days to run for [default: 2]")
+    walltime_group.add_argument('--weeks',type=int,help="Weeks to run for [default unspecified]")
     parser.add_argument('--name', help="Name of the job [default: first word of command]")
     parser.add_argument('--dry-run',action='store_true', help="Print script to STDOUT and do not lodge it with qsub")
     parser.add_argument('--bg',action='store_true', help="Submit the job, then quit [default: wait until job is finished before exiting]")
@@ -412,13 +419,15 @@ Further information can also be found in the CMR Compute Notes -  https://tinyur
         time_required = int(args.days) * 24
     if args.weeks is not None:
         time_required = int(args.weeks) * 168
+    if time_required > 48:
+        time_required = 48 # This is only for comparison with time_left - the walltime set in the PBS script is changed elsewhere.
     if int(time_required) > int(time_left):
         sys.stderr.write('\n###################################################################')
         sys.stderr.write('\nWARNING: The requested walltime coincides with server maintenance.')
         sys.stderr.write('\n###################################################################\n\n')
 
     if args.mem is None:
-        mem = int(7.8125*args.cpus)
+        mem = int(DEFAULT_RAM_TO_CPU_RATIO*args.cpus)
     else:
         mem = args.mem
     if mem < 8 and args.queue == 'lyra' and (args.scratch_data or args.run_tmp_dir):
@@ -432,23 +441,9 @@ Further information can also be found in the CMR Compute Notes -  https://tinyur
         hours = 24*args.days
     else:
         hours = args.hours
-
-    if args.mem is not None and args.cpus is not None:
-        if args.mem > 250 and args.cpus/124 != args.mem/1000 :
-            sys.stderr.write('\n#######################################################################################################')
-            sys.stderr.write('\nWARNING: The number of CPUs is not scaled to the amount of RAM')
-            sys.stderr.write('\nGiven each node has 124 CPUs and ~1000 GB RAM, some properly scaled examples are:')
-            sys.stderr.write('\n31 CPU + 250 RAM | 62 CPU + 500 RAM | 93 CPU and 750 RAM')
-            sys.stderr.write('\ni.e. 25% of the CPUs should typically be matched with 25% of the RAM, on so on')
-            sys.stderr.write('\nThis helps ensure that resources are fully utilised when all the CPU or RAM of a node has been reserved')
-            sys.stderr.write('\n#######################################################################################################\n\n')
-    if args.mem is not None:
-        if args.mem == 128 or args.mem == 256 or args.mem == 512 or args.mem == 768:
-            sys.stderr.write('\n##############################################################################################################')
-            sys.stderr.write('\nWARNING: An inefficient amount of RAM has been requested')
-            sys.stderr.write('\nGiven each node has ~1000 GB RAM, using the following RAM amount enables jobs to fit onto a nodes more easily:')
-            sys.stderr.write('\n125 GB | 250 GB | 500 GB | 750 GB')
-            sys.stderr.write('\n##############################################################################################################\n\n')        
+    if hours > 48:
+        logging.warning("The requested walltime is greater than 48 hours. Truncating to 48 since aquarius cannot currently handle longer running jobs.")
+        hours = 48       
 
     whoami = getpass.getuser()
     email = '{}@qut.edu.au'.format(whoami)

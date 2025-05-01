@@ -2,89 +2,19 @@ Host *
     ServerAliveInterval 300
     ServerAliveCountMax 2
 
-Host lyra
-     HostName lyra-mb.qut.edu.au
-     User woodcrob
-     Compression yes
-
-Host lyra-mb
-     HostName lyra-mb.qut.edu.au
-     User woodcrob
-     Compression yes
-
-Host lyra0
-     HostName lyra.qut.edu.au
-     User woodcrob
-     Compression yes
-
-Host lyra1
-     HostName lyra01.qut.edu.au
-     User woodcrob
-     Compression yes
-
-Host lyra3
-     HostName lyra03.qut.edu.au
-     User woodcrob
-     Compression yes
-
-Host lyra4
-     HostName lyra04.qut.edu.au
-     User woodcrob
-     Compression yes
-
-Host n5
-    HostName cl5n005
+Host aqua
+    HostName aqua.qut.edu.au
     User woodcrob
-    ProxyCommand ssh.exe -q -W %h:%p lyra
-
-Host n6
-    HostName cl5n006
-    User woodcrob
-    ProxyCommand ssh.exe -q -W %h:%p lyra
-
-Host n7
-    HostName cl5n007
-    User woodcrob
-    ProxyCommand ssh.exe -q -W %h:%p lyra
-
-Host n8
-    HostName cl5n008
-    User woodcrob
-    ProxyCommand ssh.exe -q -W %h:%p lyra
-
-Host n9
-    HostName cl5n009
-    User woodcrob
-    ProxyCommand ssh.exe -q -W %h:%p lyra
-
-Host n10
-    HostName cl5n010
-    User woodcrob
-    ProxyCommand ssh.exe -q -W %h:%p lyra
-
-Host n11
-    HostName cl5n011
-    User woodcrob
-    ProxyCommand ssh.exe -q -W %h:%p lyra
-
-Host n12
-    HostName cl5n012
-    User woodcrob
-    ProxyCommand ssh.exe -q -W %h:%p lyra
-
-Host n13
-    HostName cl5n013
-    User woodcrob
-    ProxyCommand ssh.exe -q -W %h:%p lyra
+    Compression yes
 
 Host transfer1
     HostName eresdt001
     User woodcrob
     Compression yes
-    ProxyCommand ssh.exe -q -W %h:%p lyra
+    ProxyCommand ssh.exe -q -W %h:%p aqua
 
 Host transfer2
     HostName eresdt002
     User woodcrob
     Compression yes
-    ProxyCommand ssh.exe -q -W %h:%p lyra
+    ProxyCommand ssh.exe -q -W %h:%p aqua

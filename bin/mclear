@@ -1,4 +1,0 @@
-#!/bin/bash
-#rm -rf /tmp/.* 2> /dev/null
-#find /tmp -user `whoami` -exec rm -rf {} \;
-find /tmp/. -name . -o -prune -exec rm -rf -- {} + 2> /dev/null
