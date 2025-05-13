@@ -11,7 +11,7 @@ PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND ; }"'echo $$ $USER \
 
 # Setup snakemake config directories so it interfaces well with the PBS system
 mkdir -p ~/.config/snakemake
-cd ~/.config/snakemake && ln -sf /work/microbiome/sw/hpc_scripts/snakemake_configs/* . && cd $OLDPWD
+cd ~/.config/snakemake && ln -sf /work/microbiome/sw/hpc_scripts/snakemake_configs/* . ; cd $OLDPWD
 
 
 ### Below copied from my .bashrc after running conda init
