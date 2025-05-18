@@ -8,13 +8,13 @@ Host aqua
     Compression yes
 
 Host transfer1
-    HostName eresdt001
+    HostName eresdtn01
     User woodcrob
     Compression yes
     ProxyCommand ssh.exe -q -W %h:%p aqua
 
 Host transfer2
-    HostName eresdt002
+    HostName eresdtn02
     User woodcrob
     Compression yes
     ProxyCommand ssh.exe -q -W %h:%p aqua
