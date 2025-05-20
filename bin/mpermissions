@@ -91,30 +91,31 @@ if __name__ == '__main__':
     folder2 = "'{}'".format(folder)
 
     dir_group_permissions = 'rwx'
-    file_group_permissions = 'rwx'
+    file_group_permissions = 'rw-'
     if args.no_group_write:
         dir_group_permissions = 'r-x'
-        file_group_permissions = 'r-x'
+        file_group_permissions = 'r--'
     cmd1 = (
         "find {} -type d -exec bash -c '".format(folder2) +
         "if [[ $(realpath \"$1\") == /mnt/weka/pkg* ]]; then "
-        "chmod g+{} \"$1\"; chmod u+rwx,g+{} \"$1\"; chmod o-rwx \"$1\"; "
+        "chmod g+{} \"$1\"; chmod u+rwx,g+{} \"$1\"; chmod o-rwx \"$1\"; ".format(dir_group_permissions, dir_group_permissions) +
         "else "
-        "setfacl -dm g:microbiome-admin:rwx,g::{},u::rwx,o::--- \"$1\"; "
-        "setfacl -m g:microbiome-admin:rwx,g::{},u::rwx,o::--- \"$1\"; "
-        "fi' _ {{}} +".format(
-            dir_group_permissions, dir_group_permissions, dir_group_permissions, dir_group_permissions
-        )
+        "setfacl -dm g:microbiome-admin:rwx,g::{},u::rwx,o::--- \"$1\"; ".format(dir_group_permissions) +
+        "setfacl -m g:microbiome-admin:rwx,g::{},u::rwx,o::--- \"$1\"; ".format(dir_group_permissions) +
+        "fi' _ {} +"
     )
     cmd2 = (
         "find {} -type f -exec bash -c '".format(folder2) +
         "if [[ $(realpath \"$1\") == /mnt/weka/pkg* ]]; then "
-        "chmod g+{} \"$1\"; chmod u+rwx,g+{} \"$1\"; chmod o-rwx \"$1\"; "
+        "chmod u+rw,g+rw,o-rwx \"$1\"; "
+        "if [ -x \"$1\" ]; then chmod g+x \"$1\"; fi; "
         "else "
-        "setfacl -m g:microbiome-admin:rwx,g::{},u::rwx,o::--- \"$1\"; "
-        "fi' _ {{}} +".format(
-            file_group_permissions, file_group_permissions, file_group_permissions
-        )
+        "if [ -x \"$1\" ]; then "
+        "setfacl -m g:microbiome-admin:rwx,g::rwx,u::rwx,o::--- \"$1\"; "
+        "else "
+        "setfacl -m g:microbiome-admin:rw-,g::rw-,u::rw-,o::--- \"$1\"; "
+        "fi; "
+        "fi' _ {} +"
     )
     # chgrp and chmod g+s are always run
     cmd3 = 'chgrp -R {} {}'.format(owner_group, folder2)
