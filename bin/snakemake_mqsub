@@ -113,6 +113,11 @@ if __name__ == '__main__':
         if gpus > 0:
             gpu_arg = '--gpu {}'.format(gpus)
 
+    if 'gpu_type' in job_properties['resources']:
+        gpu_type = job_properties['resources']['gpu_type']
+        if gpu_type in ['A100', 'H100']:
+            gpu_arg += ' --{}'.format(gpu_type)
+
     if 'extra_mqsub_args' in job_properties['resources']:
         extra_mqsub_args = job_properties['resources']['extra_mqsub_args']
     else:
