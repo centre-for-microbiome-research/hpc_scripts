@@ -108,15 +108,16 @@ if __name__ == '__main__':
         segregated_log_files_arg = ''
 
     gpu_arg = ''
-    if 'gpus' in job_properties['resources']:
-        gpus = job_properties['resources']['gpus']
-        if gpus > 0:
-            gpu_arg = '--gpu {}'.format(gpus)
-
     if 'gpu_type' in job_properties['resources']:
         gpu_type = job_properties['resources']['gpu_type']
         if gpu_type in ['A100', 'H100']:
             gpu_arg += ' --{}'.format(gpu_type)
+        else:
+            raise ValueError("gpu_type {} not supported".format(gpu_type))
+    elif 'gpus' in job_properties['resources']:
+        gpus = job_properties['resources']['gpus']
+        if gpus > 0:
+            gpu_arg = '--gpu {}'.format(gpus)
 
     if 'extra_mqsub_args' in job_properties['resources']:
         extra_mqsub_args = job_properties['resources']['extra_mqsub_args']
