@@ -97,10 +97,12 @@ if __name__ == '__main__':
     # ls -alh . && ls -alh test && ls -alh test/dir && getfacl test/file && getfacl test/dir/file
 
     dir_group_permissions = 'rwx'
-    file_group_permissions = 'rw-'
+    file_group_permissions = 'rw'
+    file_group_additions = 'rw'
     if args.no_group_write:
         dir_group_permissions = 'r-x'
-        file_group_permissions = 'r--'
+        file_group_permissions = 'r-'
+        file_group_additions = 'r'
     cmd1 = (
         "find {} -type d -exec bash -c '".format(folder2) +
         "if [[ $(realpath \"$1\") == /mnt/weka/pkg* ]]; then "
@@ -114,13 +116,13 @@ if __name__ == '__main__':
         "find {} -type f -exec bash -c '".format(folder2) +
         "for file in \"$@\"; do "
         "if [[ $(realpath \"$file\") == /mnt/weka/pkg* ]]; then "
-        "chmod u+rw,g+rw,o-rwx \"$file\"; "
+        "chmod u+rw,g+{},o-rwx \"$file\"; ".format(file_group_additions) +
         "if [ -x \"$file\" ]; then chmod g+x \"$file\"; fi; "
         "else "
         "if [ -x \"$file\" ]; then "
-        "setfacl -m g:microbiome-admin:rwx,g::rwx,u::rwx,m::rwx,o::--- \"$file\"; "
+        "setfacl -m g:microbiome-admin:rwx,g::{}x,u::rwx,m::rwx,o::--- \"$file\"; ".format(file_group_permissions) +
         "else "
-        "setfacl -m g:microbiome-admin:rw-,g::rw-,u::rw-,m::rw-,o::--- \"$file\"; "
+        "setfacl -m g:microbiome-admin:rw-,g::{}-,u::rw-,m::rw-,o::--- \"$file\"; ".format(file_group_permissions) +
         "fi; "
         "fi; "
         "done' _ {} +"
