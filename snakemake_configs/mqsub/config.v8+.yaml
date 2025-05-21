@@ -1,5 +1,5 @@
 executor: cluster-generic
-cluster-generic-submit-cmd: snakemake_mqsub --segregated-log-files
+cluster-generic-submit-cmd: snakemake_mqsub --segregated-log-files --basedir {workflow.basedir}
 cluster-generic-status-cmd: snakemake_mqstat
 jobs: 10000
 cluster-generic-cancel-cmd: qdel
