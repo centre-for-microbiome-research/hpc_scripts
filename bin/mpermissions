@@ -90,6 +90,12 @@ if __name__ == '__main__':
     logging.info("Setting permissions on folder {} for group {}".format(folder,owner_group))
     folder2 = "'{}'".format(folder)
 
+    ## Create test set
+    # mkdir -p test/dir && touch test/file && touch test/dir/file && chmod +x test/dir/file
+    ## Run test
+    # ~/src/hpc_scripts/bin/mpermissions -g microbiome test
+    # ls -alh . && ls -alh test && ls -alh test/dir && getfacl test/file && getfacl test/dir/file
+
     dir_group_permissions = 'rwx'
     file_group_permissions = 'rw-'
     if args.no_group_write:
@@ -106,16 +112,18 @@ if __name__ == '__main__':
     )
     cmd2 = (
         "find {} -type f -exec bash -c '".format(folder2) +
-        "if [[ $(realpath \"$1\") == /mnt/weka/pkg* ]]; then "
-        "chmod u+rw,g+rw,o-rwx \"$1\"; "
-        "if [ -x \"$1\" ]; then chmod g+x \"$1\"; fi; "
+        "for file in \"$@\"; do "
+        "if [[ $(realpath \"$file\") == /mnt/weka/pkg* ]]; then "
+        "chmod u+rw,g+rw,o-rwx \"$file\"; "
+        "if [ -x \"$file\" ]; then chmod g+x \"$file\"; fi; "
         "else "
-        "if [ -x \"$1\" ]; then "
-        "setfacl -m g:microbiome-admin:rwx,g::rwx,u::rwx,o::--- \"$1\"; "
+        "if [ -x \"$file\" ]; then "
+        "setfacl -m g:microbiome-admin:rwx,g::rwx,u::rwx,m::rwx,o::--- \"$file\"; "
         "else "
-        "setfacl -m g:microbiome-admin:rw-,g::rw-,u::rw-,o::--- \"$1\"; "
+        "setfacl -m g:microbiome-admin:rw-,g::rw-,u::rw-,m::rw-,o::--- \"$file\"; "
         "fi; "
-        "fi' _ {} +"
+        "fi; "
+        "done' _ {} +"
     )
     # chgrp and chmod g+s are always run
     cmd3 = 'chgrp -R {} {}'.format(owner_group, folder2)
