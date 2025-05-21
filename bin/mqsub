@@ -134,7 +134,9 @@ class script_format:
     def header(outfile, prelude=None, segregated_logs_dir=None):
         print('#!/bin/bash -l',file=outfile)
         print('#PBS -l ncpus={}'.format(args.cpus),file=outfile)
-        print('#PBS -l ngpus={}'.format(args.gpu),file=outfile)        
+        print('#PBS -l ngpus={}'.format(args.gpu),file=outfile)
+        if args.gpu_type:
+            print('#PBS -l gpu_id={}'.format(args.gpu_type), file=outfile)
         print('#PBS -l mem={}gb'.format(mem),file=outfile)
         print('#PBS -l walltime={}:00:00'.format(hours),file=outfile)
         if args.bg and not args.no_email and not args.command_file and not (args.chunk_num or args.chunk_size):
@@ -363,7 +365,10 @@ Example usage:
     #parser.add_argument('--version', help='output version information and quit',  action='version', version=repeatm.__version__)
     parser.add_argument('--quiet', help='only output errors', action="store_true")
     parser.add_argument('-t','--cpus',default=1,type=int, help="Number of CPUs to queue job with [default: 1]")
-    parser.add_argument('-g','--gpu',type=int,default=0, help="Number of GPUs to use [default: 0]")
+    gpu_group = parser.add_mutually_exclusive_group(required=False)
+    gpu_group.add_argument('-g','--gpu',type=int,default=0, help="Number of GPUs to use [default: 0]")
+    gpu_group.add_argument('--A100', action='store_true', help="Request 1 A100 GPU (old ones from lyra)")
+    gpu_group.add_argument('--H100', action='store_true', help="Request 1 H100 GPU (new with aqua)")
     ram_ratio = round(DEFAULT_RAM_TO_CPU_RATIO, 2)
     parser.add_argument('-m','--mem','--ram',type=int, help=f"GB of RAM to ask for [default: num_cpus*{ram_ratio} rounded down to the nearest GB]")
     parser.add_argument('--array', help="Submit as an array job with the given number of tasks [default: Not used]")
@@ -467,6 +472,15 @@ Further information can also be found in the CMR Compute Notes -  https://tinyur
     whoami = getpass.getuser()
     email = '{}@qut.edu.au'.format(whoami)
     logging.debug("Using email address: {}".format(email))
+
+    if args.A100:
+        args.gpu = 1
+        args.gpu_type = 'A100'
+    elif args.H100:
+        args.gpu = 1
+        args.gpu_type = 'H100'
+    else:
+        args.gpu_type = None
 
 
 #%% RUN CHUNKS ##############################
