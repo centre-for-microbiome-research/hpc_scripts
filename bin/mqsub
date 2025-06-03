@@ -445,7 +445,11 @@ Further information can also be found in the CMR Compute Notes -  https://tinyur
         time_required = int(args.weeks) * 168
     if time_required > 48:
         time_required = 48 # This is only for comparison with time_left - the walltime set in the PBS script is changed elsewhere.
-    if int(time_required) > int(time_left):
+    if time_left == "TBA":
+        sys.stderr.write('\n###################################################################')
+        sys.stderr.write('\nWARNING: The time until server maintenance is not available. Maintenance is likely imminent.')
+        sys.stderr.write('\n###################################################################\n\n')
+    elif int(time_required) > int(time_left):
         sys.stderr.write('\n###################################################################')
         sys.stderr.write('\nWARNING: The requested walltime coincides with server maintenance.')
         sys.stderr.write('\n###################################################################\n\n')
