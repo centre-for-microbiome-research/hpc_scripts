@@ -25,6 +25,7 @@ import json
 import time
 from smtplib import SMTP
 import datetime
+import re
 
 DEFAULT_RAM_TO_CPU_RATIO = 1495.0 / 192.0
 
@@ -433,8 +434,12 @@ Further information can also be found in the CMR Compute Notes -  https://tinyur
     else:
         raise Exception("Must specify either --script-stdin, command, or a --command-file to chunk")
 
+    def strip_ansi_codes(s):
+        return re.sub(r'\x1b\[[0-9;]*m', '', s)
+
     if os.path.exists('/usr/local/bin/time_until_outage.sh'):
-        time_left = run('bash /usr/local/bin/time_until_outage.sh').decode().rstrip().split(':')[0]
+        raw_time_left = run('bash /usr/local/bin/time_until_outage.sh').decode().rstrip().split(':')[0]
+        time_left = strip_ansi_codes(raw_time_left)
     else:
         time_left = int(7890000) 
     if args.hours is not None:
