@@ -14,6 +14,7 @@ import re
 import os
 import pwd
 import sys
+import grp
 from collections import defaultdict
 
 # ANSI color codes
@@ -296,6 +297,15 @@ def calculate_cluster_stats(nodes):
         'gpu_utilization': (used_gpus / total_gpus * 100) if total_gpus else 0
     }
 
+def get_unix_group_members(group_name):
+    """Get all users belonging to a Unix group."""
+    try:
+        group = grp.getgrnam(group_name)
+        return group.gr_mem
+    except KeyError:
+        print(f"Group '{group_name}' not found")
+        return []
+
 def calculate_user_stats(jobs, ignore_interactive=False):
     """Calculate statistics for a specific user or group."""
     if ignore_interactive:
@@ -391,6 +401,77 @@ def coloured_text(text, color):
     """Apply color to text."""
     return f"{color}{text}{Colors.ENDC}"
 
+def parse_qusers_output():
+    """
+    Parse the qusers output and return a dictionary:
+    {
+        username: {
+            'cpus_running': int,
+            'cpus_queued': int,
+            'gpus_running': int,
+            'gpus_queued': int
+        },
+        ...
+    }
+    Only use the #run/#queue pairs under CPUs and GPUs, not the jobs section.
+    """
+    qusers_text = run_command("qusers")
+
+    users = {}
+    lines = qusers_text.splitlines()
+    # Find the header line with #run and #queue
+    for i, line in enumerate(lines):
+        if '#run' in line and '#queue' in line:
+            header_idx = i
+            break
+    else:
+        return users  # header not found
+    header = lines[header_idx]
+    # Find all #run and #queue end indices
+    def all_col_end_indices(header, colname):
+        idxs = []
+        pos = 0
+        while True:
+            pos = header.find(colname, pos)
+            if pos == -1:
+                break
+            idxs.append(pos + len(colname) - 1)
+            pos += len(colname)
+        return idxs
+    run_ends = all_col_end_indices(header, '#run')
+    queue_ends = all_col_end_indices(header, '#queue')
+    # Use the 2nd and 3rd pairs: CPUs and GPUs
+    if len(run_ends) < 3 or len(queue_ends) < 3:
+        return users  # not enough columns found
+    cpu_run_end = run_ends[1]
+    cpu_queue_end = queue_ends[1]
+    gpu_run_end = run_ends[2]
+    gpu_queue_end = queue_ends[2]
+    # Data starts after the header and separator
+    for line in lines[header_idx+2:]:
+        if not line.strip() or line.startswith('=') or line.startswith('Totals'):
+            continue
+        username = line[:line.find('|')].strip()
+        def extract_int_backwards(line, end_idx):
+            if end_idx is None or end_idx >= len(line):
+                return 0
+            start = end_idx
+            while start >= 0 and line[start] != ' ':
+                start -= 1
+            val = line[start+1:end_idx+1].strip()
+            return int(val) if val.isdigit() else 0
+        cpus_running = extract_int_backwards(line, cpu_run_end)
+        cpus_queued = extract_int_backwards(line, cpu_queue_end)
+        gpus_running = extract_int_backwards(line, gpu_run_end)
+        gpus_queued = extract_int_backwards(line, gpu_queue_end)
+        users[username] = {
+            'cpus_running': cpus_running,
+            'cpus_queued': cpus_queued,
+            'gpus_running': gpus_running,
+            'gpus_queued': gpus_queued
+        }
+    return users
+
 def main():    
     # Get node data
     nodes = parse_pbsnodes_output()
@@ -398,6 +479,9 @@ def main():
     if not nodes:
         print("Failed to gather node information. Check if pbsnodeinfo is available.")
         return
+    
+    # Get qusers data
+    qusers_stats = parse_qusers_output()
     
     # Calculate cluster stats
     cluster_stats = calculate_cluster_stats(nodes)
@@ -411,6 +495,13 @@ def main():
     
     # Get overall job status
     overall_job_status = get_job_status_counts(jobs)
+    
+    # Get microbiome group members
+    microbiome_members = get_unix_group_members("microbiome")
+    # skip admins
+    microbiome_members = [member for member in microbiome_members if member not in [
+        'thomsonv',
+    ]]
     
     # Calculate user stats
     user_stats = calculate_user_stats(jobs, ignore_interactive=True)
@@ -440,6 +531,20 @@ def main():
         #     print(f"Total GPU usage: {user_stats['total_gpus']} GPUs")
     else:
         print(f"No batch jobs found.")
+    
+    print("\n\n=== MICROBIOME GROUP (qusers, top 5 by score) ===")
+    # Calculate score for each member: cpus_running + 10 * gpus_running
+    scored_members = []
+    for member in microbiome_members:
+        if member in qusers_stats:
+            stats = qusers_stats[member]
+            score = stats['cpus_running'] + 10 * stats['gpus_running']
+            scored_members.append((member, stats, score))
+    # Sort by score descending and print top 5
+    for i, (member, stats, score) in enumerate(sorted(scored_members, key=lambda x: x[2], reverse=True)[:5], 1):
+        print(f"{i}. {member:15} | CPUs: {stats['cpus_running']} running, {stats['cpus_queued']} queued | GPUs: {stats['gpus_running']} running, {stats['gpus_queued']} queued | Score: {score}")
+    if not scored_members:
+        print("No jobs for microbiome group members.")
     
     # Print the report
     print("\n\n=== CLUSTER ===")
