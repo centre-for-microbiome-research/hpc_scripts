@@ -532,14 +532,37 @@ def main():
     else:
         print(f"No batch jobs found.")
     
-    print("\n\n=== MICROBIOME GROUP (qusers, top 5 by score) ===")
+    print("\n\n=== CMR ===")
+    # Calculate overall stats
+    microbiome_used_cpu = 0
+    microbiome_used_gpu = 0
+    microbiome_requested_cpu = 0
+    for member, stats in qusers_stats.items():
+        if member in microbiome_members:
+            microbiome_used_cpu += stats['cpus_running']
+            microbiome_used_gpu += stats['gpus_running']
+            microbiome_requested_cpu += stats['cpus_running'] + stats['cpus_queued']
+
+    microbiome_cpu_percent = microbiome_used_cpu / cluster_stats['total_cpu_cores'] * 100
+    microbiome_gpu_percent = microbiome_used_gpu / cluster_stats['total_gpus'] * 100
+    microbiome_cpu_requested_percent = microbiome_used_cpu / microbiome_requested_cpu * 100
+
+    print(f"CPU:   {create_ascii_bar(microbiome_cpu_percent)}")
+    if cluster_stats['total_gpus'] > 0 and microbiome_used_gpu > 0:
+        print(f"GPU:   {create_ascii_bar(microbiome_gpu_percent)}")
+
+    print(f"Requested CPUs: {microbiome_requested_cpu}")
+    print()
+    print()
+
     # Calculate score for each member: cpus_running + 10 * gpus_running
     scored_members = []
     for member in microbiome_members:
         if member in qusers_stats:
             stats = qusers_stats[member]
             score = stats['cpus_running'] + 10 * stats['gpus_running']
-            scored_members.append((member, stats, score))
+            real_name = get_real_name(member)
+            scored_members.append((real_name, stats, score))
     # Sort by score descending and print top 5
     for i, (member, stats, score) in enumerate(sorted(scored_members, key=lambda x: x[2], reverse=True)[:5], 1):
         print(f"{i}. {member:15} | CPUs: {stats['cpus_running']} running, {stats['cpus_queued']} queued | GPUs: {stats['gpus_running']} running, {stats['gpus_queued']} queued | Score: {score}")
