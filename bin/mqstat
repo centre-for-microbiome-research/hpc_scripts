@@ -551,8 +551,7 @@ def main():
     if cluster_stats['total_gpus'] > 0 and microbiome_used_gpu > 0:
         print(f"GPU:   {create_ascii_bar(microbiome_gpu_percent)}")
 
-    print(f"Requested CPUs: {microbiome_requested_cpu}")
-    print()
+    print(f"Requested CPUs: {microbiome_requested_cpu:,} ({microbiome_cpu_requested_percent:.1f}%)")
     print()
 
     # Calculate score for each member: cpus_running + 10 * gpus_running
@@ -564,9 +563,21 @@ def main():
             real_name = get_real_name(member)
             scored_members.append((real_name, stats, score))
     # Sort by score descending and print top 5
-    for i, (member, stats, score) in enumerate(sorted(scored_members, key=lambda x: x[2], reverse=True)[:5], 1):
-        print(f"{i}. {member:15} | CPUs: {stats['cpus_running']} running, {stats['cpus_queued']} queued | GPUs: {stats['gpus_running']} running, {stats['gpus_queued']} queued | Score: {score}")
-    if not scored_members:
+    sorted_members = sorted(scored_members, key=lambda x: x[2], reverse=True)[:5]
+    
+    if scored_members:
+        # Print table header
+        print(f"{'#':<3} {'Member':<20} {'CPU':>12} {'GPU':>10} {'Score':>6}")
+        print(f"{'-'*3:<3} {'-'*20:<20} {'-'*12:>12} {'-'*10:>10} {'-'*6:>6}")
+        
+        # Print each member with proper alignment
+        for i, (member, stats, score) in enumerate(sorted_members, 1):
+            cpu_display = f"{stats['cpus_running']:,}/{stats['cpus_running'] + stats['cpus_queued']:,}"
+            # Show empty space if no GPUs requested
+            total_gpus_requested = stats['gpus_running'] + stats['gpus_queued']
+            gpu_display = f"{stats['gpus_running']}/{total_gpus_requested}" if total_gpus_requested > 0 else ""
+            print(f"{i:<3} {member:<20} {cpu_display:>12} {gpu_display:>10} {score:>6}")
+    else:
         print("No jobs for microbiome group members.")
     
     # Print the report
@@ -581,7 +592,7 @@ def main():
     
     # Num cpus, total ram, gpus
     ram_tb = cluster_stats['total_memory_gb'] / 1024
-    print(f"\nTotal {cluster_stats['total_cpu_cores']} CPUs, {ram_tb:.1f} TB RAM, {cluster_stats['total_gpus']} GPUs")
+    print(f"\nTotal {cluster_stats['total_cpu_cores']:,} CPUs, {ram_tb:.1f} TB RAM, {cluster_stats['total_gpus']} GPUs")
 
     print()
 
