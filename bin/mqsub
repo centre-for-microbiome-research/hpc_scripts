@@ -237,7 +237,7 @@ class script_format:
             with open(outfile.name) as script_written:
                 logging.debug("Script written was:\n{}".format(script_written.read()))
 
-            qsub_stdout = run("qsub {}".format(outfile.name)).decode()
+            qsub_stdout = run("TMPDIR={} qsub {}".format(args.script_tmpdir, outfile.name)).decode()
             logging.info("qsub stdout was: {}".format(qsub_stdout.rstrip()))
             if not args.bg:
                 match_result = re.compile('^(\d+\.aqua)\n$').match(qsub_stdout)
@@ -386,7 +386,7 @@ Example usage:
     parser.add_argument('--no-email',action='store_true', help="Do not send any emails, either on job finishing or aborting")
     parser.add_argument('--script', help='Script to run, or "-" for STDIN')
     parser.add_argument('--script-shell', help='Run script specified in --script with this shell [default: /bin/bash]', default='/bin/bash')
-    parser.add_argument('--script-tmpdir', help="When '--script -' is specified, write the script to this location as a temporary file", default='/mnt/hpccs01/scratch/microbiome/tmp')
+    parser.add_argument('--script-tmpdir', help="When '--script -' is specified, write the script to this location as a temporary file", default='/work/microbiome/scratch/tmp')
     parser.add_argument('--poll-interval', help="Poll the PBS server once every this many seconds [default: 30]", type=int, default=30)
     parser.add_argument('--no-executable-check', help="Usually mqsub checks the executable is currently available. Don't do this [default: do check]",action='store_true')
     parser.add_argument('--command-file',dest='command_file', help="A file with list of newline separated commands to be split into chunks and submitted. One command per line. mqsub --command-file <file.txt> --chunk-num <int>")
