@@ -26,10 +26,13 @@ elif [ "$1" == "gpu" ]; then
     # NOTE: keep in sync with usual invocation below
     qsub -I -l select=1:ncpus=8:mem=32GB:ngpus=1,walltime=12:00:00
 
+elif [ "$1" == "half" ]; then
+    qsub -I -l select=1:ncpus=4:mem=16GB,walltime=12:00:00
+
 elif [ -n "$1" ]; then
     echo "Unknown argument: $1"
     exit 1
-    
+
 else
     # NOTE: keep in sync with gpu invocation above
     qsub -I -l select=1:ncpus=8:mem=32GB,walltime=12:00:00
