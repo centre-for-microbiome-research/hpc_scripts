@@ -237,17 +237,21 @@ class script_format:
             with open(outfile.name) as script_written:
                 logging.debug("Script written was:\n{}".format(script_written.read()))
 
+            warned_exceed_complex = False
+
             while True:
                 try:
                     qsub_stdout = run("TMPDIR={} qsub {}".format(args.script_tmpdir, outfile.name)).decode()
                     break
                 except ExternCalledProcessError as e:
                     if "qsub: would exceed complex" in e.stderr:
-                        logging.error(
-                            "qsub submission failed because it would exceed complex: %s",
-                            e.stderr.strip(),
-                        )
-                        logging.info("Waiting 60 seconds before retrying submission")
+                        if not warned_exceed_complex:
+                            logging.error(
+                                "qsub submission failed because it would exceed complex: %s",
+                                e.stderr.strip(),
+                            )
+                            logging.info("Waiting 60 seconds before retrying submission")
+                            warned_exceed_complex = True
                         time.sleep(60)
                         continue
                     raise
