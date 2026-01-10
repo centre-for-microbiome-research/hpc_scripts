@@ -497,6 +497,7 @@ def format_hm(seconds):
     """Format seconds to HH:MM."""
     if seconds is None:
         return ""
+    seconds = int(seconds)
     h = seconds // 3600
     m = (seconds % 3600) // 60
     return f"{h:02}:{m:02}"
