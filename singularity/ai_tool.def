@@ -1,0 +1,22 @@
+Bootstrap: docker
+From: node:22
+
+%labels
+    Description Claude Code / OpenAI Codex CLI in a restricted container
+
+%post
+    # Install Claude Code and OpenAI Codex CLI
+    npm install -g @anthropic-ai/claude-code @openai/codex
+
+    # Isolated home directory for the container (never touches real $HOME)
+    mkdir -p /container_home
+    chmod 777 /container_home
+
+%environment
+    export HOME=/container_home
+    export PATH=/usr/local/bin:/usr/bin:/bin:$PATH
+    export LANG=C.UTF-8
+    export LC_ALL=C.UTF-8
+
+%runscript
+    exec "$@"

@@ -1,0 +1,210 @@
+5#!/bin/bash
+# run_ai_tool.sh - Run claude or codex inside a restricted Apptainer/Singularity container.
+#
+# Permissions inside the container:
+#   - Current directory: fully read/write
+#   - /tmp, /var/tmp:    read/write
+#   - Everything else:   read-only (Unix permissions still apply)
+#   - $HOME:             isolated ephemeral directory, not your real home
+#
+# Usage:
+#   run_ai_tool.sh [claude|codex] [args...]
+#
+# Environment variables:
+#   ANTHROPIC_API_KEY   Required for claude
+#   OPENAI_API_KEY      Required for codex
+#   AI_TOOL_SIF         Override path to .sif file (default: same dir as this script)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
+SIF="${AI_TOOL_SIF:-${SCRIPT_DIR}/../singularity/ai_tool.sif}"
+
+# Detect apptainer or singularity
+if command -v apptainer &>/dev/null; then
+    RUNTIME=apptainer
+elif command -v singularity &>/dev/null; then
+    RUNTIME=singularity
+else
+    echo "Error: neither apptainer nor singularity found in PATH" >&2
+    exit 1
+fi
+
+# Check the SIF exists
+if [[ ! -f "$SIF" ]]; then
+    echo "Error: container image not found: $SIF" >&2
+    echo "Build it with:" >&2
+    echo "  apptainer build --fakeroot ai_tool.sif ai_tool.def" >&2
+    exit 1
+fi
+
+# Parse tool name (default: claude) and --debug flag
+TOOL="claude"
+DEBUG=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        claude|codex) TOOL="$1"; shift ;;
+        --debug)      DEBUG=1;   shift ;;
+        *)            break ;;
+    esac
+done
+
+CWD="$(realpath "$(pwd)")"
+
+# ---------------------------------------------------------------------------
+# Bind mount strategy
+#
+# We use --contain for a clean slate, then selectively bind:
+#   1. Host filesystem paths at their real paths (read-only) so the AI can
+#      read your code.  We skip /usr, /lib, /bin, /sbin since the container
+#      supplies those for its own Node.js/tools.
+#   2. $CWD at the same path (read-write) — added LAST so it shadows any
+#      read-only parent that was already bound.
+#   3. /tmp and /var/tmp (read-write).
+#   4. A throw-away directory as /container_home (read-write, cleaned up on exit).
+# ---------------------------------------------------------------------------
+
+BIND_ARGS=()
+
+# --- Read-only system/data paths ---
+# /etc for DNS resolution, SSL certs, nsswitch, etc.
+[[ -d /etc ]] && BIND_ARGS+=(--bind "/etc:/etc:ro")
+
+# Common HPC data mounts — bind read-only
+for dir in /home /mnt /pkg /external /scratch /nfs /data /storage /projects /work /project; do
+    [[ -d "$dir" ]] && BIND_ARGS+=(--bind "${dir}:${dir}:ro")
+done
+
+# Auto-detect any additional mounted filesystems from /proc/mounts
+# (skips virtual/system filesystems and paths already handled above)
+SKIP_PATTERN='^/(sys|proc|dev|run|boot|usr|lib|lib64|bin|sbin|opt|tmp|var/tmp|etc|home|mnt|external|scratch|nfs|data|storage|projects|work|project)'
+while read -r _ mountpoint fstype _rest; do
+    # Skip virtual/system filesystems
+    case "$fstype" in
+        sysfs|proc|devtmpfs|devpts|tmpfs|cgroup*|pstore|efivarfs|bpf|overlay|\
+        fuse.lxcfs|fusectl|hugetlbfs|mqueue|debugfs|tracefs|securityfs|\
+        configfs|squashfs|ramfs|rpc_pipefs|autofs)
+            continue ;;
+    esac
+    # Skip paths already covered or that belong to the container
+    [[ "$mountpoint" == "/" ]] && continue
+    [[ "$mountpoint" =~ $SKIP_PATTERN ]] && continue
+    [[ -d "$mountpoint" ]] && BIND_ARGS+=(--bind "${mountpoint}:${mountpoint}:ro")
+done < /proc/mounts
+
+# --- Writable temp dirs ---
+[[ -d /tmp ]]     && BIND_ARGS+=(--bind "/tmp:/tmp:rw")
+[[ -d /var/tmp ]] && BIND_ARGS+=(--bind "/var/tmp:/var/tmp:rw")
+
+# --- Writable current directory (added LAST to shadow any parent ro bind) ---
+BIND_ARGS+=(--bind "${CWD}:${CWD}:rw")
+
+# --- Writable .pixi target if CWD/.pixi is a symlink ---
+# The symlink may point to a non-canonical path (e.g. /pkg/...) so we bind
+# canonical-source:symlink-target:rw so the path the symlink resolves to
+# inside the container is writable.
+if [[ -L "${CWD}/.pixi" ]]; then
+    _pixi_link="$(readlink "${CWD}/.pixi")"
+    # Make absolute if the symlink target is relative
+    [[ "${_pixi_link}" != /* ]] && _pixi_link="${CWD}/${_pixi_link}"
+    _pixi_canonical="$(readlink -f "${CWD}/.pixi" 2>/dev/null)"
+    if [[ -d "${_pixi_canonical}" ]]; then
+        echo "yolo: binding .pixi and descendants as writeable even if behind a symlink" >&2
+        BIND_ARGS+=(--bind "${_pixi_canonical}:${_pixi_link}:rw")
+    fi
+    unset _pixi_link _pixi_canonical
+fi
+
+# --- Ephemeral home directory (cleaned up on exit) ---
+CONTAINER_HOME="$(mktemp -d)"
+function _save_claude_json {
+    local src="${CONTAINER_HOME}/.claude.json"  # temp staging copy
+    local dst="${HOME}/.claude.json"
+    if [[ -f "$src" ]]; then
+        if [[ -f "$dst" ]] && ! cmp -s "$src" "$dst" && \
+           [[ "${_CLAUDE_JSON_CKSUM:-}" != "$(cksum "$dst" 2>/dev/null)" ]]; then
+            local backup="${HOME}/.claude/backups/.claude.json.backup.$(date +%s%3N)"
+            mkdir -p "${HOME}/.claude/backups"
+            cp -f "$dst" "$backup"
+            echo "WARNING: ~/.claude.json was modified by another session. Saved backup: $backup" >&2
+        fi
+        cp -f "$src" "$dst"
+    fi
+}
+trap '_save_claude_json; rm -rf "$CONTAINER_HOME"' EXIT
+BIND_ARGS+=(--bind "${CONTAINER_HOME}:/container_home:rw")
+
+# --- Real ~/.claude settings (config, theme, history) ---
+# HOME inside the container is /container_home (set by %environment in the .def).
+# Bind ~/.claude/ and stage a copy of ~/.claude.json there so Claude Code can
+# read/write its auth token and settings without touching the read-only home bind.
+if [[ -d "${HOME}/.claude" ]]; then
+    mkdir -p "${CONTAINER_HOME}/.claude"
+    BIND_ARGS+=(--bind "${HOME}/.claude:/container_home/.claude:rw")
+fi
+if [[ -f "${HOME}/.claude.json" ]]; then
+    cp "${HOME}/.claude.json" "${CONTAINER_HOME}/.claude.json"
+    _CLAUDE_JSON_CKSUM="$(cksum "${HOME}/.claude.json" 2>/dev/null)"
+fi
+
+# Populate /container_home with symlinks to the real home so that ~ inside the
+# container resolves to the user's actual files.  .claude and .claude.json are
+# skipped because they are handled with writable bind mounts above.
+while IFS= read -r -d '' item; do
+    name="${item##*/}"
+    [[ "$name" == ".claude" || "$name" == ".claude.json" ]] && continue
+    # Resolve through any intermediate symlinks (e.g. /pkg -> /mnt/weka/pkg)
+    # so the target is a canonical /mnt/... path that is bound into the container.
+    ln -sf "$(readlink -f "$item" 2>/dev/null || echo "$item")" "${CONTAINER_HOME}/${name}" 2>/dev/null || true
+done < <(find "${HOME}" -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
+
+# ---------------------------------------------------------------------------
+# Environment variables
+# ---------------------------------------------------------------------------
+ENV_ARGS=()
+for var in ANTHROPIC_API_KEY OPENAI_API_KEY OPENAI_BASE_URL \
+           ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK \
+           TERM COLORTERM NO_COLOR; do
+    [[ -n "${!var:-}" ]] && ENV_ARGS+=(--env "${var}=${!var}")
+done
+
+# Build PATH: container bins first, then real ~/bin and ~/.local/bin if present.
+CONTAINER_PATH="/usr/local/bin:/usr/bin:/bin"
+[[ -d "${HOME}/.local/bin" ]] && CONTAINER_PATH="${HOME}/.local/bin:${CONTAINER_PATH}"
+[[ -d "${HOME}/bin" ]]        && CONTAINER_PATH="${HOME}/bin:${CONTAINER_PATH}"
+ENV_ARGS+=(--env "PATH=${CONTAINER_PATH}")
+
+# ---------------------------------------------------------------------------
+# Tool-specific "yolo" flags
+# ---------------------------------------------------------------------------
+case "$TOOL" in
+    claude)
+        # Skip all permission prompts — the container is the sandbox
+        YOLO_ARGS=("--dangerously-skip-permissions")
+        ;;
+    codex)
+        # Full auto mode — no approval prompts
+        YOLO_ARGS=("--full-auto")
+        ;;
+esac
+
+# ---------------------------------------------------------------------------
+# Run
+# ---------------------------------------------------------------------------
+if [[ "$DEBUG" -eq 1 ]]; then
+    echo "yolo: exec command:" >&2
+    printf '  %q' "$RUNTIME" exec --contain \
+        "${BIND_ARGS[@]}" "${ENV_ARGS[@]}" \
+        --pwd "${CWD}" "${SIF}" \
+        bash -c '[[ -f ~/.bashrc ]] && source ~/.bashrc 2>/dev/null; exec "$@"' _ \
+        "${TOOL}" "${YOLO_ARGS[@]}" "$@"
+    echo >&2
+fi
+exec "$RUNTIME" exec \
+    --contain \
+    "${BIND_ARGS[@]}" \
+    "${ENV_ARGS[@]}" \
+    --pwd "${CWD}" \
+    "${SIF}" \
+    bash -c '[[ -f ~/.bashrc ]] && source ~/.bashrc 2>/dev/null; exec "$@"' _ \
+    "${TOOL}" "${YOLO_ARGS[@]}" "$@"
