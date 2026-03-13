@@ -1,5 +1,5 @@
 #!/bin/bash
-# run_ai_tool.sh - Run claude or codex inside a restricted Apptainer/Singularity container.
+# mqyolo - Run claude or codex inside a restricted Apptainer/Singularity container.
 #
 # Permissions inside the container:
 #   - Current directory: fully read/write
@@ -47,10 +47,10 @@ while [[ $# -gt 0 ]]; do
         --debug)      DEBUG=1;   shift ;;
         help|-h|--help)
             cat <<'EOF'
-yolo - run an AI coding tool inside a sandboxed Apptainer/Singularity container
+mqyolo - run an AI coding tool inside a sandboxed Apptainer/Singularity container
 
 USAGE
-  yolo [claude|codex] [--debug] [args...]
+  mqyolo [claude|codex] [--debug] [args...]
 
 TOOLS
   claude  (default) Claude Code — passes --dangerously-skip-permissions
@@ -58,7 +58,7 @@ TOOLS
 
 OPTIONS
   --debug   Print the full exec command before running
-  help, -h, --help  Show this help
+  help, -h, --help  Show this help text
 
 CONTAINER
   Image:  $AI_TOOL_SIF, or <script-dir>/../singularity/ai_tool.sif by default
@@ -80,7 +80,7 @@ CLAUDE SETTINGS
   ~/.claude/          bound read-write so Claude Code can persist config,
                       history and keybindings across sessions
   ~/.claude.json      staged into the container home and written back on
-                      exit; if another session modified it while yolo was
+                      exit; if another session modified it while mqyolo was
                       running a timestamped backup is saved to
                       ~/.claude/backups/
 
@@ -163,7 +163,7 @@ if [[ -L "${CWD}/.pixi" ]]; then
     [[ "${_pixi_link}" != /* ]] && _pixi_link="${CWD}/${_pixi_link}"
     _pixi_canonical="$(readlink -f "${CWD}/.pixi" 2>/dev/null)"
     if [[ -d "${_pixi_canonical}" ]]; then
-        echo "yolo: binding .pixi and descendants as writeable even if behind a symlink" >&2
+        echo "mqyolo: binding .pixi and descendants as writeable even if behind a symlink" >&2
         BIND_ARGS+=(--bind "${_pixi_canonical}:${_pixi_link}:rw")
     fi
     unset _pixi_link _pixi_canonical
@@ -229,7 +229,7 @@ CONTAINER_PATH="/usr/local/bin:/usr/bin:/bin"
 ENV_ARGS+=(--env "PATH=${CONTAINER_PATH}")
 
 # ---------------------------------------------------------------------------
-# Tool-specific "yolo" flags
+# Tool-specific flags
 # ---------------------------------------------------------------------------
 case "$TOOL" in
     claude)
@@ -246,7 +246,7 @@ esac
 # Run
 # ---------------------------------------------------------------------------
 if [[ "$DEBUG" -eq 1 ]]; then
-    echo "yolo: exec command:" >&2
+    echo "mqyolo: exec command:" >&2
     printf '  %q' "$RUNTIME" exec --contain \
         "${BIND_ARGS[@]}" "${ENV_ARGS[@]}" \
         --pwd "${CWD}" "${SIF}" \
