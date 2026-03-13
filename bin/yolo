@@ -45,6 +45,60 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         claude|codex) TOOL="$1"; shift ;;
         --debug)      DEBUG=1;   shift ;;
+        help|-h|--help)
+            cat <<'EOF'
+yolo - run an AI coding tool inside a sandboxed Apptainer/Singularity container
+
+USAGE
+  yolo [claude|codex] [--debug] [args...]
+
+TOOLS
+  claude  (default) Claude Code — passes --dangerously-skip-permissions
+  codex             OpenAI Codex — passes --full-auto
+
+OPTIONS
+  --debug   Print the full exec command before running
+  help, -h, --help  Show this help
+
+CONTAINER
+  Image:  $AI_TOOL_SIF, or <script-dir>/../singularity/ai_tool.sif by default
+  Runtime: apptainer (preferred) or singularity
+
+FILESYSTEM INSIDE THE CONTAINER
+  Current directory   read-write  (so the AI can edit your code)
+  /tmp, /var/tmp      read-write
+  /home, /mnt, /pkg,
+  /scratch, /data,
+  and other HPC mounts  read-only
+  /etc                read-only   (DNS, SSL certs, nsswitch)
+  Everything else     not visible (--contain gives a clean slate)
+  ~  (HOME)           isolated ephemeral directory, not your real home;
+                      dotfiles are symlinked from your real home so tools
+                      like git, ssh etc. pick up your config
+
+CLAUDE SETTINGS
+  ~/.claude/          bound read-write so Claude Code can persist config,
+                      history and keybindings across sessions
+  ~/.claude.json      staged into the container home and written back on
+                      exit; if another session modified it while yolo was
+                      running a timestamped backup is saved to
+                      ~/.claude/backups/
+
+ENVIRONMENT VARIABLES
+  ANTHROPIC_API_KEY   Required for claude
+  OPENAI_API_KEY      Required for codex
+  OPENAI_BASE_URL     Optional — override OpenAI endpoint
+  ANTHROPIC_BASE_URL  Optional — override Anthropic endpoint
+  CLAUDE_CODE_USE_BEDROCK  Optional — use AWS Bedrock for Claude
+  AI_TOOL_SIF         Override path to the container image
+  TERM, COLORTERM, NO_COLOR  Passed through for correct terminal rendering
+
+PATH INSIDE THE CONTAINER
+  ~/bin and ~/.local/bin (if present) are prepended ahead of the container
+  binaries so your personal scripts remain available.
+EOF
+            exit 0
+            ;;
         *)            break ;;
     esac
 done
