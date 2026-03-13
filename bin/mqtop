@@ -185,7 +185,14 @@ def _load_jobs_from_json(path: str, user: str) -> list[dict]:
         info = dict(info)
         info["id"] = jid
         jobs.append(_parse_job(info))
-    return jobs
+
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for job in jobs:
+        if job["id"] not in seen:
+            seen.add(job["id"])
+            unique.append(job)
+    return unique
 
 
 def _fetch_job(job_id: str, user: str) -> dict | None:
@@ -230,6 +237,16 @@ def _recent_finished_jobs(user: str, existing: set[str]) -> list[dict]:
         if info:
             jobs.append(info)
     return jobs
+
+
+def _group_rank(job: dict) -> int:
+    """Return sort rank that keeps running < queued < finished."""
+    state = job.get("state", "")
+    if state == "Q":
+        return 1
+    if state in ("C", "F"):
+        return 2
+    return 0
 
 
 def grafana_url(job_id: str) -> str:
@@ -361,6 +378,8 @@ HELP_TEXT = textwrap.dedent(
       left/right  scroll columns
       PgUp/PgDn   page
       k           kill selected job (qdel)
+      n           sort by job name
+      j           sort by job id
 
     Colours:
       Row colours indicate job state:
@@ -757,9 +776,11 @@ def main() -> None:
         offset = 0  # topmost job line displayed (0-based)
         x_offset = 0
         lines, job_rows = [], []
+        current_jobs = []
         max_line_width = 0
         refresh = True
         show_queued = True
+        sort_mode = None  # None=default, "name", "id"
         last_refresh = 0.0
         user_warning = None
         user_warn_until = 0.0
@@ -915,6 +936,16 @@ def main() -> None:
             elif key == ord("u"):
                 show_queued = not show_queued
                 refresh = True
+            elif key == ord("n"):
+                sort_mode = "name"
+                current_jobs.sort(key=lambda j: (_group_rank(j), (j.get("name") or "").lower()))
+                lines, job_rows = format_jobs(current_jobs, maxx, now=time.time())
+                max_line_width = max((visible_len(l) for l in lines), default=0)
+            elif key == ord("j"):
+                sort_mode = "id"
+                current_jobs.sort(key=lambda j: (_group_rank(j), int(str(j.get("id", "0")).split(".")[0])))
+                lines, job_rows = format_jobs(current_jobs, maxx, now=time.time())
+                max_line_width = max((visible_len(l) for l in lines), default=0)
             elif key == ord("h"):
                 show_help(stdscr)
                 refresh = True
@@ -952,6 +983,10 @@ def main() -> None:
                 running.sort(key=lambda j: j.get("walltime_used", 0), reverse=True)
                 queued.sort(key=lambda j: now - j.get("qtime", now), reverse=True)
                 active_jobs = running + (queued if show_queued else [])
+                if sort_mode == "name":
+                    active_jobs.sort(key=lambda j: (_group_rank(j), (j.get("name") or "").lower()))
+                elif sort_mode == "id":
+                    active_jobs.sort(key=lambda j: (_group_rank(j), int(str(j.get("id", "0")).split(".")[0])))
                 if len(active_jobs) > MAX_JOBS:
                     user_warning = (
                         f"More than {MAX_JOBS} running/queued jobs; showing first {MAX_JOBS}. Finished jobs skipped."
@@ -963,7 +998,8 @@ def main() -> None:
                     user_warning = "Loading finished jobs..."
                     user_warn_until = float("inf")
                     fetch_history = True
-                lines, job_rows = format_jobs(active_jobs, maxx, now=now)
+                current_jobs = active_jobs
+                lines, job_rows = format_jobs(current_jobs, maxx, now=now)
                 max_line_width = max((visible_len(l) for l in lines), default=0)
                 last_refresh = time.time()
                 refresh = False
@@ -972,7 +1008,9 @@ def main() -> None:
                 existing = {j["id"] for j in running + queued} | set(finished)
                 hist = _load_jobs_from_json(args.qstatx_json, user)
                 for job in hist:
-                    finished.setdefault(job["id"], job)
+                    if job["id"] not in existing:
+                        finished[job["id"]] = job
+                        existing.add(job["id"])
                 existing.update(finished)
                 for job in _recent_finished_jobs(user, existing):
                     finished.setdefault(job["id"], job)
@@ -980,6 +1018,10 @@ def main() -> None:
                     finished.values(), key=lambda j: j.get("obittime") or j.get("mtime", 0), reverse=True
                 )
                 all_jobs = running + (queued if show_queued else []) + finished_jobs
+                if sort_mode == "name":
+                    all_jobs.sort(key=lambda j: (_group_rank(j), (j.get("name") or "").lower()))
+                elif sort_mode == "id":
+                    all_jobs.sort(key=lambda j: (_group_rank(j), int(str(j.get("id", "0")).split(".")[0])))
                 if len(all_jobs) > MAX_JOBS:
                     user_warning = f"More than {MAX_JOBS} jobs; showing first {MAX_JOBS}."
                     user_warn_until = time.time() + 5
@@ -987,7 +1029,8 @@ def main() -> None:
                 else:
                     user_warning = None
                     user_warn_until = 0
-                lines, job_rows = format_jobs(all_jobs, maxx, now=now)
+                current_jobs = all_jobs
+                lines, job_rows = format_jobs(current_jobs, maxx, now=now)
                 max_line_width = max((visible_len(l) for l in lines), default=0)
                 fetch_history = False
                 last_refresh = time.time()
@@ -1025,7 +1068,7 @@ def main() -> None:
             if user_warning:
                 addstr_safe(stdscr, maxy - 2, 0, user_warning, maxx, curses.color_pair(2))
             help_text = (
-                "q quit  h help  / search  o stdout  e stderr  f full  s ssh  r refresh  u toggle queued  g grafana  k kill"
+                "q quit  h help  / search  o stdout  e stderr  f full  s ssh  r refresh  u toggle queued  g grafana  k kill  n sort name  j sort id"
             )
             addstr_safe(stdscr, maxy - 1, 0, help_text, maxx, curses.A_REVERSE)
             stdscr.refresh()
