@@ -249,18 +249,25 @@ def _group_rank(job: dict) -> int:
     return 0
 
 
-def grafana_url(job_id: str) -> str:
+def grafana_url(job_id: str, from_time: float | None = None) -> str:
     """Return Grafana dashboard URL for *job_id*.
 
     ``job_id`` may include a suffix such as ``.aqua`` which will be
     stripped before constructing the URL.
+
+    ``from_time`` is a Unix timestamp for the ``from`` query parameter.
+    If omitted, no ``from`` parameter is added.
     """
 
     numeric = str(job_id).split(".")[0]
-    return (
+    url = (
         "https://hpc-monitoring.eres.qut.edu.au/d/pbs-public-job/pbs-job?var-jobid="
         + numeric
     )
+    if from_time is not None:
+        from_str = datetime.utcfromtimestamp(from_time).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        url += f"&from={from_str}&to=now"
+    return url
 
 
 def refresh_due(last_refresh: float, now: float | None = None, interval: int = REFRESH_INTERVAL) -> bool:
@@ -373,7 +380,7 @@ HELP_TEXT = textwrap.dedent(
       s           ssh to running job
       r           refresh
       u           toggle queued jobs
-      g           open Grafana dashboard
+      g           open Grafana dashboard (from last hour, or 3m before job start)
       up/down     move selection
       left/right  scroll columns
       PgUp/PgDn   page
@@ -894,7 +901,13 @@ def main() -> None:
             elif key == ord("g"):
                 if 0 < selected <= len(job_rows):
                     job = job_rows[selected - 1]
-                    url = grafana_url(job.get("id"))
+                    start_time = job.get("start_time")
+                    now_ts = time.time()
+                    if start_time and now_ts - start_time < 3600:
+                        from_time = start_time - 60
+                    else:
+                        from_time = now_ts - 3600
+                    url = grafana_url(job.get("id"), from_time=from_time)
                     curses.endwin()
                     print(url)
                     input("Press Enter to return...")
