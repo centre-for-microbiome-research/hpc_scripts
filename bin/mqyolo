@@ -41,24 +41,36 @@ fi
 # Parse tool name (default: claude) and --debug flag
 TOOL="claude"
 DEBUG=0
+RW_PATHS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         claude|codex) TOOL="$1"; shift ;;
         --debug)      DEBUG=1;   shift ;;
+        --rw-paths)
+            shift
+            while [[ $# -gt 0 && "$1" != --* ]]; do
+                RW_PATHS+=("$1"); shift
+            done
+            ;;
         help|-h|--help)
             cat <<'EOF'
 mqyolo - run an AI coding tool inside a sandboxed Apptainer/Singularity container
 
 USAGE
-  mqyolo [claude|codex] [--debug] [args...]
+  mqyolo [claude|codex] [--debug] [--rw-paths PATH...] [args...]
 
 TOOLS
   claude  (default) Claude Code — passes --dangerously-skip-permissions
   codex             OpenAI Codex — passes --full-auto
 
 OPTIONS
-  --debug   Print the full exec command before running
-  help, -h, --help  Show this help text
+  --debug              Print the full exec command before running
+  --rw-paths PATH...   Bind one or more extra paths into the container as read-write
+  help, -h, --help     Show this help text
+
+  Any remaining arguments are passed through verbatim to the tool.
+  For example: mqyolo --resume <session-id>
+               mqyolo codex --no-gitignore
 
 CONTAINER
   Image:  $AI_TOOL_SIF, or <script-dir>/../singularity/ai_tool.sif by default
@@ -77,6 +89,8 @@ FILESYSTEM INSIDE THE CONTAINER
                       like git, ssh etc. pick up your config
 
 CLAUDE SETTINGS
+  ~/.cache/           bound read-write so tools can read and write the
+                      host cache directory (npm, pip, etc.)
   ~/.claude/          bound read-write so Claude Code can persist config,
                       history and keybindings across sessions
   ~/.claude.json      staged into the container home and written back on
@@ -150,6 +164,13 @@ done < /proc/mounts
 [[ -d /tmp ]]     && BIND_ARGS+=(--bind "/tmp:/tmp:rw")
 [[ -d /var/tmp ]] && BIND_ARGS+=(--bind "/var/tmp:/var/tmp:rw")
 
+# --- Extra user-specified rw paths ---
+for _rw_path in "${RW_PATHS[@]+"${RW_PATHS[@]}"}"; do
+    _rw_canonical="$(realpath "$_rw_path" 2>/dev/null || echo "$_rw_path")"
+    [[ -e "$_rw_canonical" ]] && BIND_ARGS+=(--bind "${_rw_canonical}:${_rw_canonical}:rw")
+done
+unset _rw_path _rw_canonical
+
 # --- Writable current directory (added LAST to shadow any parent ro bind) ---
 BIND_ARGS+=(--bind "${CWD}:${CWD}:rw")
 
@@ -188,6 +209,14 @@ function _save_claude_json {
 trap '_save_claude_json; rm -rf "$CONTAINER_HOME"' EXIT
 BIND_ARGS+=(--bind "${CONTAINER_HOME}:/container_home:rw")
 
+# --- Hide ~/.ssh completely (shadow with an empty dir so it is not readable) ---
+if [[ -d "${HOME}/.ssh" ]]; then
+    _ssh_real="$(realpath "${HOME}/.ssh" 2>/dev/null || echo "${HOME}/.ssh")"
+    mkdir -p "${CONTAINER_HOME}/_empty_ssh"
+    BIND_ARGS+=(--bind "${CONTAINER_HOME}/_empty_ssh:${_ssh_real}:ro")
+    unset _ssh_real
+fi
+
 # --- Real ~/.claude settings (config, theme, history) ---
 # HOME inside the container is /container_home (set by %environment in the .def).
 # Bind ~/.claude/ and stage a copy of ~/.claude.json there so Claude Code can
@@ -196,6 +225,18 @@ if [[ -d "${HOME}/.claude" ]]; then
     mkdir -p "${CONTAINER_HOME}/.claude"
     BIND_ARGS+=(--bind "${HOME}/.claude:/container_home/.claude:rw")
 fi
+# Bind ~/.cache entries individually with canonical paths so that symlinked
+# subdirs (e.g. rattler -> /pkg/...) get their own rw bind and aren't left
+# pointing at the ro-bound parent filesystem.
+mkdir -p "${CONTAINER_HOME}/.cache"
+while IFS= read -r -d '' _cache_item; do
+    _cache_name="${_cache_item##*/}"
+    _cache_target="$(readlink -f "$_cache_item" 2>/dev/null || echo "$_cache_item")"
+    [[ -d "$_cache_target" ]] || continue
+    mkdir -p "${CONTAINER_HOME}/.cache/${_cache_name}"
+    BIND_ARGS+=(--bind "${_cache_target}:/container_home/.cache/${_cache_name}:rw")
+done < <(find "${HOME}/.cache" -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
+unset _cache_item _cache_name _cache_target
 if [[ -f "${HOME}/.claude.json" ]]; then
     cp "${HOME}/.claude.json" "${CONTAINER_HOME}/.claude.json"
     _CLAUDE_JSON_CKSUM="$(cksum "${HOME}/.claude.json" 2>/dev/null)"
@@ -206,7 +247,7 @@ fi
 # skipped because they are handled with writable bind mounts above.
 while IFS= read -r -d '' item; do
     name="${item##*/}"
-    [[ "$name" == ".claude" || "$name" == ".claude.json" ]] && continue
+    [[ "$name" == ".claude" || "$name" == ".claude.json" || "$name" == ".cache" || "$name" == ".ssh" ]] && continue
     # Resolve through any intermediate symlinks (e.g. /pkg -> /mnt/weka/pkg)
     # so the target is a canonical /mnt/... path that is bound into the container.
     ln -sf "$(readlink -f "$item" 2>/dev/null || echo "$item")" "${CONTAINER_HOME}/${name}" 2>/dev/null || true

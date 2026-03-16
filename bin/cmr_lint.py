@@ -307,11 +307,6 @@ def main():
         help='Show verbose output including configuration details'
     )
     parser.add_argument(
-        '--show-success',
-        action='store_true',
-        help='Show output even when all checks pass (default is silent on success)'
-    )
-    parser.add_argument(
         '--condarc',
         type=Path,
         default=Path.home() / '.condarc',
@@ -319,82 +314,64 @@ def main():
     )
     
     args = parser.parse_args()
-    
+
     # Check .condarc file
     config = load_condarc(args.condarc)
+    print("Checking conda configuration for CMR HPC environment...")
+    print("=" * 60)
     if config is None:
-        if args.show_success:
-            print("Checking conda configuration for CMR HPC environment...")
-            print("=" * 60)
-            print(f"⚠️  No readable .condarc file found at {args.condarc}")
+        print(f"⚠️  No readable .condarc file found at {args.condarc}")
         env_dirs_ok, env_msg = False, "No .condarc file"
         pkg_dirs_ok, pkg_msg = False, "No .condarc file"
     else:
-        if args.show_success:
-            print("Checking conda configuration for CMR HPC environment...")
-            print("=" * 60)
-            print(f"✓ Found .condarc file at {args.condarc}")
+        print(f"✓ Found .condarc file at {args.condarc}")
         env_dirs_ok, env_msg = check_env_dirs(config)
         pkg_dirs_ok, pkg_msg = check_pkg_dirs(config)
-    
+
     # Check ~/.conda symlink
     conda_symlink_ok, conda_msg = check_conda_symlink()
-    
+
     # Check old qsub log folders
     qsub_logs_ok, qsub_logs_msg = check_old_qsub_logs()
-    
-    # Only show results if --show-success is used or if there are issues
+
     all_good = env_dirs_ok and pkg_dirs_ok and conda_symlink_ok and qsub_logs_ok
-    show_output = args.show_success or not all_good
-    
-    if show_output:
-        if not args.show_success:
-            # Only print header when there are issues and user didn't request show-success
-            print("Checking conda configuration for CMR HPC environment...")
-            print("=" * 60)
-        
-        print("\nResults:")
-        print("-" * 40)
-        
-        status_env = "✓" if env_dirs_ok else "✗"
-        print(f"{status_env} Environment directories: {env_msg}")
-        
-        status_pkg = "✓" if pkg_dirs_ok else "✗"
-        print(f"{status_pkg} Package directories: {pkg_msg}")
-        
-        status_conda = "✓" if conda_symlink_ok else "✗"
-        print(f"{status_conda} ~/.conda symlink: {conda_msg}")
-        
-        status_qsub_logs = "✓" if qsub_logs_ok else "✗"
-        print(f"{status_qsub_logs} Old qsub log folders: {qsub_logs_msg}")
-    
+
+    print("\nResults:")
+    print("-" * 40)
+
+    status_env = "✓" if env_dirs_ok else "✗"
+    print(f"{status_env} Environment directories: {env_msg}")
+
+    status_pkg = "✓" if pkg_dirs_ok else "✗"
+    print(f"{status_pkg} Package directories: {pkg_msg}")
+
+    status_conda = "✓" if conda_symlink_ok else "✗"
+    print(f"{status_conda} ~/.conda symlink: {conda_msg}")
+
+    status_qsub_logs = "✓" if qsub_logs_ok else "✗"
+    print(f"{status_qsub_logs} Old qsub log folders: {qsub_logs_msg}")
+
     # If verbose, show current config
-    if args.verbose and config and show_output:
+    if args.verbose and config:
         print(f"\nCurrent .condarc configuration:")
         print("-" * 40)
         print(format_config(config))
-    
+
     # Show warnings and suggestions if needed
     if not all_good:
-        if not show_output:
-            # Print header if we haven't already
-            print("Checking conda configuration for CMR HPC environment...")
-            print("=" * 60)
-
         print("\n⚠️ Configuration Issues Found! Fixes suggested:")
         print("=" * 60)
-        
+
         suggestions = generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_logs_ok)
         if suggestions:
             print("")
             for suggestion in suggestions:
                 print(suggestion)
-        
+
         print("\nAfter making changes, restart your shell or run 'conda info' to verify.")
         sys.exit(1)
     else:
-        if args.show_success:
-            print("\n✓ All conda configuration checks passed!")
+        print("\n✓ All conda configuration checks passed!")
         sys.exit(0)
 
 
