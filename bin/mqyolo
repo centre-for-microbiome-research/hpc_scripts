@@ -174,21 +174,10 @@ unset _rw_path _rw_canonical
 # --- Writable current directory (added LAST to shadow any parent ro bind) ---
 BIND_ARGS+=(--bind "${CWD}:${CWD}:rw")
 
-# --- Writable .pixi target if CWD/.pixi is a symlink ---
-# The symlink may point to a non-canonical path (e.g. /pkg/...) so we bind
-# canonical-source:symlink-target:rw so the path the symlink resolves to
-# inside the container is writable.
-if [[ -L "${CWD}/.pixi" ]]; then
-    _pixi_link="$(readlink "${CWD}/.pixi")"
-    # Make absolute if the symlink target is relative
-    [[ "${_pixi_link}" != /* ]] && _pixi_link="${CWD}/${_pixi_link}"
-    _pixi_canonical="$(readlink -f "${CWD}/.pixi" 2>/dev/null)"
-    if [[ -d "${_pixi_canonical}" ]]; then
-        echo "mqyolo: binding .pixi and descendants as writeable even if behind a symlink" >&2
-        BIND_ARGS+=(--bind "${_pixi_canonical}:${_pixi_link}:rw")
-    fi
-    unset _pixi_link _pixi_canonical
-fi
+# --- Writable /pkg/cmr/{username}/pixi_dirs ---
+_pixi_dirs="/pkg/cmr/${USER}/pixi_dirs"
+[[ -d "$_pixi_dirs" ]] && BIND_ARGS+=(--bind "${_pixi_dirs}:${_pixi_dirs}:rw")
+unset _pixi_dirs
 
 # --- Ephemeral home directory (cleaned up on exit) ---
 CONTAINER_HOME="$(mktemp -d)"

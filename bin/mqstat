@@ -1056,7 +1056,7 @@ def main():
             # Show empty space if no GPUs requested
             total_gpus_requested = stats['gpus_running'] + stats['gpus_queued']
             gpu_display = f"{stats['gpus_running']}/{total_gpus_requested}" if total_gpus_requested > 0 else ""
-            print(f"{i:<3} {member:<20} {cpu_display:>12} {gpu_display:>10} {score:>6}")
+            print(f"{i:<3} {member[:20]:<20} {cpu_display:>12} {gpu_display:>10} {score:>6}")
     else:
         print("No jobs for microbiome group members.")
     
