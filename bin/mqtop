@@ -249,7 +249,7 @@ def _group_rank(job: dict) -> int:
     return 0
 
 
-def grafana_url(job_id: str, from_time: float | None = None) -> str:
+def grafana_url(job_id: str, from_time: float | None = None, to_time: float | None = None) -> str:
     """Return Grafana dashboard URL for *job_id*.
 
     ``job_id`` may include a suffix such as ``.aqua`` which will be
@@ -257,6 +257,9 @@ def grafana_url(job_id: str, from_time: float | None = None) -> str:
 
     ``from_time`` is a Unix timestamp for the ``from`` query parameter.
     If omitted, no ``from`` parameter is added.
+
+    ``to_time`` is a Unix timestamp for the ``to`` query parameter.
+    If omitted, ``to=now`` is used.
     """
 
     numeric = str(job_id).split(".")[0]
@@ -266,7 +269,12 @@ def grafana_url(job_id: str, from_time: float | None = None) -> str:
     )
     if from_time is not None:
         from_str = datetime.utcfromtimestamp(from_time).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        url += f"&from={from_str}&to=now"
+        to_str = (
+            datetime.utcfromtimestamp(to_time).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            if to_time is not None
+            else "now"
+        )
+        url += f"&from={from_str}&to={to_str}"
     return url
 
 
@@ -492,6 +500,8 @@ def format_jobs(jobs, maxx, now=None):
             ft = job.get("obittime") or job.get("mtime")
             if ft:
                 age = mqstat.format_hm(max(0, int(now - ft)))
+        elif state == "R" and start_time:
+            age = mqstat.format_hm(max(0, int(now - start_time)))
 
         cpu = job.get("ncpus", 0)
         cpupercent = job.get("cpupercent")
@@ -903,11 +913,17 @@ def main() -> None:
                     job = job_rows[selected - 1]
                     start_time = job.get("start_time")
                     now_ts = time.time()
-                    if start_time and now_ts - start_time < 3600:
+                    to_time = None
+                    if job.get("state") in ("C", "F"):
+                        end_time = job.get("obittime") or job.get("mtime")
+                        if end_time:
+                            to_time = end_time + 60
+                        from_time = (start_time - 60) if start_time else (now_ts - 3600)
+                    elif start_time and now_ts - start_time < 3600:
                         from_time = start_time - 60
                     else:
                         from_time = now_ts - 3600
-                    url = grafana_url(job.get("id"), from_time=from_time)
+                    url = grafana_url(job.get("id"), from_time=from_time, to_time=to_time)
                     curses.endwin()
                     print(url)
                     input("Press Enter to return...")
