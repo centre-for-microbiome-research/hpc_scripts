@@ -137,6 +137,13 @@ BIND_ARGS=()
 # --- Read-only system/data paths ---
 # /etc for DNS resolution, SSL certs, nsswitch, etc.
 [[ -d /etc ]] && BIND_ARGS+=(--bind "/etc:/etc:ro")
+# /etc/resolv.conf may be a symlink (e.g. systemd-resolved); bind the real target
+# so DNS works inside the container.
+_resolv_real="$(realpath /etc/resolv.conf 2>/dev/null || true)"
+if [[ -n "$_resolv_real" && "$_resolv_real" != /etc/resolv.conf && -f "$_resolv_real" ]]; then
+    BIND_ARGS+=(--bind "${_resolv_real}:${_resolv_real}:ro")
+fi
+unset _resolv_real
 
 # Common HPC data mounts — bind read-only
 for dir in /home /mnt /pkg /external /scratch /nfs /data /storage /projects /work /project; do
@@ -251,6 +258,10 @@ for var in ANTHROPIC_API_KEY OPENAI_API_KEY OPENAI_BASE_URL \
            TERM COLORTERM NO_COLOR; do
     [[ -n "${!var:-}" ]] && ENV_ARGS+=(--env "${var}=${!var}")
 done
+# If a system CA bundle exists, tell Node.js to trust it — needed when a TLS
+# inspection proxy (e.g. IAClient) is in use and re-signs outbound HTTPS.
+[[ -f /etc/ssl/certs/ca-certificates.crt ]] && \
+    ENV_ARGS+=(--env "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt")
 
 # Build PATH: container bins first, then real ~/bin and ~/.local/bin if present.
 CONTAINER_PATH="/usr/local/bin:/usr/bin:/bin"
