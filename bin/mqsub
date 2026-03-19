@@ -140,7 +140,9 @@ class script_format:
             print('#PBS -l gpu_id={}'.format(args.gpu_type), file=outfile)
         print('#PBS -l mem={}gb'.format(mem),file=outfile)
         print('#PBS -l walltime={}:00:00'.format(hours),file=outfile)
-        if args.bg and not args.no_email and not args.command_file and not (args.chunk_num or args.chunk_size):
+        if args.no_email:
+            print('#PBS -m n',file=outfile)
+        elif args.bg and not args.command_file and not (args.chunk_num or args.chunk_size):
             print('#PBS -m ae',file=outfile) # disbled emailing when running chunks. Too spammy
         print('#PBS -M {}'.format(email),file=outfile)
         if args.array:
