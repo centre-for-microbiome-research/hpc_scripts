@@ -1,5 +1,5 @@
 #!/bin/bash
-# mqyolo - Run claude or codex inside a restricted Apptainer/Singularity container.
+# mqyolo - Run claude, codex, or copilot inside a restricted Apptainer/Singularity container.
 #
 # Permissions inside the container:
 #   - Current directory: fully read/write
@@ -8,11 +8,12 @@
 #   - $HOME:             isolated ephemeral directory, not your real home
 #
 # Usage:
-#   run_ai_tool.sh [claude|codex] [args...]
+#   run_ai_tool.sh [claude|codex|copilot] [args...]
 #
 # Environment variables:
 #   ANTHROPIC_API_KEY   Required for claude
 #   OPENAI_API_KEY      Required for codex
+#   GITHUB_TOKEN        Required for copilot
 #   AI_TOOL_SIF         Override path to .sif file (default: same dir as this script)
 
 set -euo pipefail
@@ -44,7 +45,7 @@ DEBUG=0
 RW_PATHS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        claude|codex) TOOL="$1"; shift ;;
+        claude|codex|copilot) TOOL="$1"; shift ;;
         --debug)      DEBUG=1;   shift ;;
         --rw-paths)
             shift
@@ -60,8 +61,9 @@ USAGE
   mqyolo [claude|codex] [--debug] [--rw-paths PATH...] [args...]
 
 TOOLS
-  claude  (default) Claude Code — passes --dangerously-skip-permissions
-  codex             OpenAI Codex — passes --full-auto
+  claude   (default) Claude Code — passes --dangerously-skip-permissions
+  codex              OpenAI Codex — passes --full-auto
+  copilot            GitHub Copilot CLI — no auto-mode flag; use Shift+Tab inside session for Autopilot mode
 
 OPTIONS
   --debug              Print the full exec command before running
@@ -101,6 +103,7 @@ CLAUDE SETTINGS
 ENVIRONMENT VARIABLES
   ANTHROPIC_API_KEY   Required for claude
   OPENAI_API_KEY      Required for codex
+  GITHUB_TOKEN        Required for copilot
   OPENAI_BASE_URL     Optional — override OpenAI endpoint
   ANTHROPIC_BASE_URL  Optional — override Anthropic endpoint
   CLAUDE_CODE_USE_BEDROCK  Optional — use AWS Bedrock for Claude
@@ -253,8 +256,8 @@ done < <(find "${HOME}" -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
 # Environment variables
 # ---------------------------------------------------------------------------
 ENV_ARGS=()
-for var in ANTHROPIC_API_KEY OPENAI_API_KEY OPENAI_BASE_URL \
-           ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK \
+for var in ANTHROPIC_API_KEY OPENAI_API_KEY GITHUB_TOKEN \
+           OPENAI_BASE_URL ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK \
            TERM COLORTERM NO_COLOR; do
     [[ -n "${!var:-}" ]] && ENV_ARGS+=(--env "${var}=${!var}")
 done
@@ -280,6 +283,10 @@ case "$TOOL" in
     codex)
         # Full auto mode — no approval prompts
         YOLO_ARGS=("--full-auto")
+        ;;
+    copilot)
+        # No CLI flag for auto mode; use Shift+Tab inside the session for Autopilot mode
+        YOLO_ARGS=()
         ;;
 esac
 

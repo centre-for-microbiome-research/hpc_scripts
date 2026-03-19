@@ -2,11 +2,11 @@ Bootstrap: docker
 From: node:22
 
 %labels
-    Description Claude Code / OpenAI Codex CLI in a restricted container
+    Description Claude Code / OpenAI Codex CLI / GitHub Copilot CLI in a restricted container
 
 %post
-    # Install Claude Code and OpenAI Codex CLI
-    npm install -g @anthropic-ai/claude-code @openai/codex
+    # Install Claude Code, OpenAI Codex CLI, and GitHub Copilot CLI
+    npm install -g @anthropic-ai/claude-code @openai/codex @github/copilot
 
     # Isolated home directory for the container (never touches real $HOME)
     mkdir -p /container_home
