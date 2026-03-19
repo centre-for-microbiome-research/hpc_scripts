@@ -2,3 +2,4 @@ echo.done
 *.pyc
 __pycache__/
 qstat_filter/target/
+singularity/ai_tool.sif
