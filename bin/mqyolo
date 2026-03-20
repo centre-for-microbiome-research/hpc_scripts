@@ -62,7 +62,7 @@ USAGE
 
 TOOLS
   claude   (default) Claude Code — passes --dangerously-skip-permissions
-  codex              OpenAI Codex — passes --full-auto
+  codex              OpenAI Codex — passes --full-auto, --search, and disables update checks
   copilot            GitHub Copilot CLI — no auto-mode flag; use Shift+Tab inside session for Autopilot mode
 
 OPTIONS
@@ -266,10 +266,11 @@ done
 [[ -f /etc/ssl/certs/ca-certificates.crt ]] && \
     ENV_ARGS+=(--env "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt")
 
-# Build PATH: container bins first, then real ~/bin and ~/.local/bin if present.
+# Build PATH with the container-installed AI CLIs first so host wrappers in
+# ~/bin or ~/.local/bin do not shadow claude, codex, or copilot.
 CONTAINER_PATH="/usr/local/bin:/usr/bin:/bin"
-[[ -d "${HOME}/.local/bin" ]] && CONTAINER_PATH="${HOME}/.local/bin:${CONTAINER_PATH}"
-[[ -d "${HOME}/bin" ]]        && CONTAINER_PATH="${HOME}/bin:${CONTAINER_PATH}"
+[[ -d "${HOME}/.local/bin" ]] && CONTAINER_PATH="${CONTAINER_PATH}:${HOME}/.local/bin"
+[[ -d "${HOME}/bin" ]]        && CONTAINER_PATH="${CONTAINER_PATH}:${HOME}/bin"
 ENV_ARGS+=(--env "PATH=${CONTAINER_PATH}")
 
 # ---------------------------------------------------------------------------
@@ -281,8 +282,13 @@ case "$TOOL" in
         YOLO_ARGS=("--dangerously-skip-permissions")
         ;;
     codex)
-        # Full auto mode — no approval prompts
-        YOLO_ARGS=("--full-auto")
+        # Full auto mode inside the container, enable Codex web search, and
+        # suppress self-update prompts because the SIF rebuild handles updates.
+        YOLO_ARGS=(
+            "--full-auto"
+            "--search"
+            "-c" "check_for_update_on_startup=false"
+        )
         ;;
     copilot)
         # No CLI flag for auto mode; use Shift+Tab inside the session for Autopilot mode

@@ -6,7 +6,7 @@ From: node:22
 
 %post
     # Install Claude Code, OpenAI Codex CLI, and GitHub Copilot CLI
-    npm install -g @anthropic-ai/claude-code @openai/codex @github/copilot
+    npm install -g @anthropic-ai/claude-code@latest @openai/codex@latest @github/copilot@latest
 
     # Isolated home directory for the container (never touches real $HOME)
     mkdir -p /container_home
