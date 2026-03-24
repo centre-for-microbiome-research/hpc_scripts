@@ -184,6 +184,20 @@ unset _rw_path _rw_canonical
 # --- Writable current directory (added LAST to shadow any parent ro bind) ---
 BIND_ARGS+=(--bind "${CWD}:${CWD}:rw")
 
+# --- Cargo build cache (share target/ and CARGO_HOME with the container) ---
+if [[ -f "${CWD}/Cargo.toml" && -d "${CWD}/target" ]]; then
+    BIND_ARGS+=(--bind "${CWD}/target:${CWD}/target:rw")
+    _cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
+    if [[ -d "$_cargo_home" ]]; then
+        _cargo_home_real="$(realpath "$_cargo_home")"
+        # Bind at the logical path (not realpath) so Cargo records the same
+        # source paths inside and outside the container, avoiding fingerprint
+        # invalidation (PathToSourceChanged).
+        BIND_ARGS+=(--bind "${_cargo_home_real}:${_cargo_home}:rw")
+    fi
+    unset _cargo_home _cargo_home_real
+fi
+
 # --- Writable /pkg/cmr/{username}/pixi_dirs ---
 _pixi_dirs="/pkg/cmr/${USER}/pixi_dirs"
 [[ -d "$_pixi_dirs" ]] && BIND_ARGS+=(--bind "${_pixi_dirs}:${_pixi_dirs}:rw")
@@ -265,6 +279,12 @@ done
 # inspection proxy (e.g. IAClient) is in use and re-signs outbound HTTPS.
 [[ -f /etc/ssl/certs/ca-certificates.crt ]] && \
     ENV_ARGS+=(--env "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt")
+# Point Cargo at the rw-bound CARGO_HOME so builds share the host registry cache
+if [[ -f "${CWD}/Cargo.toml" ]]; then
+    _cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
+    [[ -d "$_cargo_home" ]] && ENV_ARGS+=(--env "CARGO_HOME=${_cargo_home}")
+    unset _cargo_home
+fi
 
 # Build PATH with the container-installed AI CLIs first so host wrappers in
 # ~/bin or ~/.local/bin do not shadow claude, codex, or copilot.
