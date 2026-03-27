@@ -7,12 +7,17 @@ This script checks a user's ~/.condarc file to ensure:
 2. The first element of pkg_dirs is within /pkg/cmr or /mnt/weka
 3. ~/.conda is symlinked to /pkg/cmr/[username]/.conda or /mnt/weka/pkg/cmr/[username]/.conda
 
+If `--pixi` is supplied, it also checks:
+4. PIXI_CACHE_DIR or RATTLER_CACHE_DIR points within /pkg/cmr or /mnt/weka
+5. `pixi config list --json` reports `detached-environments = true`
+
 If any of these conditions are not met, it provides warnings and suggestions
 for fixing the configuration.
 """
 
 import argparse
 import getpass
+import json
 import os
 import subprocess
 import sys
@@ -185,6 +190,68 @@ def check_conda_symlink():
         return False, f"~/.conda symlinked to wrong location: {actual_target}"
 
 
+def check_pixi_cache_dir():
+    """Check that the active pixi cache env var points within /pkg/cmr or /mnt/weka."""
+    for var_name in ('PIXI_CACHE_DIR', 'RATTLER_CACHE_DIR'):
+        value = os.environ.get(var_name)
+        if not value:
+            continue
+
+        if is_within_weka(value):
+            return True, f"{var_name} is correctly within /pkg/cmr or /mnt/weka: {value}"
+
+        resolved = resolve_path(value)
+        return False, f"{var_name}='{value}' (resolves to '{resolved}') is not within /pkg/cmr or /mnt/weka"
+
+    return False, "Neither PIXI_CACHE_DIR nor RATTLER_CACHE_DIR is set"
+
+
+def load_pixi_config():
+    output = run_command('pixi config list --json')
+    if not output:
+        return {}, None
+
+    try:
+        return json.loads(output), None
+    except json.JSONDecodeError as e:
+        return None, f"Could not parse `pixi config list --json` output: {e}"
+
+
+
+def extract_detached_environments_value(config):
+    """Recursively look for `detached-environments` in pixi config output."""
+    if isinstance(config, dict):
+        for key in ('detached-environments', 'detached_environments'):
+            if key in config:
+                return config[key]
+        for value in config.values():
+            found = extract_detached_environments_value(value)
+            if found is not None:
+                return found
+    elif isinstance(config, list):
+        for item in config:
+            found = extract_detached_environments_value(item)
+            if found is not None:
+                return found
+    return None
+
+
+def check_pixi_detached_environments():
+    """Check that pixi detached environments are enabled."""
+    config, error = load_pixi_config()
+    if error:
+        return False, error
+
+    is_detached = extract_detached_environments_value(config)
+
+    if is_detached is None:
+        return False, "pixi config does not set detached-environments"
+    elif is_detached:
+        return True, "pixi config has detached-environments = true"
+    else:
+        return False, "pixi config has detached-environments = false"
+
+
 def generate_template_condarc(suggested_envs_dir, suggested_pkgs_dir):
     """Generate a template .condarc file with CMR-specific settings."""
     
@@ -207,8 +274,8 @@ solver: libmamba
     return template
 
 
-def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_logs_ok):
-    """Generate suggestions for fixing conda configuration issues."""
+def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_logs_ok, pixi_cache_ok, pixi_detached_ok):
+    """Generate suggestions for fixing conda and optional pixi configuration issues."""
     username = getpass.getuser()
     suggestions = []
     suggested_envs_dir = f"/pkg/cmr/{username}/conda/envs"
@@ -248,6 +315,17 @@ def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_lo
         suggestions.append(f"   # Review and remove folders older than 3 months in ~/qsub_logs")
         suggestions.append(f"   # Example: rm -rf ~/qsub_logs/2024-01-*  # (adjust dates as needed)")
         suggestions.append(f"   # Or use: find ~/qsub_logs -maxdepth 1 -name '????-??-??' -type d -mtime +90 -delete")
+        step_num += 1
+
+    if not pixi_cache_ok:
+        suggestions.append(f"{step_num}. Set PIXI_CACHE_DIR or RATTLER_CACHE_DIR to a path on /mnt/weka or /pkg/cmr:")
+        suggestions.append(f"   export PIXI_CACHE_DIR=/mnt/weka/pkg/cmr/{username}/pixi/cache")
+        suggestions.append(f"   # Or set RATTLER_CACHE_DIR to a similar location")
+        step_num += 1
+
+    if not pixi_detached_ok:
+        suggestions.append(f"{step_num}. Enable detached pixi environments:")
+        suggestions.append(f"   pixi config set detached-environments true")
     
     return suggestions
 
@@ -296,7 +374,7 @@ def check_old_qsub_logs():
 
 
 def main():
-    """Main function to check conda configuration."""
+    """Main function to check conda and optional pixi configuration."""
     parser = argparse.ArgumentParser(
         description="Check conda configuration for CMR HPC environment",
         formatter_class=argparse.RawDescriptionHelpFormatter
@@ -312,12 +390,18 @@ def main():
         default=Path.home() / '.condarc',
         help='Path to .condarc file (default: ~/.condarc)'
     )
+    parser.add_argument(
+        '--pixi',
+        action='store_true',
+        help='Also check pixi cache location and detached-environments configuration'
+    )
     
     args = parser.parse_args()
+    check_scope = "conda and pixi" if args.pixi else "conda"
 
     # Check .condarc file
     config = load_condarc(args.condarc)
-    print("Checking conda configuration for CMR HPC environment...")
+    print(f"Checking {check_scope} configuration for CMR HPC environment...")
     print("=" * 60)
     if config is None:
         print(f"⚠️  No readable .condarc file found at {args.condarc}")
@@ -334,7 +418,21 @@ def main():
     # Check old qsub log folders
     qsub_logs_ok, qsub_logs_msg = check_old_qsub_logs()
 
-    all_good = env_dirs_ok and pkg_dirs_ok and conda_symlink_ok and qsub_logs_ok
+    if args.pixi:
+        pixi_cache_ok, pixi_cache_msg = check_pixi_cache_dir()
+        pixi_detached_ok, pixi_detached_msg = check_pixi_detached_environments()
+    else:
+        pixi_cache_ok, pixi_detached_ok = True, True
+        pixi_cache_msg = pixi_detached_msg = None
+
+    all_good = (
+        env_dirs_ok and
+        pkg_dirs_ok and
+        conda_symlink_ok and
+        qsub_logs_ok and
+        pixi_cache_ok and
+        pixi_detached_ok
+    )
 
     print("\nResults:")
     print("-" * 40)
@@ -351,6 +449,13 @@ def main():
     status_qsub_logs = "✓" if qsub_logs_ok else "✗"
     print(f"{status_qsub_logs} Old qsub log folders: {qsub_logs_msg}")
 
+    if args.pixi:
+        status_pixi_cache = "✓" if pixi_cache_ok else "✗"
+        print(f"{status_pixi_cache} Pixi cache directory: {pixi_cache_msg}")
+
+        status_pixi_detached = "✓" if pixi_detached_ok else "✗"
+        print(f"{status_pixi_detached} Pixi detached environments: {pixi_detached_msg}")
+
     # If verbose, show current config
     if args.verbose and config:
         print(f"\nCurrent .condarc configuration:")
@@ -362,16 +467,23 @@ def main():
         print("\n⚠️ Configuration Issues Found! Fixes suggested:")
         print("=" * 60)
 
-        suggestions = generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_logs_ok)
+        suggestions = generate_fix_suggestions(
+            env_dirs_ok,
+            pkg_dirs_ok,
+            conda_symlink_ok,
+            qsub_logs_ok,
+            pixi_cache_ok,
+            pixi_detached_ok,
+        )
         if suggestions:
             print("")
             for suggestion in suggestions:
                 print(suggestion)
 
-        print("\nAfter making changes, restart your shell or run 'conda info' to verify.")
+        print("\nAfter making changes, restart your shell and rerun mqlint to verify.")
         sys.exit(1)
     else:
-        print("\n✓ All conda configuration checks passed!")
+        print(f"\n✓ All {check_scope} configuration checks passed!")
         sys.exit(0)
 
 
