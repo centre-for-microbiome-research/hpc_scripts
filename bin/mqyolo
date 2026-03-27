@@ -185,18 +185,21 @@ unset _rw_path _rw_canonical
 BIND_ARGS+=(--bind "${CWD}:${CWD}:rw")
 
 # --- Cargo build cache (share target/ and CARGO_HOME with the container) ---
+# Bind target/ rw when present so incremental builds work.
 if [[ -f "${CWD}/Cargo.toml" && -d "${CWD}/target" ]]; then
     BIND_ARGS+=(--bind "${CWD}/target:${CWD}/target:rw")
-    _cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
-    if [[ -d "$_cargo_home" ]]; then
-        _cargo_home_real="$(realpath "$_cargo_home")"
-        # Bind at the logical path (not realpath) so Cargo records the same
-        # source paths inside and outside the container, avoiding fingerprint
-        # invalidation (PathToSourceChanged).
-        BIND_ARGS+=(--bind "${_cargo_home_real}:${_cargo_home}:rw")
-    fi
-    unset _cargo_home _cargo_home_real
 fi
+# Always bind CARGO_HOME rw so the registry/cache is writable regardless of
+# whether a Rust project lives in the current directory.
+_cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
+if [[ -d "$_cargo_home" ]]; then
+    _cargo_home_real="$(realpath "$_cargo_home")"
+    # Bind at the logical path (not realpath) so Cargo records the same
+    # source paths inside and outside the container, avoiding fingerprint
+    # invalidation (PathToSourceChanged).
+    BIND_ARGS+=(--bind "${_cargo_home_real}:${_cargo_home}:rw")
+fi
+unset _cargo_home _cargo_home_real
 
 # --- Writable /pkg/cmr/{username}/pixi_dirs ---
 _pixi_dirs="/pkg/cmr/${USER}/pixi_dirs"
@@ -280,17 +283,16 @@ done
 [[ -f /etc/ssl/certs/ca-certificates.crt ]] && \
     ENV_ARGS+=(--env "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt")
 # Point Cargo at the rw-bound CARGO_HOME so builds share the host registry cache
-if [[ -f "${CWD}/Cargo.toml" ]]; then
-    _cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
-    [[ -d "$_cargo_home" ]] && ENV_ARGS+=(--env "CARGO_HOME=${_cargo_home}")
-    unset _cargo_home
-fi
+_cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
+[[ -d "$_cargo_home" ]] && ENV_ARGS+=(--env "CARGO_HOME=${_cargo_home}")
+unset _cargo_home
 
 # Build PATH with the container-installed AI CLIs first so host wrappers in
 # ~/bin or ~/.local/bin do not shadow claude, codex, or copilot.
 CONTAINER_PATH="/usr/local/bin:/usr/bin:/bin"
 [[ -d "${HOME}/.local/bin" ]] && CONTAINER_PATH="${CONTAINER_PATH}:${HOME}/.local/bin"
 [[ -d "${HOME}/bin" ]]        && CONTAINER_PATH="${CONTAINER_PATH}:${HOME}/bin"
+[[ -d "/work/microbiome/sw/hpc_scripts/bin" ]] && CONTAINER_PATH="${CONTAINER_PATH}:/work/microbiome/sw/hpc_scripts/bin"
 ENV_ARGS+=(--env "PATH=${CONTAINER_PATH}")
 
 # ---------------------------------------------------------------------------
