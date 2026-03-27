@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-Tests for cmr_lint.py
+Tests for mqlint
 """
 
+import importlib.machinery
+import importlib.util
 import os
 import sys
 import tempfile
@@ -12,8 +14,17 @@ import subprocess
 import shutil
 from unittest.mock import patch
 
-# Add the bin directory to the path so we can import the script
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'bin'))
+SCRIPT_PATH = Path(__file__).parent.parent / 'bin' / 'mqlint'
+
+
+def load_script_module(module_name, script_path):
+    """Load an extensionless Python script as a module."""
+    loader = importlib.machinery.SourceFileLoader(module_name, str(script_path))
+    spec = importlib.util.spec_from_loader(module_name, loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    loader.exec_module(module)
+    return module
 
 def write_condarc_format(config, file_obj):
     """Write config dictionary in .condarc format."""
@@ -26,9 +37,9 @@ def write_condarc_format(config, file_obj):
             file_obj.write(f"{key}: {value}\n")
 
 try:
-    import cmr_lint
-except ImportError as e:
-    print(f"Warning: Could not import cmr_lint: {e}")
+    cmr_lint = load_script_module('cmr_lint', SCRIPT_PATH)
+except Exception as e:
+    print(f"Warning: Could not import mqlint: {e}")
     cmr_lint = None
 
 
@@ -42,10 +53,8 @@ class TestCmrLint(unittest.TestCase):
     
     def test_script_help_output(self):
         """Test that help output contains expected information."""
-        script_path = Path(__file__).parent.parent / 'bin' / 'cmr_lint.py'
-        
         result = subprocess.run(
-            [sys.executable, str(script_path), '--help'],
+            [sys.executable, str(SCRIPT_PATH), '--help'],
             capture_output=True,
             text=True
         )
@@ -54,6 +63,7 @@ class TestCmrLint(unittest.TestCase):
         self.assertIn('Check conda configuration', result.stdout)
         self.assertIn('--verbose', result.stdout)
         self.assertIn('--condarc', result.stdout)
+        self.assertIn('--pixi', result.stdout)
     
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     def test_is_within_weka_direct_path(self):
@@ -227,18 +237,65 @@ class TestCmrLint(unittest.TestCase):
         """Test generating fix suggestions for various issues."""
         with patch('cmr_lint.getpass.getuser', return_value='testuser'):
             # Test when all checks fail
-            suggestions = cmr_lint.generate_fix_suggestions(False, False, False, False)
+            suggestions = cmr_lint.generate_fix_suggestions(False, False, False, False, False, False)
         
         self.assertTrue(len(suggestions) > 0)
         suggestion_text = ' '.join(suggestions)
         self.assertIn('condarc', suggestion_text)
         self.assertIn('symlink', suggestion_text)
+        self.assertIn('PIXI_CACHE_DIR', suggestion_text)
+        self.assertIn('detached pixi environments', suggestion_text)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch.dict(os.environ, {'PIXI_CACHE_DIR': '/mnt/weka/pkg/cmr/testuser/pixi/cache'}, clear=False)
+    def test_check_pixi_cache_dir_valid(self):
+        """Test pixi cache directory validation for a valid cache path."""
+        is_ok, message = cmr_lint.check_pixi_cache_dir()
+        self.assertTrue(is_ok)
+        self.assertIn('PIXI_CACHE_DIR', message)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch.dict(os.environ, {'PIXI_CACHE_DIR': '/tmp/pixi-cache'}, clear=False)
+    @patch('cmr_lint.resolve_path', return_value='/tmp/pixi-cache')
+    def test_check_pixi_cache_dir_invalid(self, _mock_resolve):
+        """Test pixi cache directory validation for an invalid cache path."""
+        is_ok, message = cmr_lint.check_pixi_cache_dir()
+        self.assertFalse(is_ok)
+        self.assertIn('not within /pkg/cmr or /mnt/weka', message)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch('cmr_lint.subprocess.run')
+    def test_check_pixi_detached_environments_true(self, mock_run):
+        """Test pixi detached environments when enabled."""
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=['pixi', 'config', 'list', '--json'],
+            returncode=0,
+            stdout='{"detached-environments": true}',
+            stderr=''
+        )
+
+        is_ok, message = cmr_lint.check_pixi_detached_environments()
+        self.assertTrue(is_ok)
+        self.assertIn('detached-environments = true', message)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch('cmr_lint.subprocess.run')
+    def test_check_pixi_detached_environments_missing(self, mock_run):
+        """Test pixi detached environments when unset."""
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=['pixi', 'config', 'list', '--json'],
+            returncode=0,
+            stdout='{}',
+            stderr=''
+        )
+
+        is_ok, message = cmr_lint.check_pixi_detached_environments()
+        self.assertFalse(is_ok)
+        self.assertIn('does not set detached-environments', message)
     
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     def test_script_exit_code_success(self):
         """Test that script shows configuration check results."""
-        script_path = Path(__file__).parent.parent / 'bin' / 'cmr_lint.py'
-        
         # Create a temporary .condarc with correct configuration
         with tempfile.NamedTemporaryFile(mode='w', suffix='.condarc', delete=False) as f:
             config = {
@@ -249,30 +306,31 @@ class TestCmrLint(unittest.TestCase):
             condarc_path = f.name
         
         try:
-            # Test with --show-success to ensure we get output
             result = subprocess.run(
-                [sys.executable, str(script_path), '--show-success', '--condarc', condarc_path],
+                [sys.executable, str(SCRIPT_PATH), '--condarc', condarc_path],
                 capture_output=True,
                 text=True,
                 env={**os.environ, 'PYTHONPATH': str(Path(__file__).parent.parent / 'bin')}
             )
             
-            # Should at least show that it's checking conda configuration
             self.assertIn('conda configuration', result.stdout.lower())
             
         finally:
             os.unlink(condarc_path)
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch('cmr_lint.check_pixi_detached_environments')
+    @patch('cmr_lint.check_pixi_cache_dir')
+    @patch('cmr_lint.check_old_qsub_logs')
     @patch('cmr_lint.check_conda_symlink')
     @patch('cmr_lint.check_pkg_dirs')
     @patch('cmr_lint.check_env_dirs')
-    def test_main_function_success(self, mock_env_dirs, mock_pkg_dirs, mock_symlink):
-        """Test main function when all checks pass."""
-        # Mock all checks to pass
+    def test_main_function_success(self, mock_env_dirs, mock_pkg_dirs, mock_symlink, mock_qsub_logs, mock_pixi_cache, mock_pixi_detached):
+        """Test main function when conda checks pass without pixi enabled."""
         mock_env_dirs.return_value = (True, "Environment directories OK")
         mock_pkg_dirs.return_value = (True, "Package directories OK") 
         mock_symlink.return_value = (True, "Symlink OK")
+        mock_qsub_logs.return_value = (True, "No old qsub log folders found")
         
         # Create a valid config file
         with tempfile.NamedTemporaryFile(mode='w', suffix='.condarc', delete=False) as f:
@@ -289,13 +347,47 @@ class TestCmrLint(unittest.TestCase):
                 with self.assertRaises(SystemExit) as cm:
                     cmr_lint.main()
                 self.assertEqual(cm.exception.code, 0)
+                mock_pixi_cache.assert_not_called()
+                mock_pixi_detached.assert_not_called()
+        finally:
+            os.unlink(condarc_path)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch('cmr_lint.check_pixi_detached_environments')
+    @patch('cmr_lint.check_pixi_cache_dir')
+    @patch('cmr_lint.check_old_qsub_logs')
+    @patch('cmr_lint.check_conda_symlink')
+    @patch('cmr_lint.check_pkg_dirs')
+    @patch('cmr_lint.check_env_dirs')
+    def test_main_function_success_with_pixi(self, mock_env_dirs, mock_pkg_dirs, mock_symlink, mock_qsub_logs, mock_pixi_cache, mock_pixi_detached):
+        """Test main function when pixi checks are explicitly enabled."""
+        mock_env_dirs.return_value = (True, "Environment directories OK")
+        mock_pkg_dirs.return_value = (True, "Package directories OK")
+        mock_symlink.return_value = (True, "Symlink OK")
+        mock_qsub_logs.return_value = (True, "No old qsub log folders found")
+        mock_pixi_cache.return_value = (True, "PIXI_CACHE_DIR is correctly within /pkg/cmr or /mnt/weka")
+        mock_pixi_detached.return_value = (True, "pixi config has detached-environments = true")
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.condarc', delete=False) as f:
+            config = {
+                'envs_dirs': ['/pkg/cmr/testuser/conda/envs'],
+                'pkgs_dirs': ['/pkg/cmr/testuser/conda/pkgs']
+            }
+            write_condarc_format(config, f)
+            condarc_path = f.name
+
+        try:
+            with patch('sys.argv', ['cmr_lint.py', '--pixi', '--condarc', condarc_path]):
+                with self.assertRaises(SystemExit) as cm:
+                    cmr_lint.main()
+                self.assertEqual(cm.exception.code, 0)
+                mock_pixi_cache.assert_called_once()
+                mock_pixi_detached.assert_called_once()
         finally:
             os.unlink(condarc_path)
     
     def test_script_exit_code_failure(self):
         """Test that script exits with 1 when checks fail."""
-        script_path = Path(__file__).parent.parent / 'bin' / 'cmr_lint.py'
-        
         # Create a temporary .condarc with incorrect configuration
         with tempfile.NamedTemporaryFile(mode='w', suffix='.condarc', delete=False) as f:
             config = {
@@ -307,7 +399,7 @@ class TestCmrLint(unittest.TestCase):
         
         try:
             result = subprocess.run(
-                [sys.executable, str(script_path), '--condarc', condarc_path],
+                [sys.executable, str(SCRIPT_PATH), '--condarc', condarc_path],
                 capture_output=True,
                 text=True
             )
@@ -452,7 +544,7 @@ class TestCmrLint(unittest.TestCase):
         """Test generating fix suggestions including qsub logs cleanup."""
         with patch('cmr_lint.getpass.getuser', return_value='testuser'):
             # Test when only qsub logs check fails
-            suggestions = cmr_lint.generate_fix_suggestions(True, True, True, False)
+            suggestions = cmr_lint.generate_fix_suggestions(True, True, True, False, True, True)
         
         self.assertTrue(len(suggestions) > 0)
         suggestion_text = ' '.join(suggestions)
