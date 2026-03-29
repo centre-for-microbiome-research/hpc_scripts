@@ -314,12 +314,12 @@ def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_lo
         suggestions.append(f"{step_num}. Clean up old qsub log folders:")
         suggestions.append(f"   # Review and remove folders older than 3 months in ~/qsub_logs")
         suggestions.append(f"   # Example: rm -rf ~/qsub_logs/2024-01-*  # (adjust dates as needed)")
-        suggestions.append(f"   # Or use: find ~/qsub_logs -maxdepth 1 -name '????-??-??' -type d -mtime +90 -delete")
+        suggestions.append(f"   # Or use (careful though as the command will delete files and might print a lot since -v is in the rm command): find ~/qsub_logs/ -maxdepth 1 -name '????-??-??' -type d -mtime +89 | xargs rm -rfv")
         step_num += 1
 
     if not pixi_cache_ok:
-        suggestions.append(f"{step_num}. Set PIXI_CACHE_DIR or RATTLER_CACHE_DIR to a path on /mnt/weka or /pkg/cmr:")
-        suggestions.append(f"   export PIXI_CACHE_DIR=/mnt/weka/pkg/cmr/{username}/pixi/cache")
+        suggestions.append(f"{step_num}. Set PIXI_CACHE_DIR or RATTLER_CACHE_DIR to a path on /mnt/weka or /pkg/cmr by e.g. adding it to your ~/.bashrc (~/.bash_profile should also work):")
+        suggestions.append(f"   echo 'export PIXI_CACHE_DIR=/mnt/weka/pkg/cmr/{username}/pixi/cache' >> ~/.bashrc")
         suggestions.append(f"   # Or set RATTLER_CACHE_DIR to a similar location")
         step_num += 1
 
@@ -390,14 +390,9 @@ def main():
         default=Path.home() / '.condarc',
         help='Path to .condarc file (default: ~/.condarc)'
     )
-    parser.add_argument(
-        '--pixi',
-        action='store_true',
-        help='Also check pixi cache location and detached-environments configuration'
-    )
     
     args = parser.parse_args()
-    check_scope = "conda and pixi" if args.pixi else "conda"
+    check_scope = "conda and pixi"
 
     # Check .condarc file
     config = load_condarc(args.condarc)
@@ -418,12 +413,8 @@ def main():
     # Check old qsub log folders
     qsub_logs_ok, qsub_logs_msg = check_old_qsub_logs()
 
-    if args.pixi:
-        pixi_cache_ok, pixi_cache_msg = check_pixi_cache_dir()
-        pixi_detached_ok, pixi_detached_msg = check_pixi_detached_environments()
-    else:
-        pixi_cache_ok, pixi_detached_ok = True, True
-        pixi_cache_msg = pixi_detached_msg = None
+    pixi_cache_ok, pixi_cache_msg = check_pixi_cache_dir()
+    pixi_detached_ok, pixi_detached_msg = check_pixi_detached_environments()
 
     all_good = (
         env_dirs_ok and
@@ -449,12 +440,11 @@ def main():
     status_qsub_logs = "✓" if qsub_logs_ok else "✗"
     print(f"{status_qsub_logs} Old qsub log folders: {qsub_logs_msg}")
 
-    if args.pixi:
-        status_pixi_cache = "✓" if pixi_cache_ok else "✗"
-        print(f"{status_pixi_cache} Pixi cache directory: {pixi_cache_msg}")
+    status_pixi_cache = "✓" if pixi_cache_ok else "✗"
+    print(f"{status_pixi_cache} Pixi cache directory: {pixi_cache_msg}")
 
-        status_pixi_detached = "✓" if pixi_detached_ok else "✗"
-        print(f"{status_pixi_detached} Pixi detached environments: {pixi_detached_msg}")
+    status_pixi_detached = "✓" if pixi_detached_ok else "✗"
+    print(f"{status_pixi_detached} Pixi detached environments: {pixi_detached_msg}")
 
     # If verbose, show current config
     if args.verbose and config:
