@@ -11,6 +11,9 @@ If `--pixi` is supplied, it also checks:
 4. PIXI_CACHE_DIR or RATTLER_CACHE_DIR points within /pkg/cmr or /mnt/weka
 5. `pixi config list --json` reports `detached-environments = true`
 
+It also checks:
+6. PS1 does not contain \\s-\\v (suggests a better prompt format)
+
 If any of these conditions are not met, it provides warnings and suggestions
 for fixing the configuration.
 """
@@ -274,7 +277,7 @@ solver: libmamba
     return template
 
 
-def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_logs_ok, pixi_cache_ok, pixi_detached_ok):
+def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_logs_ok, pixi_cache_ok, pixi_detached_ok, ps1_ok=True):
     """Generate suggestions for fixing conda and optional pixi configuration issues."""
     username = getpass.getuser()
     suggestions = []
@@ -326,8 +329,23 @@ def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_lo
     if not pixi_detached_ok:
         suggestions.append(f"{step_num}. Enable detached pixi environments:")
         suggestions.append(f"   pixi config set --global detached-environments true")
-    
+        step_num += 1
+
+    if not ps1_ok:
+        suggested_ps1 = r'${debian_chroot:+($debian_chroot)}\h:\D{%Y%m%d}:\w\$ '
+        suggestions.append(f"{step_num}. Update your PS1 prompt in ~/.bashrc (before any conda/mamba init block):")
+        suggestions.append(f"   Change the line containing \\s-\\v to:")
+        suggestions.append(f"   PS1='{suggested_ps1}'")
+
     return suggestions
+
+
+def check_ps1():
+    """Check if PS1 contains \\s-\\v which shows shell name and version."""
+    ps1 = os.environ.get('PS1', '')
+    if r'\s-\v' in ps1:
+        return False, r"PS1 contains \s-\v (shell name and version), which is not useful on this system"
+    return True, "PS1 does not contain \\s-\\v"
 
 
 def check_old_qsub_logs():
@@ -416,13 +434,16 @@ def main():
     pixi_cache_ok, pixi_cache_msg = check_pixi_cache_dir()
     pixi_detached_ok, pixi_detached_msg = check_pixi_detached_environments()
 
+    ps1_ok, ps1_msg = check_ps1()
+
     all_good = (
         env_dirs_ok and
         pkg_dirs_ok and
         conda_symlink_ok and
         qsub_logs_ok and
         pixi_cache_ok and
-        pixi_detached_ok
+        pixi_detached_ok and
+        ps1_ok
     )
 
     print("\nResults:")
@@ -446,6 +467,9 @@ def main():
     status_pixi_detached = "✓" if pixi_detached_ok else "✗"
     print(f"{status_pixi_detached} Pixi detached environments: {pixi_detached_msg}")
 
+    status_ps1 = "✓" if ps1_ok else "✗"
+    print(f"{status_ps1} PS1 prompt: {ps1_msg}")
+
     # If verbose, show current config
     if args.verbose and config:
         print(f"\nCurrent .condarc configuration:")
@@ -464,6 +488,7 @@ def main():
             qsub_logs_ok,
             pixi_cache_ok,
             pixi_detached_ok,
+            ps1_ok,
         )
         if suggestions:
             print("")
