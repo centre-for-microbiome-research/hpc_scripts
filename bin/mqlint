@@ -325,7 +325,7 @@ def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_lo
 
     if not pixi_detached_ok:
         suggestions.append(f"{step_num}. Enable detached pixi environments:")
-        suggestions.append(f"   pixi config set detached-environments true")
+        suggestions.append(f"   pixi config set --global detached-environments true")
     
     return suggestions
 
