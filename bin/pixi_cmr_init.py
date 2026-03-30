@@ -3,17 +3,12 @@
 pixi_cmr_init.py - Initialize a pixi project with CMR-specific settings.
 
 This script creates a pixi.toml file using "pixi init" and modifies the channels
-to include bioconda after conda-forge. It also creates a .pixi directory in a
-centralized location (/pkg/cmr/<username>/pixi_dirs/<path>.pixi) and creates a
-symlink to it from the target directory. Falls back to local .pixi directory
-if centralized location is not accessible.
+to include bioconda after conda-forge.
 """
 
 import argparse
-import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 import re
 
@@ -34,64 +29,6 @@ def run_command(cmd, cwd=None):
         print(f"stdout: {e.stdout}")
         print(f"stderr: {e.stderr}")
         raise
-
-
-def create_pixi_directory(target_dir, base_dir='/pkg/cmr'):
-    """Create a .pixi directory in <base_dir>/<username>/pixi_dirs/ and symlink to target."""
-    import getpass
-    
-    # Get the current username
-    username = getpass.getuser()
-    
-    # Convert full path to directory name by replacing / with _
-    full_path = Path(target_dir).resolve()
-    path_name = str(full_path).replace('/', '_')
-    pixi_dir_name = f"{path_name}.pixi"
-    
-    # Create the actual .pixi directory in <base_dir>/<username>/pixi_dirs/
-    cmr_pixi_base = Path(base_dir) / username / 'pixi_dirs'
-    actual_pixi_dir = cmr_pixi_base / pixi_dir_name
-    
-    # Create the symlink path in the target directory
-    symlink_path = full_path / '.pixi'
-    
-    # Check if symlink already exists
-    if symlink_path.exists() or symlink_path.is_symlink():
-        if symlink_path.is_symlink():
-            print(f"WARNING: .pixi symlink already exists at {symlink_path} -> {symlink_path.readlink()}")
-        else:
-            print(f"WARNING: .pixi directory already exists at {symlink_path}")
-        print("WARNING: Skipping creation of .pixi directory. If you want to migrate it, you can remove it and then rerun this script. But first, you may wish to check that .pixi/config.toml does not contain custom settings that you want to keep.")
-        return symlink_path
-    
-    # Create the base directory structure in <base_dir>/<username>/pixi_dirs/
-    try:
-        cmr_pixi_base.mkdir(parents=True, exist_ok=True)
-        actual_pixi_dir.mkdir(exist_ok=True)
-        
-        print(f"Created .pixi directory at {actual_pixi_dir}")
-        
-        # Create symlink from target directory to the actual .pixi directory
-        symlink_path.symlink_to(actual_pixi_dir, target_is_directory=True)
-        print(f"Created symlink: {symlink_path} -> {actual_pixi_dir}")
-        
-    except PermissionError as e:
-        print(f"Error: Permission denied when creating directories in {cmr_pixi_base}")
-        print(f"Falling back to creating .pixi directory locally at {symlink_path}")
-        
-        # Fall back to creating .pixi directory locally
-        symlink_path.mkdir(exist_ok=True)
-        print(f"Created local .pixi directory at {symlink_path}")
-        
-    except Exception as e:
-        print(f"Error creating .pixi directory structure: {e}")
-        print(f"Falling back to creating .pixi directory locally at {symlink_path}")
-        
-        # Fall back to creating .pixi directory locally
-        symlink_path.mkdir(exist_ok=True)
-        print(f"Created local .pixi directory at {symlink_path}")
-    
-    return symlink_path
 
 
 def modify_pixi_toml_with_toml_lib(toml_path):
@@ -208,12 +145,6 @@ def main():
         action='store_true', 
         help='Show what would be done without actually doing it'
     )
-    parser.add_argument(
-        '--base-dir',
-        default='/pkg/cmr',
-        help='Base directory for centralized .pixi storage (default: /pkg/cmr)'
-    )
-    
     args = parser.parse_args()
     
     target_dir = Path(args.directory).resolve()
@@ -222,19 +153,9 @@ def main():
     print(f"Initializing pixi project in: {target_dir}")
     
     if args.dry_run:
-        import getpass
-        username = getpass.getuser()
-        full_path = Path(args.directory).resolve()
-        path_name = str(full_path).replace('/', '_').lstrip('_')
-        pixi_dir_name = f"{path_name}.pixi"
-        actual_pixi_dir = Path(args.base_dir) / username / 'pixi_dirs' / pixi_dir_name
-        symlink_path = target_dir / '.pixi'
-        
         print("DRY RUN MODE - showing what would be done:")
         print(f"1. Run 'pixi init' in {target_dir}")
         print(f"2. Modify {pixi_toml_path} to include bioconda channel")
-        print(f"3. Create .pixi directory at {actual_pixi_dir}")
-        print(f"4. Create symlink: {symlink_path} -> {actual_pixi_dir}")
         return
     
     # Ensure target directory exists
@@ -242,12 +163,13 @@ def main():
     
     # Check if pixi.toml already exists.
     if pixi_toml_path.exists():
-        print(f"WARNING: pixi.toml already exists at {pixi_toml_path} - not creating a new one, but continuing, trying to create .pixi directory.")
+        print(f"WARNING: pixi.toml already exists at {pixi_toml_path} - not creating a new one.")
+        return 0
     # Also fail if pyproject.toml exists
     elif (target_dir / 'pyproject.toml').exists():
         print(f"WARNING: pyproject.toml already exists at {target_dir / 'pyproject.toml'} - cannot initialize pixi project.")
         print("pyproject.toml files can be migrated by running 'pixi init' yourself. See https://pixi.sh/latest/python/pyproject_toml/ for more information.")
-        print("Continuing, trying to create .pixi directory.")
+        return 1
     else:
         # Run pixi init
         print("Running 'pixi init'...")
@@ -259,10 +181,7 @@ def main():
         else:
             print(f"Error: pixi.toml was not created at {pixi_toml_path}")
             return 1
-    
-    # Create .pixi directory
-    create_pixi_directory(target_dir, args.base_dir)
-    
+
     print("pixi_cmr_init completed successfully!")
     return 0
 
