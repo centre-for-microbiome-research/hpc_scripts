@@ -205,7 +205,8 @@ class script_format:
         if args.command_file and (args.chunk_num or args.chunk_size):
             print(chunk, file=outfile)
         if args.command_file and (args.chunk_num or args.chunk_size):
-            print("\necho \"Number of failed commands: $NUM_FAILED\"\n", file=outfile)
+            print("\necho \"Number of failed commands: $NUM_FAILED\"", file=outfile)
+            print("if [ \"$NUM_FAILED\" -gt 0 ]; then exit $NUM_FAILED; fi\n", file=outfile)
           
 
     @staticmethod
