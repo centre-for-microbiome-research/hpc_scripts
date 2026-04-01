@@ -100,14 +100,16 @@ if __name__ == '__main__':
             print(job_id)
         sys.exit(0)
 
+    chunk_size = 200
     failed = 0
-    for job_id in job_ids:
+    for i in range(0, len(job_ids), chunk_size):
+        chunk = job_ids[i:i+chunk_size]
         try:
-            run("qdel {}".format(job_id))
-            logging.debug("Deleted {}".format(job_id))
+            run("qdel {}".format(" ".join(chunk)))
+            logging.debug("Deleted {}".format(", ".join(chunk)))
         except Exception as e:
-            logging.warning("Failed to delete {}: {}".format(job_id, e))
-            failed += 1
+            logging.warning("Failed to delete batch {}-{}: {}".format(i, i+len(chunk), e))
+            failed += len(chunk)
 
     deleted = len(job_ids) - failed
     logging.info("Deleted {} job(s).".format(deleted))
