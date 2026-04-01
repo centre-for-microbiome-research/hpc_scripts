@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+
+# Script to delete PBS batch jobs for a user, with options to delete all or only queued jobs.
+
+__author__ = "Stefan Herholdt"
+__copyright__ = "Copyright 2026"
+__credits__ = ["Stefan Herholdt"]
+__license__ = "GPL3"
+__maintainer__ = "Stefan Herholdt"
+__status__ = "Development"
+
+import argparse
+import logging
+import sys
+import subprocess
+import getpass
+import json
+
+
+def run(command):
+    process = subprocess.Popen(
+        ["bash", "-o", "pipefail", "-c", command],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = process.communicate()
+    if process.returncode != 0:
+        raise Exception("Command failed: {}\nSTDERR: {}".format(command, stderr.decode()))
+    return stdout
+
+
+def get_user_jobs(user, states):
+    """Return list of batch job IDs for the given user in the given states (e.g. ['Q', 'R'])."""
+    try:
+        stdout = run("qstat -f -F json 2>/dev/null")
+        data = json.loads(stdout.decode())
+    except Exception as e:
+        logging.error("Failed to query qstat: {}".format(e))
+        sys.exit(1)
+
+    interactive_queues = ('cpu_inter_exec', 'gpu_inter_exec')
+    jobs = data.get("Jobs", {})
+    matching = []
+    for job_id, info in jobs.items():
+        owner = info.get("Job_Owner", "").split("@")[0]
+        state = info.get("job_state", "")
+        queue = info.get("queue", "")
+        if owner == user and state in states and queue not in interactive_queues:
+            matching.append(job_id)
+    return matching
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Delete PBS batch jobs for a user.')
+
+    parser.add_argument('--debug', help='Output debug information', action="store_true")
+    parser.add_argument('--quiet', help='Only output errors', action="store_true")
+
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument('--all', action='store_true',
+                            help='Delete all batch jobs for the user')
+    mode_group.add_argument('--queued', action='store_true',
+                            help='Delete only queued (Q) jobs for the user')
+
+    parser.add_argument('--user', default=None,
+                        help='User whose jobs to delete [default: current user]')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='Show which jobs would be deleted without actually deleting them')
+
+    args = parser.parse_args()
+
+    if args.debug:
+        loglevel = logging.DEBUG
+    elif args.quiet:
+        loglevel = logging.ERROR
+    else:
+        loglevel = logging.INFO
+    logging.basicConfig(level=loglevel, format='%(asctime)s %(levelname)s: %(message)s',
+                        datefmt='%m/%d/%Y %I:%M:%S %p')
+
+    user = args.user if args.user else getpass.getuser()
+
+    if args.all:
+        states = ['Q', 'R', 'H', 'S', 'W']
+        mode_label = "all"
+    else:
+        states = ['Q']
+        mode_label = "queued"
+
+    logging.info("Finding {} jobs for user {} ...".format(mode_label, user))
+    job_ids = get_user_jobs(user, states)
+
+    if not job_ids:
+        logging.info("No {} jobs found for user {}.".format(mode_label, user))
+        sys.exit(0)
+
+    logging.info("Found {} job(s) to delete.".format(len(job_ids)))
+
+    if args.dry_run:
+        logging.info("Dry run — would delete the following jobs:")
+        for job_id in job_ids:
+            print(job_id)
+        sys.exit(0)
+
+    failed = 0
+    for job_id in job_ids:
+        try:
+            run("qdel {}".format(job_id))
+            logging.debug("Deleted {}".format(job_id))
+        except Exception as e:
+            logging.warning("Failed to delete {}: {}".format(job_id, e))
+            failed += 1
+
+    deleted = len(job_ids) - failed
+    logging.info("Deleted {} job(s).".format(deleted))
+    if failed:
+        logging.warning("{} job(s) could not be deleted.".format(failed))

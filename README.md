@@ -127,6 +127,25 @@ mqsub \
 ```
 
 
+# mqdel
+To delete PBS jobs for the current user, use `mqdel`. It queries `qstat` and calls `qdel` on matching jobs.
+
+Delete all queued jobs:
+```
+mqdel --queued
+```
+
+Delete all batch jobs:
+```
+mqdel --all
+```
+
+Preview which jobs would be deleted without actually deleting them:
+```
+mqdel --queued --dry-run
+mqdel --all --dry-run
+```
+
 # mqstat
 To view useful usage statistics (i.e. the percentage of microbiome queue CPUs which are currently in-use/available) simply type `mqstat`. Example output:
 ```
