@@ -60,8 +60,6 @@ if __name__ == '__main__':
     mode_group.add_argument('--queued', action='store_true',
                             help='Delete only queued (Q) jobs for the user')
 
-    parser.add_argument('--user', default=None,
-                        help='User whose jobs to delete [default: current user]')
     parser.add_argument('--dry-run', action='store_true',
                         help='Show which jobs would be deleted without actually deleting them')
 
@@ -76,14 +74,17 @@ if __name__ == '__main__':
     logging.basicConfig(level=loglevel, format='%(asctime)s %(levelname)s: %(message)s',
                         datefmt='%m/%d/%Y %I:%M:%S %p')
 
-    user = args.user if args.user else getpass.getuser()
+    user = getpass.getuser()
 
     if args.all:
         states = ['Q', 'R', 'H', 'S', 'W']
         mode_label = "all"
-    else:
+    elif args.queued:
         states = ['Q']
         mode_label = "queued"
+    else:
+        logging.error("No mode selected.")
+        sys.exit(1)
 
     logging.info("Finding {} jobs for user {} ...".format(mode_label, user))
     job_ids = get_user_jobs(user, states)
