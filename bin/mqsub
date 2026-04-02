@@ -260,7 +260,7 @@ class script_format:
                     raise
             logging.info("qsub stdout was: {}".format(qsub_stdout.rstrip()))
             if not args.bg:
-                match_result = re.compile('^(\d+\.aqua)\n$').match(qsub_stdout)
+                match_result = re.compile(r'^(\d+\.aqua)\n$').match(qsub_stdout)
                 if match_result is None:
                     raise Exception("Unexpected output from qsub: {}".format(qsub_stdout))
                 else:
@@ -371,7 +371,7 @@ def setup_segregated_logs_directory(command_name):
 ####################
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(usage=SUPPRESS,description='''
+    parser = argparse.ArgumentParser(usage=SUPPRESS,description=r'''
                             _     
                            | |    
   _ __ ___   __ _ ___ _   _| |__  
@@ -414,8 +414,8 @@ Example usage:
     parser.add_argument('--chunk-size',type=int,dest='chunk_size', help='Number of commands (from --command-file) per a chunk ')
     parser.add_argument('--prelude', help='Code from this file will be run before each chunk')
     temp_data_group = parser.add_mutually_exclusive_group()
-    temp_data_group.add_argument('--scratch-data', dest='scratch_data', nargs='+', help='Data to be copied to a scratch space prior to running the main command(s). Useful for databases used in large chunks of jobs. Use \$MSCRATCH to refer to the location.')
-    temp_data_group.add_argument('--tmp-data', dest='tmp_data', nargs='+', help='Data to be copied to a tmp space prior to running the main command(s). Useful for databases used in large chunks of jobs. Use \$TMPDIR to refer to the location. tmp space can fill up if you are running many in parallel, in which case use --scratch-data instead.')
+    temp_data_group.add_argument('--scratch-data', dest='scratch_data', nargs='+', help=r'Data to be copied to a scratch space prior to running the main command(s). Useful for databases used in large chunks of jobs. Use $MSCRATCH to refer to the location.')
+    temp_data_group.add_argument('--tmp-data', dest='tmp_data', nargs='+', help=r'Data to be copied to a tmp space prior to running the main command(s). Useful for databases used in large chunks of jobs. Use $TMPDIR to refer to the location. tmp space can fill up if you are running many in parallel, in which case use --scratch-data instead.')
     parser.add_argument('--run-tmp-dir', dest='run_tmp_dir',action='store_true', help='Executes your command(s) on the local SSD ($TMPDIR/mqsub_processing) of a node. IMPORTANT: Use absolute paths for your input files, and a relative path for your output.')
     parser.add_argument('--depend', nargs='+', help='Space separated list of ids for jobs this job should depend on.')
     parser.add_argument('--segregated-log-files', action='store_true', help='Put log files in ~/qsub_logs/<date>/<directory> instead of the current working directory.')
