@@ -189,17 +189,6 @@ BIND_ARGS+=(--bind "${CWD}:${CWD}:rw")
 if [[ -f "${CWD}/Cargo.toml" && -d "${CWD}/target" ]]; then
     BIND_ARGS+=(--bind "${CWD}/target:${CWD}/target:rw")
 fi
-# Always bind CARGO_HOME rw so the registry/cache is writable regardless of
-# whether a Rust project lives in the current directory.
-_cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
-if [[ -d "$_cargo_home" ]]; then
-    _cargo_home_real="$(realpath "$_cargo_home")"
-    # Bind at the logical path (not realpath) so Cargo records the same
-    # source paths inside and outside the container, avoiding fingerprint
-    # invalidation (PathToSourceChanged).
-    BIND_ARGS+=(--bind "${_cargo_home_real}:${_cargo_home}:rw")
-fi
-unset _cargo_home _cargo_home_real
 
 # --- Writable /pkg/cmr/{username}/pixi_dirs ---
 _pixi_dirs="/pkg/cmr/${USER}/pixi_dirs"
@@ -241,6 +230,15 @@ if [[ -d "${HOME}/.claude" ]]; then
     mkdir -p "${CONTAINER_HOME}/.claude"
     BIND_ARGS+=(--bind "${HOME}/.claude:/container_home/.claude:rw")
 fi
+# Bind ~/.cargo rw at its logical host path so CARGO_HOME is identical
+# inside and outside the container — prevents fingerprint mismatches that
+# would force cargo to rebuild from scratch on every switch.
+_cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
+_cargo_home_real="$(realpath "$_cargo_home" 2>/dev/null || true)"
+if [[ -n "$_cargo_home_real" && -d "$_cargo_home_real" ]]; then
+    BIND_ARGS+=(--bind "${_cargo_home_real}:${_cargo_home}:rw")
+fi
+unset _cargo_home _cargo_home_real
 # Bind ~/.cache entries individually with canonical paths so that symlinked
 # subdirs (e.g. rattler -> /pkg/...) get their own rw bind and aren't left
 # pointing at the ro-bound parent filesystem.
@@ -283,6 +281,7 @@ done
 [[ -f /etc/ssl/certs/ca-certificates.crt ]] && \
     ENV_ARGS+=(--env "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt")
 # Point Cargo at the rw-bound CARGO_HOME so builds share the host registry cache
+# Point Cargo at the rw-bound logical host path (same inside and outside)
 _cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
 [[ -d "$_cargo_home" ]] && ENV_ARGS+=(--env "CARGO_HOME=${_cargo_home}")
 unset _cargo_home
