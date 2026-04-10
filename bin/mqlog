@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+
+"""Print the stdout and stderr of the most recently finished PBS job."""
+
+import argparse
+import getpass
+import json
+import os
+import subprocess
+import sys
+
+
+def run(command):
+    process = subprocess.Popen(
+        ["bash", "-o", "pipefail", "-c", command],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = process.communicate()
+    if process.returncode != 0:
+        raise Exception("Command failed: {}\nSTDERR: {}".format(command, stderr.decode()))
+    return stdout
+
+
+def get_finished_job_ids(user):
+    """Parse qstat -x text output to get finished job IDs for the user, ordered as listed."""
+    stdout = run("qstat -x 2>/dev/null")
+    job_ids = []
+    for line in stdout.decode().splitlines():
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        job_id, _name, owner, _time, state = parts[0], parts[1], parts[2], parts[3], parts[4]
+        if owner == user and state == 'F':
+            job_ids.append(job_id)
+    return job_ids
+
+
+def get_stderr_path(job_id):
+    """Use qstat -xf on a single job to find its stderr file path."""
+    stdout = run("qstat -xf -F json {} 2>/dev/null".format(job_id))
+    data = json.loads(stdout.decode())
+    info = list(data.get("Jobs", {}).values())[0]
+    error_path = info.get("Error_Path", "")
+    # Error_Path is host:/path/to/dir/
+    if ":" in error_path:
+        error_path = error_path.split(":", 1)[1]
+    # The stderr file is <jobid>.ER inside the directory
+    stderr_file = os.path.join(error_path, "{}.ER".format(job_id))
+    return stderr_file
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Print stdout and stderr of the most recently finished PBS job.')
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--stdout', action='store_true',
+                       help='Print only the stdout (.OU) of the job')
+    group.add_argument('--stderr', action='store_true',
+                       help='Print only the stderr (.ER) of the job')
+    parser.add_argument('job_id', nargs='?', default=None,
+                        help='Job ID to show logs for (default: most recent finished job)')
+    args = parser.parse_args()
+
+    if args.job_id is not None:
+        # Use the specified job ID directly
+        job_id = args.job_id
+        if not job_id.endswith('.aqua'):
+            job_id = job_id + '.aqua'
+        found_er_path = get_stderr_path(job_id)
+        found_ou_path = found_er_path.rsplit(".ER", 1)[0] + ".OU"
+        if not os.path.exists(found_er_path) and not os.path.exists(found_ou_path):
+            print("Log file not found for job {}.".format(job_id), file=sys.stderr)
+            sys.exit(1)
+    else:
+        user = getpass.getuser()
+        job_ids = get_finished_job_ids(user)
+
+        if not job_ids:
+            print("No finished jobs found.", file=sys.stderr)
+            sys.exit(1)
+
+        # Walk backwards from most recent to find a job that actually ran (has a log file)
+        most_recent = job_ids[-1]
+        found_job_id = None
+        found_er_path = None
+        for job_id in reversed(job_ids):
+            stderr_path = get_stderr_path(job_id)
+            stdout_path = stderr_path.rsplit(".ER", 1)[0] + ".OU"
+            if os.path.exists(stderr_path) or os.path.exists(stdout_path):
+                found_job_id = job_id
+                found_er_path = stderr_path
+                break
+
+        if found_job_id is None:
+            print("No finished jobs with log files found.", file=sys.stderr)
+            sys.exit(1)
+
+        if found_job_id != most_recent:
+            print("WARNING: Most recent finished job {} has no log file. "
+                  "Showing log from {}.".format(most_recent, found_job_id),
+                  file=sys.stderr)
+
+    found_ou_path = found_er_path.rsplit(".ER", 1)[0] + ".OU"
+
+    if args.stdout:
+        paths = [found_ou_path]
+    elif args.stderr:
+        paths = [found_er_path]
+    else:
+        paths = [found_ou_path, found_er_path]
+
+    for path in paths:
+        if os.path.exists(path):
+            with open(path) as f:
+                sys.stdout.write(f.read())
+
+
+if __name__ == '__main__':
+    main()
