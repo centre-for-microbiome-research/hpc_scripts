@@ -282,10 +282,12 @@ def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_lo
     suggestions = []
     suggested_envs_dir = f"/pkg/cmr/{username}/conda/envs"
     suggested_pkgs_dir = f"/pkg/cmr/{username}/conda/pkgs"
+    conda_dir = os.path.dirname(suggested_envs_dir)  # /pkg/cmr/[username]/conda
 
     step_num = 1
     if not env_dirs_ok:
         suggestions.append(f"{step_num}. Move the conda dir to new location")
+        suggestions.append(f"   mkdir -p {conda_dir}")
         suggestions.append(f"   mv ~/.conda/envs {suggested_envs_dir}")
         step_num += 1
 
