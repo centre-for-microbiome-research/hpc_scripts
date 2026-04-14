@@ -258,20 +258,19 @@ def check_pixi_detached_environments():
 def generate_template_condarc(suggested_envs_dir, suggested_pkgs_dir):
     """Generate a template .condarc file with CMR-specific settings."""
     
+    # NOTE: Changes here should be reflected in the CMR compute notes
+
     template = f"""# CMR HPC conda configuration
 # Place this in ~/.condarc
-
 channels:
   - conda-forge
   - bioconda
   - defaults
-
 envs_dirs:
-  - {suggested_envs_dir}
-
+  - {suggested_envs_dir} # personal environments
+  - /work/microbiome/sw/conda/envs # central conda environments
 pkgs_dirs:
   - {suggested_pkgs_dir}
-
 solver: libmamba
 """
     return template
@@ -281,7 +280,7 @@ def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_lo
     """Generate suggestions for fixing conda and optional pixi configuration issues."""
     username = getpass.getuser()
     suggestions = []
-    suggested_envs_dir = f"/pkg/cmr/{username}/conda/envs"
+    suggested_envs_dir = f"/pkg/cmr/{username}/conda/e"
     suggested_pkgs_dir = f"/pkg/cmr/{username}/conda/pkgs"
 
     step_num = 1
@@ -317,7 +316,7 @@ def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_lo
         suggestions.append(f"{step_num}. Clean up old qsub log folders:")
         suggestions.append(f"   # Review and remove folders older than 3 months in ~/qsub_logs")
         suggestions.append(f"   # Example: rm -rf ~/qsub_logs/2024-01-*  # (adjust dates as needed)")
-        suggestions.append(f"   # Or use (careful though as the command will delete files and might print a lot since -v is in the rm command): find ~/qsub_logs/ -maxdepth 1 -name '????-??-??' -type d -mtime +89 | xargs rm -rfv")
+        suggestions.append(f"   # Or use (careful though as the command will delete files and might print a lot since -v is in the rm command):\n  find ~/qsub_logs/ -maxdepth 1 -name '????-??-??' -type d -mtime +89 | xargs rm -rfv")
         step_num += 1
 
     if not pixi_cache_ok:
