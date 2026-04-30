@@ -68,6 +68,19 @@ def run_command(command):
         return None
     return stdout.decode('utf-8')
 
+def get_offline_node_names():
+    """Return set of offline/down node names from `pbsnodes -l`."""
+    output = run_command("pbsnodes -l")
+    if not output:
+        return set()
+    names = set()
+    for line in output.splitlines():
+        parts = line.split()
+        if parts:
+            names.add(parts[0])
+    return names
+
+
 def parse_pbsnodes_output():
     """Parse the output of `pbsnodes -a` into structured resource usage data."""
     output = run_command("pbsnodes -a")
@@ -556,8 +569,25 @@ def create_ascii_bar(percentage, width=40, reverse=False, colour_text=None):
     bar = f"{color}{'█' * filled_width}{Colors.ENDC}{'░' * empty_width} {percentage:.1f}%"
     if colour_text:
         bar = coloured_text(colour_text, color) + bar
-    
+
     return bar
+
+def create_nodes_bar(running, offline, total, width=40):
+    """Bar showing running (yellow), offline (red), and idle (green) nodes."""
+    if total <= 0:
+        return f"{'░' * width}\n          0 running, 0 offline"
+    running_width = int(running / total * width)
+    offline_width = int(offline / total * width)
+    if running_width + offline_width > width:
+        offline_width = max(0, width - running_width)
+    idle_width = width - running_width - offline_width
+    bar = (
+        f"{Colors.GREEN}{'█' * idle_width}{Colors.ENDC}"
+        f"{Colors.YELLOW}{'█' * running_width}{Colors.ENDC}"
+        f"{Colors.RED}{'█' * offline_width}{Colors.ENDC}"
+    )
+    idle = total - running - offline
+    return f"{bar}\n          {idle} idle, {running} running, {offline} offline ({total} total)"
 
 def coloured_text(text, color):
     """Apply color to text."""
@@ -1069,7 +1099,10 @@ def main():
     if cluster_stats['total_gpus'] > 0:
         print(f"CPU-only: {create_ascii_bar(cluster_stats['cpu_only_utilization'])}")
         print(f"GPU:      {create_ascii_bar(cluster_stats['gpu_utilization'])}")
-    print(f'Nodes:    {create_ascii_bar(cluster_stats["active_nodes"]/cluster_stats["total_nodes"]*100)}')
+    offline_names = get_offline_node_names()
+    offline_count = sum(1 for node in nodes if node['name'] in offline_names)
+    running_count = sum(1 for node in nodes if node['used_cpu'] > 0 and node['name'] not in offline_names)
+    print(f'Nodes:    {create_nodes_bar(running_count, offline_count, cluster_stats["total_nodes"])}')
     
     # Num cpus, total ram, gpus
     ram_tb = cluster_stats['total_memory_gb'] / 1024
