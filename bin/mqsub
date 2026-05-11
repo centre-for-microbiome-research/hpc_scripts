@@ -29,6 +29,104 @@ import re
 
 DEFAULT_RAM_TO_CPU_RATIO = 1495.0 / 192.0
 
+ENSURE_CPU_USAGE_EXIT_STATUS = 151
+
+ENSURE_CPU_USAGE_SHELL_SNIPPET = r'''
+# --- mqsub --ensure-cpu-usage monitor ---
+export MQSUB_ENSURE_SENTINEL="${TMPDIR:-/tmp}/mqsub_ensure_cpu_fail.${PBS_JOBID:-$$}"
+export MQSUB_ENSURE_SHELL_PID=$$
+rm -f "$MQSUB_ENSURE_SENTINEL"
+
+_mqsub_ensure_cleanup() {
+    local _ec=$?
+    if [ -n "${MQSUB_ENSURE_MONITOR_PID:-}" ]; then
+        kill "$MQSUB_ENSURE_MONITOR_PID" 2>/dev/null
+        wait "$MQSUB_ENSURE_MONITOR_PID" 2>/dev/null
+    fi
+    if [ -f "$MQSUB_ENSURE_SENTINEL" ]; then
+        rm -f "$MQSUB_ENSURE_SENTINEL"
+        exit 151
+    fi
+    exit $_ec
+}
+trap _mqsub_ensure_cleanup EXIT TERM
+
+python3 -u - <<'_MQSUB_ENSURE_PY_EOF' &
+import json, os, signal, subprocess, sys, time
+
+INTERVAL = int(os.environ['MQSUB_ENSURE_INTERVAL'])
+THRESHOLD = float(os.environ['MQSUB_ENSURE_THRESHOLD'])
+NCPUS = int(os.environ['MQSUB_ENSURE_NCPUS'])
+JOB_ID = os.environ.get('PBS_JOBID', '')
+SHELL_PID = int(os.environ['MQSUB_ENSURE_SHELL_PID'])
+SENTINEL = os.environ['MQSUB_ENSURE_SENTINEL']
+
+def parse_pbs_time(s):
+    if not s:
+        return 0
+    try:
+        parts = str(s).split(':')
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + int(parts[1])
+        return int(parts[0])
+    except (ValueError, IndexError):
+        return 0
+
+def fetch():
+    if not JOB_ID:
+        return None, None
+    try:
+        out = subprocess.check_output(
+            ['qstat', '-x', '-f', JOB_ID, '-F', 'json'],
+            stderr=subprocess.DEVNULL).decode()
+        info = json.loads(out)['Jobs'][JOB_ID]
+        r = info.get('resources_used') or {}
+        return parse_pbs_time(r.get('cput')), parse_pbs_time(r.get('walltime'))
+    except Exception:
+        return None, None
+
+baseline_cput, baseline_walltime = fetch()
+if baseline_cput is None:
+    baseline_cput, baseline_walltime = 0, 0
+
+while True:
+    time.sleep(INTERVAL)
+    cput, walltime = fetch()
+    if cput is None:
+        continue
+    delta_cput = cput - baseline_cput
+    delta_walltime = walltime - baseline_walltime
+    if delta_walltime <= 0:
+        continue
+    expected = delta_walltime * NCPUS
+    ratio = (delta_cput / expected * 100.0) if expected > 0 else 100.0
+    if ratio < THRESHOLD:
+        sys.stderr.write(
+            "mqsub: --ensure-cpu-usage check failed for job {}: over the last {}s of "
+            "walltime, cput delta was {}s with {} CPUs allocated ({:.1f}%, below "
+            "threshold of {:.1f}%). Cancelling job.\n".format(
+                JOB_ID, delta_walltime, delta_cput, NCPUS, ratio, THRESHOLD))
+        sys.stderr.flush()
+        try:
+            open(SENTINEL, 'w').close()
+        except Exception:
+            pass
+        try:
+            os.killpg(os.getpgid(SHELL_PID), signal.SIGTERM)
+        except Exception:
+            try:
+                os.kill(SHELL_PID, signal.SIGTERM)
+            except Exception:
+                pass
+        sys.exit(0)
+    baseline_cput, baseline_walltime = cput, walltime
+_MQSUB_ENSURE_PY_EOF
+MQSUB_ENSURE_MONITOR_PID=$!
+# --- end mqsub --ensure-cpu-usage monitor ---
+'''
+
 ## Code below copied from the extern python package. Copy the code here so there are no dependencies.
 
 def run(command, stdin=None):
@@ -199,7 +297,12 @@ class script_format:
         except:
             current_conda_env = None
         if current_conda_env:
-            print("conda activate '{}'".format(current_conda_env),file=outfile)  
+            print("conda activate '{}'".format(current_conda_env),file=outfile)
+        if args.ensure_cpu_usage:
+            print("\nexport MQSUB_ENSURE_NCPUS={}".format(args.cpus), file=outfile)
+            print("export MQSUB_ENSURE_THRESHOLD={}".format(args.ensure_cpu_usage_threshold), file=outfile)
+            print("export MQSUB_ENSURE_INTERVAL={}".format(args.ensure_cpu_usage_interval), file=outfile)
+            print(ENSURE_CPU_USAGE_SHELL_SNIPPET, file=outfile)
         if args.command_file and (args.chunk_num or args.chunk_size):
             print("\nNUM_FAILED=0\n", file=outfile)
         if args.command_file and (args.chunk_num or args.chunk_size):
@@ -419,6 +522,9 @@ Example usage:
     parser.add_argument('--run-tmp-dir', dest='run_tmp_dir',action='store_true', help='Executes your command(s) on the local SSD ($TMPDIR/mqsub_processing) of a node. IMPORTANT: Use absolute paths for your input files, and a relative path for your output.')
     parser.add_argument('--depend', nargs='+', help='Space separated list of ids for jobs this job should depend on.')
     parser.add_argument('--segregated-log-files', action='store_true', help='Put log files in ~/qsub_logs/<date>/<directory> instead of the current working directory.')
+    parser.add_argument('--ensure-cpu-usage', action='store_true', help='While the job runs, check that it is using at least --ensure-cpu-usage-threshold %% of its allocated CPUs over each --ensure-cpu-usage-interval window. If not, qdel the job and exit with status {}.'.format(ENSURE_CPU_USAGE_EXIT_STATUS))
+    parser.add_argument('--ensure-cpu-usage-threshold', type=float, default=50.0, help='Minimum percentage of allocated CPU time that resources_used.cput must accumulate during each check window when --ensure-cpu-usage is set [default: 50.0]')
+    parser.add_argument('--ensure-cpu-usage-interval', type=int, default=1800, help='Length of each --ensure-cpu-usage check window in seconds [default: 1800 (30 min)]')
     parser.add_argument('command',nargs='*',help='command to be run')
     parser.epilog = '''
 ----------------------------------------------------------------------------------------------------------

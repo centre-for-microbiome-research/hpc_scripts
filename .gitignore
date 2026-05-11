@@ -3,3 +3,6 @@ echo.done
 __pycache__/
 qstat_filter/target/
 singularity/ai_tool.sif
+# pixi environments
+.pixi/*
+!.pixi/config.toml
