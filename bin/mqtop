@@ -313,6 +313,28 @@ def ljust_ansi(text: str, width: int) -> str:
     return text + " " * pad
 
 
+def truncate_visible(text: str, width: int) -> str:
+    """Truncate *text* so its visible length is at most *width*.
+
+    Appends an ellipsis when truncation occurs. Assumes *text* contains no
+    ANSI escapes (row colouring is applied later).
+    """
+    if width <= 0:
+        return ""
+    if visible_len(text) <= width:
+        return text
+    limit = width - 1  # reserve one column for the ellipsis
+    out = []
+    used = 0
+    for ch in text:
+        w = _width(ch)
+        if used + w > limit:
+            break
+        out.append(ch)
+        used += w
+    return "".join(out) + "…"
+
+
 def rjust_ansi(text: str, width: int) -> str:
     pad = max(width - visible_len(text), 0)
     return " " * pad + text
@@ -647,7 +669,7 @@ def format_jobs(jobs, maxx, now=None):
     for r in rows:
         parts = [
             ljust_ansi(r["job_id"], id_w),
-            ljust_ansi(r["name"], name_w),
+            ljust_ansi(truncate_visible(r["name"], name_w), name_w),
             ljust_ansi(r["used"], time_w),
             r["bar"],
             ljust_ansi(r["wall"], wall_w),

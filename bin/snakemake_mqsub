@@ -3,6 +3,7 @@ import os
 import sys
 import subprocess
 import argparse
+import math
 
 from snakemake.utils import read_job_properties
 
@@ -91,7 +92,11 @@ if __name__ == '__main__':
 
     if 'runtime' in job_properties['resources'] and job_properties['resources']['runtime'] != '<TBD>':
         runtime_mins = job_properties['resources']['runtime'] # Fails with snakemake == 7.16.0, but works with 7.30.1
-        runtime_hours = "--hours {}".format(int(runtime_mins / 60))
+        # Make the runtime in hours, rounding up to the nearest hour, because that's how the cluster expects it.
+        hours_int = math.ceil(runtime_mins / 60)
+        if hours_int < 1:
+            hours_int = 1
+        runtime_hours = "--hours {}".format(hours_int)
     else:
         runtime_hours = ''
 
@@ -142,8 +147,11 @@ if __name__ == '__main__':
         depend=depend, segregated_log_files_arg=segregated_log_files_arg,
         gpu_arg=gpu_arg)
 
-    if args.dry_run:
-        print(cmd)
+    if args.dry_run or os.getenv('SNAKEMAKE_MQSUB_DRY_RUN', None) is not None:
+        with open('snakemake_mqsub_debug.log', 'w') as f:
+            f.write(cmd + '\n')
+            f.write("resources: " + str(job_properties['resources']) + '\n')
+            f.write("runtime_hours: {}\n".format(runtime_hours))
         sys.exit(1) # exit 1 so that if this is through an actual snakemake run it quits immediately
     else:
         mqsub_stdout = run(cmd)
