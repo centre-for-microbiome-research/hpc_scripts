@@ -1,0 +1,15 @@
+# Weekly automated rebuild of ai_tool.sif so the bundled AI CLIs
+# (claude, codex, copilot) stay up to date.
+#
+# Install on the HPC login node where cron runs (NOT in a container/build node):
+#     crontab -l > ~/crontab.bak                          # back up existing entries
+#     cat rebuild_ai_tool_sif.crontab >> ~/crontab.bak
+#     crontab ~/crontab.bak
+# Note: plain `crontab rebuild_ai_tool_sif.crontab` REPLACES the whole table.
+#
+# Every Monday at 02:00, submit the rebuild to the PBS queue via mqsub.
+# rebuild_ai_tool_sif.sh builds ai_tool.new.sif and mv's it onto ai_tool.sif
+# only if the build succeeds (the script runs under `set -e`).
+# `bash -lc` is used so cron's minimal environment picks up the login-shell
+# PATH (mqsub, qsub, python3.9).
+0 2 * * 1 bash -lc 'cd /home/woodcrob/m/sw/hpc_scripts/singularity && mqsub --seg --quiet --hours 1 -t 1 --name mqyolo_singularity_rebuild --bg --script /home/woodcrob/m/sw/hpc_scripts/singularity/rebuild_ai_tool_sif.sh'
