@@ -137,9 +137,21 @@ CWD="$(realpath "$(pwd)")"
 
 BIND_ARGS=()
 
-# --- Read-only system/data paths ---
-# /etc for DNS resolution, SSL certs, nsswitch, etc.
-[[ -d /etc ]] && BIND_ARGS+=(--bind "/etc:/etc:ro")
+# --- Read-only system/network config ---
+# Bind only the specific /etc files needed for DNS and TLS — do NOT bind the
+# host's entire /etc over the container's.  In Debian (the node:22 base) many
+# core commands (awk, which, editor, pager, ...) are symlinks that resolve
+# through the alternatives tree, e.g.
+#     /usr/bin/awk -> /etc/alternatives/awk -> /usr/bin/mawk
+# A blanket "--bind /etc:/etc:ro" replaces the container's /etc/alternatives
+# with the host's, whose targets don't exist inside the container, so those
+# symlinks dangle and the commands appear "not found".  Binding individual
+# files leaves the container's /etc/alternatives intact.
+for _etc in /etc/resolv.conf /etc/hosts /etc/nsswitch.conf /etc/localtime \
+            /etc/passwd /etc/group /etc/ssl /etc/pki /etc/ca-certificates; do
+    [[ -e "$_etc" ]] && BIND_ARGS+=(--bind "${_etc}:${_etc}:ro")
+done
+unset _etc
 # /etc/resolv.conf may be a symlink (e.g. systemd-resolved); bind the real target
 # so DNS works inside the container.
 _resolv_real="$(realpath /etc/resolv.conf 2>/dev/null || true)"
