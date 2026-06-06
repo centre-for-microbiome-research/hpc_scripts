@@ -242,15 +242,31 @@ if [[ -d "${HOME}/.claude" ]]; then
     mkdir -p "${CONTAINER_HOME}/.claude"
     BIND_ARGS+=(--bind "${HOME}/.claude:/container_home/.claude:rw")
 fi
-# Bind ~/.cargo rw at its logical host path so CARGO_HOME is identical
-# inside and outside the container — prevents fingerprint mismatches that
-# would force cargo to rebuild from scratch on every switch.
+# Bind CARGO_HOME (default ~/.cargo) rw so `cargo build`/`cargo test` can
+# download missing deps into the registry.
+#
+# On HPC ~/.cargo is commonly a symlink into shared storage, e.g.
+#     ~/.cargo -> /pkg/cmr/$USER/.cargo   (realpath /mnt/weka/pkg/...)
+# Inside the container /home, /pkg and /mnt are all bound READ-ONLY, so an rw
+# bind onto the *logical* path lands on the symlink and writes fall through to
+# the ro mount — cargo then can't write the registry and `cargo test` croaks
+# with read-only-filesystem errors when a dependency isn't already cached.
+#
+# Fix: bind the real cargo dir rw at every path the container may resolve it
+# through — its realpath, and (if ~/.cargo is a symlink) the symlink's literal
+# target. CARGO_HOME itself stays the original logical path (set below) so the
+# registry-src paths recorded in target/ don't change and cargo isn't forced
+# into a full rebuild.
 _cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
 _cargo_home_real="$(realpath "$_cargo_home" 2>/dev/null || true)"
 if [[ -n "$_cargo_home_real" && -d "$_cargo_home_real" ]]; then
-    BIND_ARGS+=(--bind "${_cargo_home_real}:${_cargo_home}:rw")
+    BIND_ARGS+=(--bind "${_cargo_home_real}:${_cargo_home_real}:rw")
+    _cargo_link="$(readlink "$_cargo_home" 2>/dev/null || true)"
+    if [[ -n "$_cargo_link" && "$_cargo_link" == /* && "$_cargo_link" != "$_cargo_home_real" ]]; then
+        BIND_ARGS+=(--bind "${_cargo_home_real}:${_cargo_link}:rw")
+    fi
 fi
-unset _cargo_home _cargo_home_real
+unset _cargo_home _cargo_home_real _cargo_link
 # Bind ~/.cache entries individually with canonical paths so that symlinked
 # subdirs (e.g. rattler -> /pkg/...) get their own rw bind and aren't left
 # pointing at the ro-bound parent filesystem.

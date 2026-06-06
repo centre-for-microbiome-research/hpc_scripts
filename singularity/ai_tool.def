@@ -5,6 +5,16 @@ From: node:22
     Description Claude Code / OpenAI Codex CLI / GitHub Copilot CLI in a restricted container
 
 %post
+    # Handful of CLI tools missing from the node:22 (Debian) base image.
+    #   time:  /usr/bin/time, expected by benchmarking wrappers (e.g. mqsub) and
+    #          many build/test scripts; without it they fail with
+    #          "/usr/bin/time: No such file or directory".
+    #   less:  default pager many tools (git, etc.) shell out to.
+    #   rsync: commonly invoked for file transfers inside sessions.
+    apt-get update
+    apt-get install -y --no-install-recommends time less rsync
+    rm -rf /var/lib/apt/lists/*
+
     # Install Claude Code, OpenAI Codex CLI, and GitHub Copilot CLI
     npm install -g @anthropic-ai/claude-code@latest @openai/codex@latest @github/copilot@latest
 
