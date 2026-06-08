@@ -1,0 +1,91 @@
+#!/bin/bash
+# mqsandbox - run an arbitrary command inside the same restricted
+# Apptainer/Singularity container that mqyolo uses for interactive AI sessions.
+#
+# It enforces the same filesystem constraints as mqyolo:
+#   - the working directory:  read-write
+#   - /tmp, /var/tmp:         read-write
+#   - HPC data mounts, /etc:  read-only
+#   - everything else:        not visible (--contain)
+#   - $HOME:                  ephemeral, dotfiles symlinked from the real home
+#
+# This is what `mqsub --sandbox` wraps each submitted job in, so jobs run on the
+# compute nodes under the very same constraints as the interactive session that
+# submitted them.
+#
+# Usage:
+#   mqsandbox [--cwd DIR] [--rw-paths PATH...] [--sif PATH] [--debug] -- command [args...]
+#
+# Environment variables:
+#   AI_TOOL_SIF   Override path to the .sif image (default: ../singularity/ai_tool.sif)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=_sandbox_common.bash
+source "${SCRIPT_DIR}/_sandbox_common.bash"
+
+SIF="${AI_TOOL_SIF:-${SCRIPT_DIR}/../singularity/ai_tool.sif}"
+CWD=""
+DEBUG=0
+RW_PATHS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --cwd)      CWD="$2"; shift 2 ;;
+        --sif)      SIF="$2"; shift 2 ;;
+        --debug)    DEBUG=1; shift ;;
+        --rw-paths)
+            shift
+            while [[ $# -gt 0 && "$1" != --* && "$1" != "--" ]]; do
+                RW_PATHS+=("$1"); shift
+            done
+            ;;
+        --)         shift; break ;;
+        -h|--help)
+            sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            exit 0 ;;
+        *)          break ;;
+    esac
+done
+
+if [[ $# -eq 0 ]]; then
+    echo "mqsandbox: no command given (did you forget '--'?)" >&2
+    exit 2
+fi
+
+sandbox_detect_runtime
+sandbox_require_sif "$SIF"
+
+[[ -z "$CWD" ]] && CWD="$(pwd)"
+CWD="$(realpath "$CWD")"
+
+BIND_ARGS=()
+ENV_ARGS=()
+
+sandbox_make_home
+trap 'rm -rf "$CONTAINER_HOME"' EXIT
+sandbox_build_binds "$CWD" "${RW_PATHS[@]+"${RW_PATHS[@]}"}"
+sandbox_home_dotfiles
+# Forward terminal-rendering vars only; jobs should not inherit API keys.
+sandbox_build_env TERM COLORTERM NO_COLOR
+
+if [[ "$DEBUG" -eq 1 ]]; then
+    echo "mqsandbox: exec command:" >&2
+    printf '  %q' "$RUNTIME" exec --contain \
+        "${BIND_ARGS[@]}" "${ENV_ARGS[@]}" \
+        --pwd "${CWD}" "${SIF}" \
+        bash -c '[[ -f ~/.bashrc ]] && source ~/.bashrc 2>/dev/null; exec "$@"' _ "$@" >&2
+    echo >&2
+fi
+
+# Run as a child (not exec) so the EXIT trap fires and the temp home is removed
+# — important on compute nodes where it would otherwise leak under /tmp.
+"$RUNTIME" exec \
+    --contain \
+    "${BIND_ARGS[@]}" \
+    "${ENV_ARGS[@]}" \
+    --pwd "${CWD}" \
+    "${SIF}" \
+    bash -c '[[ -f ~/.bashrc ]] && source ~/.bashrc 2>/dev/null; exec "$@"' _ "$@"
+exit $?

@@ -8,45 +8,39 @@
 #   - $HOME:             isolated ephemeral directory, not your real home
 #
 # Usage:
-#   run_ai_tool.sh [claude|codex|copilot] [args...]
+#   mqyolo [claude|codex|copilot] [args...]
 #
 # Environment variables:
 #   ANTHROPIC_API_KEY   Required for claude
 #   OPENAI_API_KEY      Required for codex
 #   GITHUB_TOKEN        Required for copilot
 #   AI_TOOL_SIF         Override path to .sif file (default: same dir as this script)
+#
+# The filesystem-sandbox construction is shared with mqsandbox via
+# _sandbox_common.bash so that jobs submitted from inside the container (see the
+# "mqsub from inside the container" section below) run under the same constraints.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=_sandbox_common.bash
+source "${SCRIPT_DIR}/_sandbox_common.bash"
+
 SIF="${AI_TOOL_SIF:-${SCRIPT_DIR}/../singularity/ai_tool.sif}"
 
-# Detect apptainer or singularity
-if command -v apptainer &>/dev/null; then
-    RUNTIME=apptainer
-elif command -v singularity &>/dev/null; then
-    RUNTIME=singularity
-else
-    echo "Error: neither apptainer nor singularity found in PATH" >&2
-    exit 1
-fi
+sandbox_detect_runtime
+sandbox_require_sif "$SIF"
 
-# Check the SIF exists
-if [[ ! -f "$SIF" ]]; then
-    echo "Error: container image not found: $SIF" >&2
-    echo "Build it with:" >&2
-    echo "  apptainer build --fakeroot ai_tool.sif ai_tool.def" >&2
-    exit 1
-fi
-
-# Parse tool name (default: claude) and --debug flag
+# Parse tool name (default: claude), --debug, --rw-paths, --no-broker
 TOOL="claude"
 DEBUG=0
+NO_BROKER=0
 RW_PATHS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         claude|codex|copilot) TOOL="$1"; shift ;;
         --debug)      DEBUG=1;   shift ;;
+        --no-broker)  NO_BROKER=1; shift ;;
         --rw-paths)
             shift
             while [[ $# -gt 0 && "$1" != --* ]]; do
@@ -58,7 +52,7 @@ while [[ $# -gt 0 ]]; do
 mqyolo - run an AI coding tool inside a sandboxed Apptainer/Singularity container
 
 USAGE
-  mqyolo [claude|codex] [--debug] [--rw-paths PATH...] [args...]
+  mqyolo [claude|codex] [--debug] [--rw-paths PATH...] [--no-broker] [args...]
 
 TOOLS
   claude   (default) Claude Code — passes --dangerously-skip-permissions
@@ -67,7 +61,10 @@ TOOLS
 
 OPTIONS
   --debug              Print the full exec command before running
-  --rw-paths PATH...   Bind one or more extra paths into the container as read-write
+  --rw-paths PATH...   Bind one or more extra paths into the container as read-write.
+                       Jobs submitted via the broker inherit exactly these writable
+                       paths; the AI inside the container cannot change them.
+  --no-broker          Do not start the mqsub broker (mqsub will be unavailable inside the container)
   help, -h, --help     Show this help text
 
   Any remaining arguments are passed through verbatim to the tool.
@@ -89,6 +86,18 @@ FILESYSTEM INSIDE THE CONTAINER
   ~  (HOME)           isolated ephemeral directory, not your real home;
                       dotfiles are symlinked from your real home so tools
                       like git, ssh etc. pick up your config
+
+MQSUB FROM INSIDE THE CONTAINER
+  qsub and the python3.9 mqsub depends on do not exist inside the container, so
+  mqsub cannot run there directly. Instead, mqyolo starts a lightweight broker
+  on the host for the duration of the session (one broker per mqyolo session).
+  Inside the container, mqsub/mqstat/mqwait/mqdel are thin stubs that forward the
+  request to the broker, which runs the real command on the host. mqsub jobs are
+  automatically submitted with --sandbox, so each job runs on its compute node
+  inside the SAME restricted container (only its working directory plus mqyolo's
+  --rw-paths writable) via mqsandbox. Those writable paths are fixed by mqyolo at
+  launch and cannot be changed from inside the container. The broker exits when
+  mqyolo exits or is killed; use --no-broker to disable it.
 
 CLAUDE SETTINGS
   ~/.cache/           bound read-write so tools can read and write the
@@ -123,92 +132,27 @@ done
 CWD="$(realpath "$(pwd)")"
 
 # ---------------------------------------------------------------------------
-# Bind mount strategy
-#
-# We use --contain for a clean slate, then selectively bind:
-#   1. Host filesystem paths at their real paths (read-only) so the AI can
-#      read your code.  We skip /usr, /lib, /bin, /sbin since the container
-#      supplies those for its own Node.js/tools.
-#   2. $CWD at the same path (read-write) — added LAST so it shadows any
-#      read-only parent that was already bound.
-#   3. /tmp and /var/tmp (read-write).
-#   4. A throw-away directory as /container_home (read-write, cleaned up on exit).
+# Build the filesystem sandbox (shared with mqsandbox via _sandbox_common.bash)
 # ---------------------------------------------------------------------------
-
 BIND_ARGS=()
+ENV_ARGS=()
 
-# --- Read-only system/network config ---
-# Bind only the specific /etc files needed for DNS and TLS — do NOT bind the
-# host's entire /etc over the container's.  In Debian (the node:22 base) many
-# core commands (awk, which, editor, pager, ...) are symlinks that resolve
-# through the alternatives tree, e.g.
-#     /usr/bin/awk -> /etc/alternatives/awk -> /usr/bin/mawk
-# A blanket "--bind /etc:/etc:ro" replaces the container's /etc/alternatives
-# with the host's, whose targets don't exist inside the container, so those
-# symlinks dangle and the commands appear "not found".  Binding individual
-# files leaves the container's /etc/alternatives intact.
-for _etc in /etc/resolv.conf /etc/hosts /etc/nsswitch.conf /etc/localtime \
-            /etc/passwd /etc/group /etc/ssl /etc/pki /etc/ca-certificates; do
-    [[ -e "$_etc" ]] && BIND_ARGS+=(--bind "${_etc}:${_etc}:ro")
-done
-unset _etc
-# /etc/resolv.conf may be a symlink (e.g. systemd-resolved); bind the real target
-# so DNS works inside the container.
-_resolv_real="$(realpath /etc/resolv.conf 2>/dev/null || true)"
-if [[ -n "$_resolv_real" && "$_resolv_real" != /etc/resolv.conf && -f "$_resolv_real" ]]; then
-    BIND_ARGS+=(--bind "${_resolv_real}:${_resolv_real}:ro")
+# Ephemeral home directory (cleaned up on exit by the trap below).
+sandbox_make_home
+
+# --- Real ~/.claude settings (config, theme, history) — claude-specific ---
+# HOME inside the container is /container_home. Bind ~/.claude/ and stage a copy
+# of ~/.claude.json there so Claude Code can read/write its auth token and
+# settings without touching the read-only home bind.
+if [[ -d "${HOME}/.claude" ]]; then
+    mkdir -p "${CONTAINER_HOME}/.claude"
+    BIND_ARGS+=(--bind "${HOME}/.claude:/container_home/.claude:rw")
 fi
-unset _resolv_real
-
-# Common HPC data mounts — bind read-only
-for dir in /home /mnt /pkg /external /scratch /nfs /data /storage /projects /work /project; do
-    [[ -d "$dir" ]] && BIND_ARGS+=(--bind "${dir}:${dir}:ro")
-done
-
-# Auto-detect any additional mounted filesystems from /proc/mounts
-# (skips virtual/system filesystems and paths already handled above)
-SKIP_PATTERN='^/(sys|proc|dev|run|boot|usr|lib|lib64|bin|sbin|opt|tmp|var/tmp|etc|home|mnt|external|scratch|nfs|data|storage|projects|work|project)'
-while read -r _ mountpoint fstype _rest; do
-    # Skip virtual/system filesystems
-    case "$fstype" in
-        sysfs|proc|devtmpfs|devpts|tmpfs|cgroup*|pstore|efivarfs|bpf|overlay|\
-        fuse.lxcfs|fusectl|hugetlbfs|mqueue|debugfs|tracefs|securityfs|\
-        configfs|squashfs|ramfs|rpc_pipefs|autofs)
-            continue ;;
-    esac
-    # Skip paths already covered or that belong to the container
-    [[ "$mountpoint" == "/" ]] && continue
-    [[ "$mountpoint" =~ $SKIP_PATTERN ]] && continue
-    [[ -d "$mountpoint" ]] && BIND_ARGS+=(--bind "${mountpoint}:${mountpoint}:ro")
-done < /proc/mounts
-
-# --- Writable temp dirs ---
-[[ -d /tmp ]]     && BIND_ARGS+=(--bind "/tmp:/tmp:rw")
-[[ -d /var/tmp ]] && BIND_ARGS+=(--bind "/var/tmp:/var/tmp:rw")
-
-# --- Extra user-specified rw paths ---
-for _rw_path in "${RW_PATHS[@]+"${RW_PATHS[@]}"}"; do
-    _rw_canonical="$(realpath "$_rw_path" 2>/dev/null || echo "$_rw_path")"
-    [[ -e "$_rw_canonical" ]] && BIND_ARGS+=(--bind "${_rw_canonical}:${_rw_canonical}:rw")
-done
-unset _rw_path _rw_canonical
-
-# --- Writable current directory (added LAST to shadow any parent ro bind) ---
-BIND_ARGS+=(--bind "${CWD}:${CWD}:rw")
-
-# --- Cargo build cache (share target/ and CARGO_HOME with the container) ---
-# Bind target/ rw when present so incremental builds work.
-if [[ -f "${CWD}/Cargo.toml" && -d "${CWD}/target" ]]; then
-    BIND_ARGS+=(--bind "${CWD}/target:${CWD}/target:rw")
+if [[ -f "${HOME}/.claude.json" ]]; then
+    cp "${HOME}/.claude.json" "${CONTAINER_HOME}/.claude.json"
+    _CLAUDE_JSON_CKSUM="$(cksum "${HOME}/.claude.json" 2>/dev/null)"
 fi
 
-# --- Writable /pkg/cmr/{username}/pixi_dirs ---
-_pixi_dirs="/pkg/cmr/${USER}/pixi_dirs"
-[[ -d "$_pixi_dirs" ]] && BIND_ARGS+=(--bind "${_pixi_dirs}:${_pixi_dirs}:rw")
-unset _pixi_dirs
-
-# --- Ephemeral home directory (cleaned up on exit) ---
-CONTAINER_HOME="$(mktemp -d)"
 function _save_claude_json {
     local src="${CONTAINER_HOME}/.claude.json"  # temp staging copy
     local dst="${HOME}/.claude.json"
@@ -223,104 +167,79 @@ function _save_claude_json {
         cp -f "$src" "$dst"
     fi
 }
-trap '_save_claude_json; rm -rf "$CONTAINER_HOME"' EXIT
-BIND_ARGS+=(--bind "${CONTAINER_HOME}:/container_home:rw")
 
-# --- Hide ~/.ssh completely (shadow with an empty dir so it is not readable) ---
-if [[ -d "${HOME}/.ssh" ]]; then
-    _ssh_real="$(realpath "${HOME}/.ssh" 2>/dev/null || echo "${HOME}/.ssh")"
-    mkdir -p "${CONTAINER_HOME}/_empty_ssh"
-    BIND_ARGS+=(--bind "${CONTAINER_HOME}/_empty_ssh:${_ssh_real}:ro")
-    unset _ssh_real
-fi
+# BROKER_PID is set below if the broker starts; the trap cleans up everything.
+BROKER_PID=""
+_cleaned_up=0
+function _cleanup {
+    [[ "$_cleaned_up" -eq 1 ]] && return
+    _cleaned_up=1
+    [[ -n "$BROKER_PID" ]] && kill "$BROKER_PID" 2>/dev/null
+    _save_claude_json
+    rm -rf "$CONTAINER_HOME"
+}
+# EXIT covers normal exit; INT/TERM/HUP cover signals. The broker also watches
+# this script's PID, so even a kill -9 (which no trap can catch) cannot orphan it.
+trap _cleanup EXIT
+trap '_cleanup; exit 130' INT
+trap '_cleanup; exit 143' TERM HUP
 
-# --- Real ~/.claude settings (config, theme, history) ---
-# HOME inside the container is /container_home (set by %environment in the .def).
-# Bind ~/.claude/ and stage a copy of ~/.claude.json there so Claude Code can
-# read/write its auth token and settings without touching the read-only home bind.
-if [[ -d "${HOME}/.claude" ]]; then
-    mkdir -p "${CONTAINER_HOME}/.claude"
-    BIND_ARGS+=(--bind "${HOME}/.claude:/container_home/.claude:rw")
-fi
-# Bind CARGO_HOME (default ~/.cargo) rw so `cargo build`/`cargo test` can
-# download missing deps into the registry.
-#
-# On HPC ~/.cargo is commonly a symlink into shared storage, e.g.
-#     ~/.cargo -> /pkg/cmr/$USER/.cargo   (realpath /mnt/weka/pkg/...)
-# Inside the container /home, /pkg and /mnt are all bound READ-ONLY, so an rw
-# bind onto the *logical* path lands on the symlink and writes fall through to
-# the ro mount — cargo then can't write the registry and `cargo test` croaks
-# with read-only-filesystem errors when a dependency isn't already cached.
-#
-# Fix: bind the real cargo dir rw at every path the container may resolve it
-# through — its realpath, and (if ~/.cargo is a symlink) the symlink's literal
-# target. CARGO_HOME itself stays the original logical path (set below) so the
-# registry-src paths recorded in target/ don't change and cargo isn't forced
-# into a full rebuild.
-_cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
-_cargo_home_real="$(realpath "$_cargo_home" 2>/dev/null || true)"
-if [[ -n "$_cargo_home_real" && -d "$_cargo_home_real" ]]; then
-    BIND_ARGS+=(--bind "${_cargo_home_real}:${_cargo_home_real}:rw")
-    _cargo_link="$(readlink "$_cargo_home" 2>/dev/null || true)"
-    if [[ -n "$_cargo_link" && "$_cargo_link" == /* && "$_cargo_link" != "$_cargo_home_real" ]]; then
-        BIND_ARGS+=(--bind "${_cargo_home_real}:${_cargo_link}:rw")
-    fi
-fi
-unset _cargo_home _cargo_home_real _cargo_link
-# Bind ~/.cache entries individually with canonical paths so that symlinked
-# subdirs (e.g. rattler -> /pkg/...) get their own rw bind and aren't left
-# pointing at the ro-bound parent filesystem.
-mkdir -p "${CONTAINER_HOME}/.cache"
-while IFS= read -r -d '' _cache_item; do
-    _cache_name="${_cache_item##*/}"
-    _cache_target="$(readlink -f "$_cache_item" 2>/dev/null || echo "$_cache_item")"
-    [[ -d "$_cache_target" ]] || continue
-    mkdir -p "${CONTAINER_HOME}/.cache/${_cache_name}"
-    BIND_ARGS+=(--bind "${_cache_target}:/container_home/.cache/${_cache_name}:rw")
-done < <(find "${HOME}/.cache" -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
-unset _cache_item _cache_name _cache_target
-if [[ -f "${HOME}/.claude.json" ]]; then
-    cp "${HOME}/.claude.json" "${CONTAINER_HOME}/.claude.json"
-    _CLAUDE_JSON_CKSUM="$(cksum "${HOME}/.claude.json" 2>/dev/null)"
-fi
-
-# Populate /container_home with symlinks to the real home so that ~ inside the
-# container resolves to the user's actual files.  .claude and .claude.json are
-# skipped because they are handled with writable bind mounts above.
-while IFS= read -r -d '' item; do
-    name="${item##*/}"
-    [[ "$name" == ".claude" || "$name" == ".claude.json" || "$name" == ".cache" || "$name" == ".ssh" ]] && continue
-    # Resolve through any intermediate symlinks (e.g. /pkg -> /mnt/weka/pkg)
-    # so the target is a canonical /mnt/... path that is bound into the container.
-    ln -sf "$(readlink -f "$item" 2>/dev/null || echo "$item")" "${CONTAINER_HOME}/${name}" 2>/dev/null || true
-done < <(find "${HOME}" -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
+# Read-only/HPC/tmp/rw/CWD binds, then the ephemeral-home dotfiles.
+sandbox_build_binds "$CWD" "${RW_PATHS[@]+"${RW_PATHS[@]}"}"
+sandbox_home_dotfiles
 
 # ---------------------------------------------------------------------------
-# Environment variables
+# mqsub broker (one per mqyolo session)
+#
+# Start a lightweight host-side broker that the container-side mqsub/mqstat/...
+# stubs forward to. Its lifetime is tied to this session: the EXIT trap kills it,
+# and it also self-terminates by watching this script's PID ($$), so even a
+# `kill -9` of mqyolo does not orphan it. The spool and shim dirs live inside
+# CONTAINER_HOME, so they are bound into the container for free and removed on
+# exit with the rest of the ephemeral home.
 # ---------------------------------------------------------------------------
-ENV_ARGS=()
-for var in ANTHROPIC_API_KEY OPENAI_API_KEY GITHUB_TOKEN \
-           OPENAI_BASE_URL ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK \
-           TERM COLORTERM NO_COLOR; do
-    [[ -n "${!var:-}" ]] && ENV_ARGS+=(--env "${var}=${!var}")
-done
-# If a system CA bundle exists, tell Node.js to trust it — needed when a TLS
-# inspection proxy (e.g. IAClient) is in use and re-signs outbound HTTPS.
-[[ -f /etc/ssl/certs/ca-certificates.crt ]] && \
-    ENV_ARGS+=(--env "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt")
-# Point Cargo at the rw-bound CARGO_HOME so builds share the host registry cache
-# Point Cargo at the rw-bound logical host path (same inside and outside)
-_cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
-[[ -d "$_cargo_home" ]] && ENV_ARGS+=(--env "CARGO_HOME=${_cargo_home}")
-unset _cargo_home
+SANDBOX_PATH_PREFIX=""
+if [[ "$NO_BROKER" -eq 0 && -x "${SCRIPT_DIR}/mqsub-broker" && -x "${SCRIPT_DIR}/mqbroker-stub" ]]; then
+    BROKER_SPOOL="${CONTAINER_HOME}/.mqyolo/broker"
+    SHIM_DIR="${CONTAINER_HOME}/.mqyolo/shims"
+    mkdir -p "$BROKER_SPOOL" "$SHIM_DIR"
 
-# Build PATH with the container-installed AI CLIs first so host wrappers in
-# ~/bin or ~/.local/bin do not shadow claude, codex, or copilot.
-CONTAINER_PATH="/usr/local/bin:/usr/bin:/bin"
-[[ -d "${HOME}/.local/bin" ]] && CONTAINER_PATH="${CONTAINER_PATH}:${HOME}/.local/bin"
-[[ -d "${HOME}/bin" ]]        && CONTAINER_PATH="${CONTAINER_PATH}:${HOME}/bin"
-[[ -d "/work/microbiome/sw/hpc_scripts/bin" ]] && CONTAINER_PATH="${CONTAINER_PATH}:/work/microbiome/sw/hpc_scripts/bin"
-ENV_ARGS+=(--env "PATH=${CONTAINER_PATH}")
+    # Symlink the stub as each proxied command. The target must be valid INSIDE
+    # the container, so use the canonical path (bound ro under /home|/mnt|/work).
+    _stub_real="$(readlink -f "${SCRIPT_DIR}/mqbroker-stub")"
+    for _c in mqsub mqstat mqwait mqdel; do
+        ln -sf "$_stub_real" "${SHIM_DIR}/${_c}"
+    done
+    unset _c _stub_real
+
+    # Pass this session's --rw-paths to the broker as the FIXED set of writable
+    # paths for every submitted job. The broker forces these and rejects any
+    # attempt to set them from inside the container, so the AI cannot widen what
+    # its jobs may write to beyond what you granted mqyolo at launch.
+    _broker_rw=()
+    for _p in "${RW_PATHS[@]+"${RW_PATHS[@]}"}"; do
+        _broker_rw+=(--rw-path "$(realpath "$_p" 2>/dev/null || echo "$_p")")
+    done
+    _broker_dbg=()
+    [[ "$DEBUG" -eq 1 ]] && _broker_dbg=(--debug)
+    "${SCRIPT_DIR}/mqsub-broker" --spool "$BROKER_SPOOL" --watch-pid "$$" \
+        "${_broker_rw[@]}" "${_broker_dbg[@]}" &
+    BROKER_PID=$!
+    unset _broker_dbg _broker_rw _p
+
+    # The shim dir lives at this path inside the container too (CONTAINER_HOME ->
+    # /container_home). Prepend it to PATH so the stubs shadow the real mqsub.
+    SANDBOX_PATH_PREFIX="/container_home/.mqyolo/shims"
+    # Tell the stubs where to drop requests (in-container path).
+    ENV_ARGS+=(--env "MQBROKER_SPOOL=/container_home/.mqyolo/broker")
+fi
+
+# ---------------------------------------------------------------------------
+# Environment variables (PATH honours SANDBOX_PATH_PREFIX set above)
+# ---------------------------------------------------------------------------
+sandbox_build_env ANTHROPIC_API_KEY OPENAI_API_KEY GITHUB_TOKEN \
+                  OPENAI_BASE_URL ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK \
+                  TERM COLORTERM NO_COLOR
 
 # ---------------------------------------------------------------------------
 # Tool-specific flags
@@ -346,7 +265,8 @@ case "$TOOL" in
 esac
 
 # ---------------------------------------------------------------------------
-# Run
+# Run (as a child, not exec, so the EXIT trap fires: broker teardown,
+# .claude.json save-back, and ephemeral-home cleanup all depend on it)
 # ---------------------------------------------------------------------------
 if [[ "$DEBUG" -eq 1 ]]; then
     echo "mqyolo: exec command:" >&2
@@ -354,10 +274,11 @@ if [[ "$DEBUG" -eq 1 ]]; then
         "${BIND_ARGS[@]}" "${ENV_ARGS[@]}" \
         --pwd "${CWD}" "${SIF}" \
         bash -c '[[ -f ~/.bashrc ]] && source ~/.bashrc 2>/dev/null; exec "$@"' _ \
-        "${TOOL}" "${YOLO_ARGS[@]}" "$@"
+        "${TOOL}" "${YOLO_ARGS[@]}" "$@" >&2
     echo >&2
 fi
-exec "$RUNTIME" exec \
+
+"$RUNTIME" exec \
     --contain \
     "${BIND_ARGS[@]}" \
     "${ENV_ARGS[@]}" \
@@ -365,3 +286,4 @@ exec "$RUNTIME" exec \
     "${SIF}" \
     bash -c '[[ -f ~/.bashrc ]] && source ~/.bashrc 2>/dev/null; exec "$@"' _ \
     "${TOOL}" "${YOLO_ARGS[@]}" "$@"
+exit $?

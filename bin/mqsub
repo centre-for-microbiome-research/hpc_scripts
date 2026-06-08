@@ -26,6 +26,7 @@ import time
 from smtplib import SMTP
 import datetime
 import re
+import shlex
 
 DEFAULT_RAM_TO_CPU_RATIO = 1495.0 / 192.0
 
@@ -451,6 +452,30 @@ class splitter:
     def chunk_size(a, n):
         return (a[i:i+n] for i in range(0, len(a), n))
 
+def sandbox_wrap(command_str):
+    '''If --sandbox is set, wrap a shell command so it runs inside the restricted
+    mqsandbox container on the compute node (the same sandbox mqyolo uses). The
+    working directory ("$PWD" at job runtime) is writable; extra writable paths
+    come from --sandbox-rw-paths plus the scratch/tmp areas mqsub itself uses.
+    Returns command_str unchanged when --sandbox is not set.'''
+    if not args.sandbox:
+        return command_str
+    mqsandbox = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'mqsandbox')
+    if not os.path.exists(mqsandbox):
+        raise Exception("--sandbox requires mqsandbox alongside mqsub, but it was not found at {}".format(mqsandbox))
+    rw_parts = []
+    for p in (args.sandbox_rw_paths or []):
+        rw_parts.append(shlex.quote(p))
+    # Writable areas mqsub may stage data into; left as shell vars so they expand
+    # on the compute node at job runtime.
+    if args.run_tmp_dir or args.tmp_data:
+        rw_parts.append('"$TMPDIR"')
+    if args.scratch_data:
+        rw_parts.append('"$MSCRATCH"')
+    rw_str = (' --rw-paths ' + ' '.join(rw_parts)) if rw_parts else ''
+    return '{} --cwd "$PWD"{} -- bash -c {}'.format(
+        shlex.quote(mqsandbox), rw_str, shlex.quote(command_str))
+
 def setup_segregated_logs_directory(command_name):
     # Get the number of directories in the qsub_logs directory, and add 1 to it
     logs_dir1 = os.path.join(
@@ -525,6 +550,9 @@ Example usage:
     parser.add_argument('--ensure-cpu-usage', action='store_true', help='While the job runs, check that it is using at least --ensure-cpu-usage-threshold %% of its allocated CPUs over each --ensure-cpu-usage-interval window. If not, qdel the job and exit with status {}.'.format(ENSURE_CPU_USAGE_EXIT_STATUS))
     parser.add_argument('--ensure-cpu-usage-threshold', type=float, default=50.0, help='Minimum percentage of allocated CPU time that resources_used.cput must accumulate during each check window when --ensure-cpu-usage is set [default: 50.0]')
     parser.add_argument('--ensure-cpu-usage-interval', type=int, default=1800, help='Length of each --ensure-cpu-usage check window in seconds [default: 1800 (30 min)]')
+    parser.add_argument('--sandbox', action='store_true', help='Run the submitted command inside the restricted mqsandbox/mqyolo container on the compute node (only the working directory and select paths writable). This is forced automatically for jobs submitted from inside the mqyolo container.')
+    parser.add_argument('--no-sandbox', action='store_true', help=SUPPRESS)  # accepted for symmetry; sandbox is off by default
+    parser.add_argument('--sandbox-rw-paths', dest='sandbox_rw_paths', action='append', metavar='PATH', help='Extra path to bind read-write inside the sandbox when --sandbox is set. Repeatable.')
     parser.add_argument('command',nargs='*',help='command to be run')
     parser.epilog = '''
 ----------------------------------------------------------------------------------------------------------
@@ -623,6 +651,8 @@ Further information can also be found in the CMR Compute Notes -  https://tinyur
 #############################################
 
     if args.command_file and (args.chunk_num or args.chunk_size):
+        if args.sandbox:
+            raise Exception("--sandbox is not yet supported together with --command-file chunking")
         if args.prelude:
             logging.info("Reading prelude from {}".format(args.prelude))
             with open(args.prelude) as f:
@@ -690,7 +720,7 @@ Further information can also be found in the CMR Compute Notes -  https://tinyur
             logging.debug("Naming job as: {}".format(jobname))
 
             if content_type == COMMAND:
-                if args.no_executable_check:
+                if args.no_executable_check or args.sandbox:
                     logging.debug("Skipping executable check as requested")
                 else:
                     exe = cmd[0]
@@ -725,7 +755,7 @@ Further information can also be found in the CMR Compute Notes -  https://tinyur
                 segregated_logs_dir=segregated_logs_dir)
 
             if content_type == COMMAND:
-                print(' '.join(cmd),file=tf)
+                print(sandbox_wrap(' '.join(cmd)),file=tf)
             elif content_type == SCRIPT:
                 if args.script == '-':
                     with tempfile.NamedTemporaryFile(
@@ -741,11 +771,13 @@ Further information can also be found in the CMR Compute Notes -  https://tinyur
                             stdin_tf.write(l)
                             line_count += 1
                         logging.info("Wrote {} lines of stdin to the tempfile {}".format(line_count, script_path))
-                    # Delete the script after completion so it cleans up, but keep the exitstatus of the original script as the exitstatus of the qsub
-                    print('{} {} && rm {}'.format(args.script_shell, script_path, script_path),file=tf)
+                    # Delete the script after completion so it cleans up, but keep the exitstatus of the original script as the exitstatus of the qsub.
+                    # Only the execution is sandboxed; the rm runs on the host node
+                    # because the script tmpdir is read-only inside the sandbox.
+                    print('{} && rm {}'.format(sandbox_wrap('{} {}'.format(args.script_shell, script_path)), script_path),file=tf)
                 else:
                     script_path = os.path.abspath(args.script)
-                    print('{} {}'.format(args.script_shell, script_path),file=tf)
+                    print(sandbox_wrap('{} {}'.format(args.script_shell, script_path)),file=tf)
             
             script_format.tail(tf)            
             tf.flush()

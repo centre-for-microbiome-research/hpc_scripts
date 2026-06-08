@@ -1,0 +1,56 @@
+#!/bin/bash
+# mqbroker-stub - container-side stub that forwards a command to the host broker.
+#
+# Symlinked (by mqyolo) as mqsub, mqstat, mqwait and mqdel inside a shim dir that
+# is prepended to PATH in the container. When the AI tool runs e.g. `mqsub ...`,
+# this stub runs instead of the real (python3.9 + qsub) mqsub, which cannot work
+# inside the container. It serialises the command name, argv, CWD and any stdin
+# into a request directory in the bind-mounted spool, waits for the host
+# mqsub-broker to run the real command, then replays its stdout/stderr/exit code.
+#
+# The spool directory (in-container path) is passed via $MQBROKER_SPOOL by mqyolo.
+
+set -euo pipefail
+
+cmd="$(basename "$0")"
+
+spool="${MQBROKER_SPOOL:-}"
+if [[ -z "$spool" ]]; then
+    echo "${cmd}: mqsub broker is not available (MQBROKER_SPOOL unset)." >&2
+    echo "${cmd}: start the session with mqyolo (without --no-broker) to use ${cmd} here." >&2
+    exit 127
+fi
+
+req_root="${spool}/req"
+mkdir -p "$req_root"
+
+# Build the request in a hidden staging dir (the broker's glob skips dotfiles),
+# then rename it into place atomically so the broker only ever sees a complete
+# request. `ready` is written inside the staging dir before the rename.
+id="$$.$(date +%s%N).${RANDOM}"
+staging="${req_root}/.staging.${id}"
+reqdir="${req_root}/${id}"
+mkdir -p "$staging"
+
+printf '%s' "$cmd" > "${staging}/cmd"
+printf '%s' "$PWD" > "${staging}/cwd"
+printf '%s\0' "$@" > "${staging}/argv"
+# Capture stdin only when it is piped/redirected, never from a terminal.
+[[ -t 0 ]] || cat > "${staging}/stdin"
+touch "${staging}/ready"
+
+mv "$staging" "$reqdir"
+
+# Wait for the broker to finish. mqsub (without --bg) blocks until the job
+# completes, so there is no fixed timeout here; poll cheaply.
+while [[ ! -e "${reqdir}/done" ]]; do
+    sleep 0.5
+done
+
+[[ -f "${reqdir}/stdout" ]] && cat "${reqdir}/stdout"
+[[ -f "${reqdir}/stderr" ]] && cat "${reqdir}/stderr" >&2
+rc=0
+[[ -f "${reqdir}/exit" ]] && rc="$(cat "${reqdir}/exit")"
+
+rm -rf "$reqdir" 2>/dev/null || true
+exit "$rc"

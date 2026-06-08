@@ -1,0 +1,166 @@
+#!/bin/bash
+# mqsub-broker - host-side broker that lets mqsub (and friends) be driven from
+# inside the mqyolo container.
+#
+# qsub and the python3.9 that mqsub needs do not exist inside the container, and
+# an Apptainer container cannot spawn processes on the host. So mqyolo starts one
+# of these brokers per session in the host namespace. The container-side stubs
+# (mqbroker-stub, symlinked as mqsub/mqstat/mqwait/mqdel) drop request files into
+# a spool directory that is bind-mounted into the container; the broker runs the
+# real command on the host and writes the result back.
+#
+# Resource use is deliberately tiny: the broker blocks in inotifywait (zero CPU
+# while idle) and only wakes on a request or every --watch-interval seconds to
+# check that its parent mqyolo is still alive. When the parent PID disappears
+# (normal exit OR kill -9) the broker cleans up and exits, so it is never
+# orphaned.
+#
+# Usage:
+#   mqsub-broker --spool DIR --watch-pid PID [--watch-interval SECS] [--debug]
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
+
+SPOOL=""
+WATCH_PID=""
+WATCH_INTERVAL=15
+DEBUG=0
+# Fixed set of writable paths applied to every sandboxed job (mqyolo's
+# --rw-paths). The container cannot change these.
+RW_PATHS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --spool)          SPOOL="$2"; shift 2 ;;
+        --watch-pid)      WATCH_PID="$2"; shift 2 ;;
+        --watch-interval) WATCH_INTERVAL="$2"; shift 2 ;;
+        --rw-path)        RW_PATHS+=("$2"); shift 2 ;;
+        --debug)          DEBUG=1; shift ;;
+        *) echo "mqsub-broker: unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+
+[[ -z "$SPOOL" ]] && { echo "mqsub-broker: --spool is required" >&2; exit 2; }
+
+REQ_DIR="${SPOOL}/req"
+mkdir -p "$REQ_DIR"
+
+# Commands the broker is willing to run on the host. mqsub is special-cased to
+# force --sandbox so every job submitted from the container is boxed in.
+ALLOWED="mqsub mqstat mqwait mqdel qstat"
+
+log() { [[ "$DEBUG" -eq 1 ]] && echo "mqsub-broker: $*" >&2 || true; }
+
+parent_alive() {
+    [[ -z "$WATCH_PID" ]] && return 0
+    kill -0 "$WATCH_PID" 2>/dev/null
+}
+
+# -------------------------------------------------------------------------
+# Process a single request directory. A request is ready once its `ready`
+# sentinel exists (written last by the stub). We claim it atomically via mkdir
+# so a request is never run twice, run the real command in the requested CWD,
+# then write stdout/stderr/exit and finally `done` (the stub waits on `done`).
+# -------------------------------------------------------------------------
+process_request() {
+    local reqdir="$1"
+    [[ -e "${reqdir}/ready" ]] || return 0
+    mkdir "${reqdir}/.claimed" 2>/dev/null || return 0   # already handled
+
+    local cmd cwd
+    cmd="$(cat "${reqdir}/cmd" 2>/dev/null || true)"
+    cwd="$(cat "${reqdir}/cwd" 2>/dev/null || true)"
+    [[ -d "$cwd" ]] || cwd="$(pwd)"
+
+    # argv is NUL-separated with a trailing NUL; drop the empty tail element.
+    local -a argv=()
+    if [[ -f "${reqdir}/argv" ]]; then
+        mapfile -d '' -t argv < "${reqdir}/argv"
+        [[ ${#argv[@]} -gt 0 && -z "${argv[-1]}" ]] && unset 'argv[-1]'
+    fi
+
+    log "request ${reqdir##*/}: cmd=$cmd cwd=$cwd argv=[${argv[*]-}]"
+
+    # --- Validate against the allowlist ---
+    if [[ " $ALLOWED " != *" $cmd "* ]]; then
+        printf 'mqsub-broker: command %q is not permitted from the container\n' "$cmd" \
+            > "${reqdir}/stderr"
+        echo 126 > "${reqdir}/exit"
+        touch "${reqdir}/done"
+        return 0
+    fi
+
+    # --- Build the real command, forcing the sandbox for mqsub ---
+    local real="${SCRIPT_DIR}/${cmd}"
+    [[ -x "$real" ]] || real="$cmd"   # fall back to PATH (e.g. qsub)
+    local -a runargs=()
+    if [[ "$cmd" == "mqsub" ]]; then
+        # The sandbox and its writable paths are session policy, set by mqyolo and
+        # not changeable from inside the container. Reject attempts to override.
+        local a
+        for a in "${argv[@]+"${argv[@]}"}"; do
+            case "$a" in
+                --no-sandbox|--sandbox-rw-paths)
+                    printf 'mqsub-broker: %q is not permitted from the container (sandbox writable paths are fixed by mqyolo --rw-paths)\n' "$a" \
+                        > "${reqdir}/stderr"
+                    echo 126 > "${reqdir}/exit"
+                    touch "${reqdir}/done"
+                    return 0 ;;
+            esac
+        done
+        runargs+=("--sandbox")
+        # Force this session's fixed writable paths onto every job (one repeatable
+        # flag per path so the value can't greedily swallow the command).
+        local p
+        for p in "${RW_PATHS[@]+"${RW_PATHS[@]}"}"; do
+            runargs+=("--sandbox-rw-paths" "$p")
+        done
+    fi
+    runargs+=("${argv[@]+"${argv[@]}"}")
+
+    # --- stdin (the stub captures it only when not a TTY) ---
+    local stdin_src=/dev/null
+    [[ -f "${reqdir}/stdin" ]] && stdin_src="${reqdir}/stdin"
+
+    local rc=0
+    ( cd "$cwd" && exec "$real" "${runargs[@]}" ) \
+        < "$stdin_src" \
+        > "${reqdir}/stdout" \
+        2> "${reqdir}/stderr" || rc=$?
+    echo "$rc" > "${reqdir}/exit"
+    touch "${reqdir}/done"
+    log "request ${reqdir##*/} finished rc=$rc"
+}
+
+scan() {
+    local d
+    for d in "${REQ_DIR}"/*/; do
+        [[ -d "$d" ]] || continue
+        process_request "${d%/}"
+    done
+}
+
+cleanup() { log "exiting"; }
+trap cleanup EXIT
+
+have_inotify=0
+command -v inotifywait &>/dev/null && have_inotify=1
+log "started (spool=$SPOOL watch-pid=${WATCH_PID:-none} inotify=$have_inotify)"
+
+# Handle any requests that arrived before we started watching.
+scan
+
+while parent_alive; do
+    if [[ "$have_inotify" -eq 1 ]]; then
+        # Block until a request appears or the interval elapses (for the PID
+        # re-check). -q quiet, -t timeout; ignore the non-zero exit on timeout.
+        inotifywait -q -t "$WATCH_INTERVAL" \
+            -e create -e moved_to -e close_write "$REQ_DIR" >/dev/null 2>&1 || true
+    else
+        sleep "$WATCH_INTERVAL"
+    fi
+    scan
+done
+
+log "parent ${WATCH_PID} gone — shutting down"
