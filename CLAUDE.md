@@ -35,7 +35,12 @@ Key invariants the tests guard (keep them true):
   `--sandbox-rw-paths` from the container are rejected).
 - The broker is tied to the mqyolo session and self-terminates when the mqyolo PID
   disappears.
-- The in-container AI tool is told to offload heavy/long/high-RAM commands to the
-  batch queue via `mqsub` — injected for Claude with `--append-system-prompt-file`
-  and for Codex via its global `~/.codex/AGENTS.md` (without clobbering the user's
-  real `~/.codex`). Only when the broker is running.
+- The in-container AI tool is told where heavy/long/high-RAM commands should run —
+  injected for Claude with `--append-system-prompt-file` and for Codex via its
+  global `~/.codex/AGENTS.md` (without clobbering the user's real `~/.codex`). Only
+  when the broker is running. The guidance adapts to the boot environment
+  (`_mqyolo_detect_resources`): on a login node it says offload to `mqsub`; inside
+  a PBS job it reports the actual allocated CPUs/RAM (from NCPUS + qstat) and frames
+  them as a finite budget — run work that fits directly, but still send larger jobs
+  to the queue via `mqsub` / `snakemake --profile aqua`.
+  `mqyolo --print-guidance` dumps the exact text for the current environment.

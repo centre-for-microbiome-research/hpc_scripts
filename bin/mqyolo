@@ -28,14 +28,83 @@ source "${SCRIPT_DIR}/_sandbox_common.bash"
 
 SIF="${AI_TOOL_SIF:-${SCRIPT_DIR}/../singularity/ai_tool.sif}"
 
+# Convert a PBS mem string (e.g. 96gb, 98304mb, 2tb) to whole GB, or "" if unknown.
+_mqyolo_mem_to_gb() {
+    local v="${1,,}" num
+    num="${v//[^0-9]/}"
+    [[ -n "$num" ]] || { echo ""; return; }
+    case "$v" in
+        *tb) echo $(( num * 1024 )) ;;
+        *gb) echo "$num" ;;
+        *mb) echo $(( num / 1024 )) ;;
+        *kb) echo $(( num / 1024 / 1024 )) ;;
+        *)   echo "" ;;
+    esac
+}
+
+# Detect where mqyolo is running so the guidance can adapt: a shared login/head
+# node (offload heavy work to the queue) vs inside a PBS job, where CPU/RAM are
+# already allocated and heavy work should run directly. Sets MQYOLO_ENV (login|
+# pbs), MQYOLO_NCPUS, MQYOLO_MEM_GB. Runs on the host before the container, so it
+# can read PBS_* and query qstat for the authoritative allocation.
+_mqyolo_detect_resources() {
+    MQYOLO_ENV="login"
+    MQYOLO_NCPUS=""
+    MQYOLO_MEM_GB=""
+    [[ -n "${PBS_JOBID:-}" ]] || return 0
+    MQYOLO_ENV="pbs"
+    MQYOLO_NCPUS="${NCPUS:-}"
+    if command -v qstat &>/dev/null; then
+        local line
+        while IFS= read -r line; do
+            case "$line" in
+                *Resource_List.ncpus\ =\ *) [[ -n "$MQYOLO_NCPUS" ]] || MQYOLO_NCPUS="${line##*= }" ;;
+                *Resource_List.mem\ =\ *)   MQYOLO_MEM_GB="$(_mqyolo_mem_to_gb "${line##*= }")" ;;
+            esac
+        done < <(qstat -f "$PBS_JOBID" 2>/dev/null)
+    fi
+    [[ -n "$MQYOLO_NCPUS" ]] || MQYOLO_NCPUS="$(nproc 2>/dev/null || true)"
+}
+
 # Guidance injected into the AI tool's instructions (claude --append-system-prompt-file
-# / codex ~/.codex/AGENTS.md) so it offloads heavy work to the batch queue via
-# mqsub. Single source of truth, also dumpable with `mqyolo --print-guidance`.
+# / codex ~/.codex/AGENTS.md) so it knows where heavy work should run. Single
+# source of truth, also dumpable with `mqyolo --print-guidance`. Adapts to the
+# detected environment.
 _mqyolo_guidance_text() {
+    _mqyolo_detect_resources
+    if [[ "$MQYOLO_ENV" != "login" ]]; then
+        local ncpus="${MQYOLO_NCPUS:-(unknown)}" membudget="" memphrase=""
+        if [[ -n "$MQYOLO_MEM_GB" ]]; then
+            memphrase=", ${MQYOLO_MEM_GB} GB RAM"
+            membudget=" and memory under ${MQYOLO_MEM_GB} GB"
+        fi
+        printf '# Running commands on this HPC (mqyolo sandbox, inside a PBS job)\n\n'
+        printf 'You are in an `mqyolo` sandbox running INSIDE a PBS job with %s CPUs%s\n' "$ncpus" "$memphrase"
+        printf 'allocated. This is a finite budget — more than a shared login node, but\n'
+        printf 'still limited.\n\n'
+        printf -- '- Run work that FITS this allocation directly here, sized to it (e.g.\n'
+        printf -- '  `--threads %s`%s).\n' "$ncpus" "$membudget"
+        cat <<'GUIDE'
+- For anything that needs MORE CPUs/RAM than this job has, or many jobs at once,
+  submit it to the batch queue with `mqsub` instead of overloading this job — it
+  runs on a separately-sized compute node:
+      mqsub -t <cpus> -m <GB_RAM> --hours <H> -- <command>
+  Such jobs run inside this same restricted sandbox (only the working directory,
+  plus any paths granted to mqyolo at launch, is writable). Companions: `mqstat`,
+  `mqwait`, `mqdel`.
+
+**Snakemake:** for a few rules that each fit this allocation, run
+`snakemake --cores <N>` locally. For large or highly parallel workflows, prefer
+`snakemake --profile aqua`, which submits each rule to the queue via `mqsub`
+(separately sized) rather than squeezing everything into this one allocation.
+GUIDE
+        return 0
+    fi
+
     cat <<'GUIDE'
 # Running commands on this HPC (mqyolo sandbox)
 
-You are in an `mqyolo` sandbox on the QUT *aqua* HPC, on a shared login node
+You are in an `mqyolo` sandbox on the QUT *aqua* HPC, on a shared **login node**
 inside a restricted container. A batch-queue submitter, `mqsub`, is available.
 
 **Offload heavy work to the batch queue — do NOT run it directly here.**
@@ -43,7 +112,9 @@ Anything long-running, CPU-intensive, or memory-hungry (assemblies, alignments,
 mapping, large downloads/compression, multi-minute scripts, anything wanting
 many cores or more than a few GB of RAM) must be submitted with `mqsub`, not run
 on the login node. Quick, cheap work (edits, builds, unit tests, short scripts,
-inspecting files) can be run directly.
+inspecting files) can be run directly. (If instead you want abundant local
+resources, start an interactive PBS job and run mqyolo inside it — the guidance
+here adapts automatically.)
 
 `mqsub` runs the real submitter on the host and, by default, waits for the job
 and returns its output. Usage:

@@ -112,14 +112,38 @@ def test_mqsub_sandbox_rejects_command_file_chunking():
 MQYOLO = BIN / "mqyolo"
 
 
-def test_mqyolo_print_guidance_without_container():
-    # --print-guidance must work without a built SIF and mention the key advice.
-    env = {**os.environ, "AI_TOOL_SIF": "/nonexistent.sif"}
+def _print_guidance(extra_env=None):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PBS") and k != "NCPUS"}
+    env["AI_TOOL_SIF"] = "/nonexistent.sif"
+    if extra_env:
+        env.update(extra_env)
     p = subprocess.run([str(MQYOLO), "--print-guidance"], text=True,
                        capture_output=True, env=env)
-    assert p.returncode == 0, p.stderr
-    assert "mqsub" in p.stdout
-    assert "snakemake --profile aqua" in p.stdout
+    return p.returncode, p.stdout, p.stderr
+
+
+def test_mqyolo_print_guidance_login_node():
+    # On a login node (no PBS_JOBID): offload heavy work to the queue.
+    rc, out, err = _print_guidance()
+    assert rc == 0, err
+    assert "login node" in out
+    assert "Offload heavy work" in out
+    assert "snakemake --profile aqua" in out
+
+
+def test_mqyolo_print_guidance_pbs_job():
+    # Inside a PBS job: run heavy work directly within the allocation.
+    rc, out, err = _print_guidance({"PBS_JOBID": "123.aqua",
+                                    "PBS_ENVIRONMENT": "PBS_INTERACTIVE",
+                                    "NCPUS": "24"})
+    assert rc == 0, err
+    assert "inside a PBS job" in out
+    assert "24 CPUs" in out
+    assert "--threads 24" in out
+    assert "finite budget" in out
+    # Larger jobs should still go to the queue even inside an interactive session.
+    assert "submit it to the batch queue" in out
+    assert "snakemake --profile aqua" in out
 
 
 # ---------------------------------------------------------------------------
