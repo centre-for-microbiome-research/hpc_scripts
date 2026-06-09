@@ -274,6 +274,15 @@ and returns its output. Usage:
   everything else is read-only. Write outputs under the current directory.
 - Companions: `mqstat` (queue status), `mqwait` (wait for a job id), `mqdel`
   (cancel). `qstat` also works. Run `mqsub --help` for all options.
+
+**Snakemake:** `snakemake --profile aqua` submits each rule to the batch queue
+via `mqsub` under the hood (one queue job per rule), so do not also wrap those
+rules in `mqsub` yourself. This suits workflows with a modest number of larger
+jobs. When instead there are MANY small/quick rules, one queue job each floods
+the scheduler and is dominated by queue latency — in that case run snakemake
+itself inside a single allocation and let it run rules locally within it, e.g.
+`mqsub -t 24 -m 96 -- snakemake --cores 24` (no aqua profile). Pick per-rule
+queue submission vs. one wrapping job based on the number and size of the rules.
 GUIDE
     MQYOLO_GUIDANCE_FILE="/container_home/.mqyolo/guidance.md"
 fi
