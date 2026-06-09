@@ -109,6 +109,19 @@ def test_mqsub_sandbox_rejects_command_file_chunking():
         os.unlink(cmdfile)
 
 
+MQYOLO = BIN / "mqyolo"
+
+
+def test_mqyolo_print_guidance_without_container():
+    # --print-guidance must work without a built SIF and mention the key advice.
+    env = {**os.environ, "AI_TOOL_SIF": "/nonexistent.sif"}
+    p = subprocess.run([str(MQYOLO), "--print-guidance"], text=True,
+                       capture_output=True, env=env)
+    assert p.returncode == 0, p.stderr
+    assert "mqsub" in p.stdout
+    assert "snakemake --profile aqua" in p.stdout
+
+
 # ---------------------------------------------------------------------------
 # Broker <-> stub round-trip helpers
 # ---------------------------------------------------------------------------
