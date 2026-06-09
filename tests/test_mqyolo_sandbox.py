@@ -229,6 +229,47 @@ def test_broker_exits_when_parent_dies():
 
 
 # ---------------------------------------------------------------------------
+# Shim dir must win on PATH even though the user's bashrc prepends the real
+# hpc_scripts bin dir (sandbox_write_shim_bashrc in _sandbox_common.bash).
+# ---------------------------------------------------------------------------
+SANDBOX_LIB = BIN / "_sandbox_common.bash"
+
+
+def test_shim_bashrc_keeps_shim_first_on_path(tmp_path):
+    shim = "/container_home/.mqyolo/shims"
+    # A "real" bashrc that prepends the real hpc_scripts bin dir, as the user's does.
+    real = tmp_path / "real_bashrc"
+    real.write_text('export PATH="/work/microbiome/sw/hpc_scripts/bin:$PATH"\n')
+    dest = tmp_path / "dest_bashrc"
+    # Build dest via the actual library function, then source it and inspect PATH.
+    script = (
+        'source %s; '
+        'sandbox_write_shim_bashrc %s %s %s; '
+        'PATH=/usr/bin:/bin; source %s; '
+        'printf "%%s\\n" "${PATH%%%%:*}"'
+        % (SANDBOX_LIB, str(dest), str(real), shim, str(dest))
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    assert p.stdout.strip() == shim, p.stdout
+
+
+def test_shim_bashrc_does_not_write_through_symlink(tmp_path):
+    # dest is a symlink to a precious file; the function must replace the symlink,
+    # not clobber the target (which is the real ~/.bashrc in production).
+    precious = tmp_path / "precious_real_bashrc"
+    precious.write_text("ORIGINAL\n")
+    dest = tmp_path / "dest_bashrc"
+    dest.symlink_to(precious)
+    script = "source %s; sandbox_write_shim_bashrc %s '' /some/shim" % (SANDBOX_LIB, str(dest))
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    assert precious.read_text() == "ORIGINAL\n", "function wrote through the symlink!"
+    assert not dest.is_symlink()
+    assert "/some/shim" in dest.read_text()
+
+
+# ---------------------------------------------------------------------------
 # mqsandbox actually enforcing the filesystem constraints (needs the container)
 # ---------------------------------------------------------------------------
 def _run_in_sandbox(cwd, script, rw_paths=()):

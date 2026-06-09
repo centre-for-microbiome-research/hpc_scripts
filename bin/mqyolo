@@ -232,6 +232,17 @@ if [[ "$NO_BROKER" -eq 0 && -x "${SCRIPT_DIR}/mqsub-broker" && -x "${SCRIPT_DIR}
     SANDBOX_PATH_PREFIX="/container_home/.mqyolo/shims"
     # Tell the stubs where to drop requests (in-container path).
     ENV_ARGS+=(--env "MQBROKER_SPOOL=/container_home/.mqyolo/broker")
+
+    # Setting PATH up front is not enough: the user's ~/.bashrc (sourced at shell
+    # startup, and re-sourced by Claude Code's shell snapshot) prepends the real
+    # hpc_scripts bin dir, shadowing the shim. Give the container its OWN ~/.bashrc
+    # that sources the real one and THEN puts the shim dir first, so the stub wins
+    # no matter how often .bashrc is sourced. (.bash_profile/.profile both end by
+    # sourcing ~/.bashrc, so this covers login shells too.)
+    _real_bashrc="$(readlink -f "${HOME}/.bashrc" 2>/dev/null || true)"
+    sandbox_write_shim_bashrc "${CONTAINER_HOME}/.bashrc" "$_real_bashrc" \
+        "/container_home/.mqyolo/shims"
+    unset _real_bashrc
 fi
 
 # ---------------------------------------------------------------------------

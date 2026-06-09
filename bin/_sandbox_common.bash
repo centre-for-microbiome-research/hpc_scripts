@@ -216,6 +216,24 @@ sandbox_home_dotfiles() {
 }
 
 # ---------------------------------------------------------------------------
+# sandbox_write_shim_bashrc DEST_BASHRC REAL_BASHRC SHIM_DIR
+#   Write DEST_BASHRC so a shell that sources it first runs the user's real
+#   bashrc (if given/existing) and THEN puts SHIM_DIR first on PATH. This is how
+#   the container-side mqsub stub keeps winning over the real hpc_scripts bin
+#   dir, which the user's ~/.bashrc (and Claude Code's shell snapshot) prepend.
+#   DEST is removed first because it is usually a symlink into the real home —
+#   we must NOT write through it onto the user's actual bashrc.
+# ---------------------------------------------------------------------------
+sandbox_write_shim_bashrc() {
+    local dest="$1" real="$2" shim="$3"
+    rm -f "$dest"
+    {
+        [[ -n "$real" && -f "$real" ]] && printf 'source %q\n' "$real"
+        printf 'export PATH=%q:"$PATH"\n' "$shim"
+    } > "$dest"
+}
+
+# ---------------------------------------------------------------------------
 # sandbox_build_env [PASSTHROUGH_VAR...]
 #   Populates ENV_ARGS and CONTAINER_PATH. Always sets PATH, NODE_EXTRA_CA_CERTS
 #   (if a CA bundle exists) and CARGO_HOME (if present). Any PASSTHROUGH_VAR
