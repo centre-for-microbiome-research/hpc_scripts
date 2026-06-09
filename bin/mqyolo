@@ -199,6 +199,7 @@ sandbox_home_dotfiles
 # exit with the rest of the ephemeral home.
 # ---------------------------------------------------------------------------
 SANDBOX_PATH_PREFIX=""
+MQYOLO_GUIDANCE_FILE=""   # in-container path to the mqsub guidance, set when broker is on
 if [[ "$NO_BROKER" -eq 0 && -x "${SCRIPT_DIR}/mqsub-broker" && -x "${SCRIPT_DIR}/mqbroker-stub" ]]; then
     BROKER_SPOOL="${CONTAINER_HOME}/.mqyolo/broker"
     SHIM_DIR="${CONTAINER_HOME}/.mqyolo/shims"
@@ -243,6 +244,38 @@ if [[ "$NO_BROKER" -eq 0 && -x "${SCRIPT_DIR}/mqsub-broker" && -x "${SCRIPT_DIR}
     sandbox_write_shim_bashrc "${CONTAINER_HOME}/.bashrc" "$_real_bashrc" \
         "/container_home/.mqyolo/shims"
     unset _real_bashrc
+
+    # Guidance injected into the AI tool's instructions so it knows to offload
+    # heavy work to the batch queue via mqsub instead of running it on the login
+    # node. Delivered to claude via --append-system-prompt-file and to codex via
+    # its global ~/.codex/AGENTS.md (see the tool case below).
+    cat > "${CONTAINER_HOME}/.mqyolo/guidance.md" <<'GUIDE'
+# Running commands on this HPC (mqyolo sandbox)
+
+You are in an `mqyolo` sandbox on the QUT *aqua* HPC, on a shared login node
+inside a restricted container. A batch-queue submitter, `mqsub`, is available.
+
+**Offload heavy work to the batch queue — do NOT run it directly here.**
+Anything long-running, CPU-intensive, or memory-hungry (assemblies, alignments,
+mapping, large downloads/compression, multi-minute scripts, anything wanting
+many cores or more than a few GB of RAM) must be submitted with `mqsub`, not run
+on the login node. Quick, cheap work (edits, builds, unit tests, short scripts,
+inspecting files) can be run directly.
+
+`mqsub` runs the real submitter on the host and, by default, waits for the job
+and returns its output. Usage:
+
+    mqsub -t <cpus> -m <GB_RAM> --hours <H> -- <command and args>
+    mqsub --bg -t 8 -m 32 --days 2 -- <command>     # submit and return immediately
+
+- `-t` cpus, `-m` GB RAM, `--hours/--days/--weeks` walltime. Size them to the job.
+- Jobs run inside this SAME restricted sandbox on the compute node: only the
+  working directory (plus any paths granted to mqyolo at launch) is writable;
+  everything else is read-only. Write outputs under the current directory.
+- Companions: `mqstat` (queue status), `mqwait` (wait for a job id), `mqdel`
+  (cancel). `qstat` also works. Run `mqsub --help` for all options.
+GUIDE
+    MQYOLO_GUIDANCE_FILE="/container_home/.mqyolo/guidance.md"
 fi
 
 # ---------------------------------------------------------------------------
@@ -259,6 +292,9 @@ case "$TOOL" in
     claude)
         # Skip all permission prompts — the container is the sandbox
         YOLO_ARGS=("--dangerously-skip-permissions")
+        # Tell Claude to offload heavy commands to mqsub.
+        [[ -n "$MQYOLO_GUIDANCE_FILE" ]] && \
+            YOLO_ARGS+=("--append-system-prompt-file" "$MQYOLO_GUIDANCE_FILE")
         ;;
     codex)
         # Full auto mode inside the container, enable Codex web search, and
@@ -268,9 +304,27 @@ case "$TOOL" in
             "--search"
             "-c" "check_for_update_on_startup=false"
         )
+        # Codex reads global instructions from $CODEX_HOME/AGENTS.md (~/.codex).
+        # Replace the symlink-into-real-home (from sandbox_home_dotfiles) with a
+        # real, writable dir: preserve the user's auth/config via read-only
+        # symlinks, drop our mqsub guidance as AGENTS.md, and let codex write its
+        # own session logs into this ephemeral dir. This never clobbers the user's
+        # real ~/.codex/AGENTS.md or sessions.
+        if [[ -n "$MQYOLO_GUIDANCE_FILE" ]]; then
+            _codex_real="$(readlink -f "${HOME}/.codex" 2>/dev/null || true)"
+            rm -f "${CONTAINER_HOME}/.codex"
+            mkdir -p "${CONTAINER_HOME}/.codex"
+            for _f in config.toml auth.json; do
+                [[ -n "$_codex_real" && -e "${_codex_real}/${_f}" ]] && \
+                    ln -sf "${_codex_real}/${_f}" "${CONTAINER_HOME}/.codex/${_f}"
+            done
+            cp "${CONTAINER_HOME}/.mqyolo/guidance.md" "${CONTAINER_HOME}/.codex/AGENTS.md"
+            unset _codex_real _f
+        fi
         ;;
     copilot)
         # No CLI flag for auto mode; use Shift+Tab inside the session for Autopilot mode
+        # (Copilot CLI has no global-instructions hook we can inject mqsub guidance into.)
         YOLO_ARGS=()
         ;;
 esac

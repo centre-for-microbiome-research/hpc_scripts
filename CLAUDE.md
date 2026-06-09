@@ -35,3 +35,7 @@ Key invariants the tests guard (keep them true):
   `--sandbox-rw-paths` from the container are rejected).
 - The broker is tied to the mqyolo session and self-terminates when the mqyolo PID
   disappears.
+- The in-container AI tool is told to offload heavy/long/high-RAM commands to the
+  batch queue via `mqsub` — injected for Claude with `--append-system-prompt-file`
+  and for Codex via its global `~/.codex/AGENTS.md` (without clobbering the user's
+  real `~/.codex`). Only when the broker is running.
