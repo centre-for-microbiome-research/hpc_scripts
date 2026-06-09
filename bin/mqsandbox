@@ -14,7 +14,7 @@
 # submitted them.
 #
 # Usage:
-#   mqsandbox [--cwd DIR] [--rw-paths PATH...] [--sif PATH] [--debug] -- command [args...]
+#   mqsandbox [--cwd DIR] [--rw-paths PATH...] [--ro-paths PATH...] [--sif PATH] [--debug] -- command [args...]
 #
 # Environment variables:
 #   AI_TOOL_SIF   Override path to the .sif image (default: ../singularity/ai_tool.sif)
@@ -29,6 +29,7 @@ SIF="${AI_TOOL_SIF:-${SCRIPT_DIR}/../singularity/ai_tool.sif}"
 CWD=""
 DEBUG=0
 RW_PATHS=()
+RO_PATHS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -39,6 +40,12 @@ while [[ $# -gt 0 ]]; do
             shift
             while [[ $# -gt 0 && "$1" != --* && "$1" != "--" ]]; do
                 RW_PATHS+=("$1"); shift
+            done
+            ;;
+        --ro-paths)
+            shift
+            while [[ $# -gt 0 && "$1" != --* && "$1" != "--" ]]; do
+                RO_PATHS+=("$1"); shift
             done
             ;;
         --)         shift; break ;;
@@ -65,7 +72,7 @@ ENV_ARGS=()
 
 sandbox_make_home
 trap 'rm -rf "$CONTAINER_HOME"' EXIT
-sandbox_build_binds "$CWD" "${RW_PATHS[@]+"${RW_PATHS[@]}"}"
+sandbox_build_binds "$CWD" "${RW_PATHS[@]+"${RW_PATHS[@]}"}" -- "${RO_PATHS[@]+"${RO_PATHS[@]}"}"
 sandbox_home_dotfiles
 # Forward terminal-rendering vars only; jobs should not inherit API keys.
 sandbox_build_env TERM COLORTERM NO_COLOR

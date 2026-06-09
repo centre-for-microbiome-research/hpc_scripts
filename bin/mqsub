@@ -473,8 +473,12 @@ def sandbox_wrap(command_str):
     if args.scratch_data:
         rw_parts.append('"$MSCRATCH"')
     rw_str = (' --rw-paths ' + ' '.join(rw_parts)) if rw_parts else ''
-    return '{} --cwd "$PWD"{} -- bash -c {}'.format(
-        shlex.quote(mqsandbox), rw_str, shlex.quote(command_str))
+    # Read-only re-exposures (e.g. carving a path back out of mqyolo's
+    # deny-listed trees). Inherited from mqyolo via the broker's --sandbox-ro-paths.
+    ro_parts = [shlex.quote(p) for p in (args.sandbox_ro_paths or [])]
+    ro_str = (' --ro-paths ' + ' '.join(ro_parts)) if ro_parts else ''
+    return '{} --cwd "$PWD"{}{} -- bash -c {}'.format(
+        shlex.quote(mqsandbox), rw_str, ro_str, shlex.quote(command_str))
 
 def setup_segregated_logs_directory(command_name):
     # Get the number of directories in the qsub_logs directory, and add 1 to it
@@ -553,6 +557,7 @@ Example usage:
     parser.add_argument('--sandbox', action='store_true', help='Run the submitted command inside the restricted mqsandbox/mqyolo container on the compute node (only the working directory and select paths writable). This is forced automatically for jobs submitted from inside the mqyolo container.')
     parser.add_argument('--no-sandbox', action='store_true', help=SUPPRESS)  # accepted for symmetry; sandbox is off by default
     parser.add_argument('--sandbox-rw-paths', dest='sandbox_rw_paths', action='append', metavar='PATH', help='Extra path to bind read-write inside the sandbox when --sandbox is set. Repeatable.')
+    parser.add_argument('--sandbox-ro-paths', dest='sandbox_ro_paths', action='append', metavar='PATH', help='Extra path to bind read-only inside the sandbox when --sandbox is set, e.g. to re-expose a path that the sandbox otherwise hides. Repeatable.')
     parser.add_argument('command',nargs='*',help='command to be run')
     parser.epilog = '''
 ----------------------------------------------------------------------------------------------------------

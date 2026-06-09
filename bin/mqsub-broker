@@ -26,9 +26,10 @@ SPOOL=""
 WATCH_PID=""
 WATCH_INTERVAL=15
 DEBUG=0
-# Fixed set of writable paths applied to every sandboxed job (mqyolo's
-# --rw-paths). The container cannot change these.
+# Fixed sets of writable (mqyolo --rw-paths) and read-only (mqyolo --ro-paths)
+# paths applied to every sandboxed job. The container cannot change these.
 RW_PATHS=()
+RO_PATHS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -36,6 +37,7 @@ while [[ $# -gt 0 ]]; do
         --watch-pid)      WATCH_PID="$2"; shift 2 ;;
         --watch-interval) WATCH_INTERVAL="$2"; shift 2 ;;
         --rw-path)        RW_PATHS+=("$2"); shift 2 ;;
+        --ro-path)        RO_PATHS+=("$2"); shift 2 ;;
         --debug)          DEBUG=1; shift ;;
         *) echo "mqsub-broker: unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -101,8 +103,8 @@ process_request() {
         local a
         for a in "${argv[@]+"${argv[@]}"}"; do
             case "$a" in
-                --no-sandbox|--sandbox-rw-paths)
-                    printf 'mqsub-broker: %q is not permitted from the container (sandbox writable paths are fixed by mqyolo --rw-paths)\n' "$a" \
+                --no-sandbox|--sandbox-rw-paths|--sandbox-ro-paths)
+                    printf 'mqsub-broker: %q is not permitted from the container (sandbox writable/readable paths are fixed by mqyolo --rw-paths/--ro-paths)\n' "$a" \
                         > "${reqdir}/stderr"
                     echo 126 > "${reqdir}/exit"
                     touch "${reqdir}/done"
@@ -110,11 +112,15 @@ process_request() {
             esac
         done
         runargs+=("--sandbox")
-        # Force this session's fixed writable paths onto every job (one repeatable
-        # flag per path so the value can't greedily swallow the command).
+        # Force this session's fixed writable and read-only paths onto every job
+        # (one repeatable flag per path so the value can't greedily swallow the
+        # command).
         local p
         for p in "${RW_PATHS[@]+"${RW_PATHS[@]}"}"; do
             runargs+=("--sandbox-rw-paths" "$p")
+        done
+        for p in "${RO_PATHS[@]+"${RO_PATHS[@]}"}"; do
+            runargs+=("--sandbox-ro-paths" "$p")
         done
     fi
     runargs+=("${argv[@]+"${argv[@]}"}")

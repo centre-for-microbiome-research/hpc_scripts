@@ -19,6 +19,7 @@ login node without a built image.
 
 import contextlib
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -92,6 +93,17 @@ def test_mqsub_sandbox_rw_paths_appear_in_wrapper():
     assert "--rw-paths /data/refs /scratch/x" in out
 
 
+def test_mqsub_sandbox_ro_paths_appear_in_wrapper():
+    rc, out = _mqsub_dry_run(
+        "--sandbox",
+        "--sandbox-ro-paths", "/work/microbiome/shared",
+        "--sandbox-ro-paths", "/data/atlas",
+        "--", "echo", "hi",
+    )
+    assert rc == 0, out
+    assert "--ro-paths /work/microbiome/shared /data/atlas" in out
+
+
 def test_mqsub_sandbox_rejects_command_file_chunking():
     # --sandbox with chunking should error clearly rather than silently misbehave.
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
@@ -150,7 +162,7 @@ def test_mqyolo_print_guidance_pbs_job():
 # Broker <-> stub round-trip helpers
 # ---------------------------------------------------------------------------
 @contextlib.contextmanager
-def running_broker(rw_paths=(), watch_pid=None, interval=1):
+def running_broker(rw_paths=(), ro_paths=(), watch_pid=None, interval=1):
     """Start a broker (watching a throwaway parent unless watch_pid given),
     yield (spool_dir, shim_dir, broker_proc, dummy_proc). Cleans up on exit."""
     spool = tempfile.mkdtemp(prefix="mqbroker_spool_")
@@ -165,6 +177,8 @@ def running_broker(rw_paths=(), watch_pid=None, interval=1):
             "--watch-interval", str(interval)]
     for p in rw_paths:
         args += ["--rw-path", p]
+    for p in ro_paths:
+        args += ["--ro-path", p]
     broker = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         time.sleep(0.4)  # let the broker create the req dir / start watching
@@ -215,10 +229,29 @@ def test_broker_injects_fixed_rw_paths():
         assert "bash -c 'mytool --out result'" in out
 
 
+def test_broker_injects_fixed_ro_paths():
+    with running_broker(ro_paths=["/work/microbiome/shared", "/data/atlas"]) as (spool, shim, *_):
+        mqsub = _stub_as(shim, "mqsub")
+        rc, out = _run_stub(mqsub, spool, "--dry-run", "-t", "1", "--hours", "1",
+                            "--", "mytool", "--out", "result")
+        assert rc == 0, out
+        assert "--ro-paths /work/microbiome/shared /data/atlas" in out
+        # The command must not be swallowed by the ro-paths flag.
+        assert "bash -c 'mytool --out result'" in out
+
+
 def test_broker_rejects_container_set_rw_paths():
     with running_broker(rw_paths=["/data/refs"]) as (spool, shim, *_):
         mqsub = _stub_as(shim, "mqsub")
         rc, out = _run_stub(mqsub, spool, "--sandbox-rw-paths", "/", "--", "echo", "hi")
+        assert rc == 126, out
+        assert "not permitted" in out
+
+
+def test_broker_rejects_container_set_ro_paths():
+    with running_broker(ro_paths=["/data/refs"]) as (spool, shim, *_):
+        mqsub = _stub_as(shim, "mqsub")
+        rc, out = _run_stub(mqsub, spool, "--sandbox-ro-paths", "/", "--", "echo", "hi")
         assert rc == 126, out
         assert "not permitted" in out
 
@@ -307,6 +340,78 @@ def test_shim_bashrc_does_not_write_through_symlink(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Anti-exfiltration deny-list (sandbox_path_denied + sandbox_build_binds).
+# These run anywhere — no container needed.
+# ---------------------------------------------------------------------------
+def test_sandbox_path_denied_classification():
+    cases = [
+        ("/scratch", "D"),
+        ("/scratch/foo/bar", "D"),
+        ("/work/microbiome", "D"),
+        ("/work/microbiome/someuser", "D"),
+        ("/work/microbiome/sw", "A"),
+        ("/work/microbiome/sw/hpc_scripts/bin", "A"),
+        ("/work/microbiome/db", "A"),
+        ("/work/microbiome/db/gtdb", "A"),
+        ("/work", "A"),
+        ("/home", "A"),
+        ("/mnt/hpccs01/home/x", "A"),
+    ]
+    script = "source %s\n" % SANDBOX_LIB
+    for path, _ in cases:
+        script += 'sandbox_path_denied %s && echo D || echo A\n' % path
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    got = p.stdout.split()
+    want = [c[1] for c in cases]
+    assert got == want, "got %s want %s" % (got, want)
+
+
+def _build_binds(cwd, rw_paths=(), ro_paths=()):
+    """Drive sandbox_build_binds and return the list of `src:dst:mode` bind specs."""
+    args = " ".join(shlex.quote(p) for p in rw_paths)
+    if ro_paths:
+        args += " -- " + " ".join(shlex.quote(p) for p in ro_paths)
+    script = (
+        "set -euo pipefail\n"
+        "source %s\n"
+        "CONTAINER_HOME=$(mktemp -d)\n"
+        "BIND_ARGS=()\n"
+        "sandbox_build_binds %s %s\n"
+        'for a in "${BIND_ARGS[@]}"; do [[ "$a" == --bind ]] || printf "%%s\\n" "$a"; done\n'
+        "rm -rf \"$CONTAINER_HOME\"\n"
+        % (SANDBOX_LIB, shlex.quote(str(cwd)), args)
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    return p.stdout.splitlines()
+
+
+def test_build_binds_excludes_scratch_and_microbiome(tmp_path):
+    binds = _build_binds(tmp_path)
+    # /scratch is never bound from its real path; /work/microbiome is never bound
+    # wholesale from its real path either (only the shadow + carved-out exceptions).
+    assert "/scratch:/scratch:ro" not in binds, binds
+    assert "/work/microbiome:/work/microbiome:ro" not in binds, binds
+    assert not any(b.startswith("/scratch:") for b in binds), binds
+    # The denied /work/microbiome tree is shadowed by an empty dir bound at the
+    # same path (source is under the ephemeral CONTAINER_HOME, not the real tree).
+    shadow = [b for b in binds if b.endswith(":/work/microbiome:ro")]
+    assert len(shadow) == 1 and "_denied_work_microbiome" in shadow[0], binds
+    # The read-only exceptions are re-bound from their real paths.
+    assert "/work/microbiome/sw:/work/microbiome/sw:ro" in binds, binds
+    assert "/work/microbiome/db:/work/microbiome/db:ro" in binds, binds
+
+
+def test_build_binds_ro_paths_are_bound_readonly(tmp_path):
+    rodir = tmp_path / "ro_extra"
+    rodir.mkdir()
+    binds = _build_binds(tmp_path, ro_paths=[str(rodir)])
+    real = os.path.realpath(str(rodir))
+    assert "%s:%s:ro" % (real, real) in binds, binds
+
+
+# ---------------------------------------------------------------------------
 # mqsandbox actually enforcing the filesystem constraints (needs the container)
 # ---------------------------------------------------------------------------
 def _run_in_sandbox(cwd, script, rw_paths=()):
@@ -346,6 +451,27 @@ def test_mqsandbox_enforces_constraints():
         for m in (repo_marker, home_marker):
             with contextlib.suppress(OSError):
                 os.unlink(m)
+
+
+@requires_container
+def test_mqsandbox_hides_denied_paths():
+    # Inside the sandbox /scratch must not exist at all, and /work/microbiome must
+    # expose ONLY its sw and db sub-paths (the carved-out read-only exceptions) —
+    # everything else under it is hidden behind the shadow dir. This holds
+    # regardless of what the host trees actually contain.
+    cwd = tempfile.mkdtemp(prefix="mqs_cwd_", dir=str(REPO))
+    script = (
+        'echo -n "scratch:"; ([[ -e /scratch ]] && echo PRESENT || echo ABSENT); '
+        'echo -n "microbiome:"; (ls -1 /work/microbiome 2>/dev/null | sort | tr "\\n" "," )'
+        '; echo'
+    )
+    try:
+        rc, out = _run_in_sandbox(cwd, script)
+        assert rc == 0, out
+        assert "scratch:ABSENT" in out, out
+        assert "microbiome:db,sw," in out, out
+    finally:
+        shutil.rmtree(cwd, ignore_errors=True)
 
 
 @requires_container

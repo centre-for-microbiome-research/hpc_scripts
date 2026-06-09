@@ -140,11 +140,12 @@ queue submission vs. one wrapping job based on the number and size of the rules.
 GUIDE
 }
 
-# Parse tool name (default: claude), --debug, --rw-paths, --no-broker
+# Parse tool name (default: claude), --debug, --rw-paths, --ro-paths, --no-broker
 TOOL="claude"
 DEBUG=0
 NO_BROKER=0
 RW_PATHS=()
+RO_PATHS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         claude|codex|copilot) TOOL="$1"; shift ;;
@@ -157,12 +158,18 @@ while [[ $# -gt 0 ]]; do
                 RW_PATHS+=("$1"); shift
             done
             ;;
+        --ro-paths)
+            shift
+            while [[ $# -gt 0 && "$1" != --* ]]; do
+                RO_PATHS+=("$1"); shift
+            done
+            ;;
         help|-h|--help)
             cat <<'EOF'
 mqyolo - run an AI coding tool inside a sandboxed Apptainer/Singularity container
 
 USAGE
-  mqyolo [claude|codex] [--debug] [--rw-paths PATH...] [--no-broker] [args...]
+  mqyolo [claude|codex] [--debug] [--rw-paths PATH...] [--ro-paths PATH...] [--no-broker] [args...]
 
 TOOLS
   claude   (default) Claude Code — passes --dangerously-skip-permissions
@@ -173,6 +180,11 @@ OPTIONS
   --debug              Print the full exec command before running
   --rw-paths PATH...   Bind one or more extra paths into the container as read-write.
                        Jobs submitted via the broker inherit exactly these writable
+                       paths; the AI inside the container cannot change them.
+  --ro-paths PATH...   Bind one or more extra paths into the container as read-only.
+                       Useful to re-expose a specific subdirectory of an otherwise
+                       deny-listed tree (see FILESYSTEM below). Like --rw-paths,
+                       jobs submitted via the broker inherit exactly these read-only
                        paths; the AI inside the container cannot change them.
   --no-broker          Do not start the mqsub broker (mqsub will be unavailable inside the container)
   --print-guidance     Print the mqsub guidance injected into the AI tool, then exit
@@ -189,10 +201,17 @@ CONTAINER
 FILESYSTEM INSIDE THE CONTAINER
   Current directory   read-write  (so the AI can edit your code)
   /tmp, /var/tmp      read-write
+  --rw-paths          read-write  (extra paths granted at launch)
   /home, /mnt, /pkg,
-  /scratch, /data,
-  and other HPC mounts  read-only
+  /data, and other
+  HPC mounts          read-only
+  --ro-paths          read-only   (extra paths granted at launch)
   /etc                read-only   (DNS, SSL certs, nsswitch)
+  /scratch            NOT visible — never bound, to limit data exfiltration
+  /work/microbiome    NOT visible, EXCEPT /work/microbiome/sw and
+                      /work/microbiome/db which are bound read-only (shared
+                      tools and reference databases). Use --ro-paths to opt a
+                      specific other subdirectory back in read-only.
   Everything else     not visible (--contain gives a clean slate)
   ~  (HOME)           isolated ephemeral directory, not your real home;
                       dotfiles are symlinked from your real home so tools
@@ -206,8 +225,9 @@ MQSUB FROM INSIDE THE CONTAINER
   request to the broker, which runs the real command on the host. mqsub jobs are
   automatically submitted with --sandbox, so each job runs on its compute node
   inside the SAME restricted container (only its working directory plus mqyolo's
-  --rw-paths writable) via mqsandbox. Those writable paths are fixed by mqyolo at
-  launch and cannot be changed from inside the container. The broker exits when
+  --rw-paths writable, and the same deny-list with mqyolo's --ro-paths re-exposed
+  read-only) via mqsandbox. Those writable and read-only paths are fixed by mqyolo
+  at launch and cannot be changed from inside the container. The broker exits when
   mqyolo exits or is killed; use --no-broker to disable it.
 
 CLAUDE SETTINGS
@@ -300,8 +320,9 @@ trap _cleanup EXIT
 trap '_cleanup; exit 130' INT
 trap '_cleanup; exit 143' TERM HUP
 
-# Read-only/HPC/tmp/rw/CWD binds, then the ephemeral-home dotfiles.
-sandbox_build_binds "$CWD" "${RW_PATHS[@]+"${RW_PATHS[@]}"}"
+# Read-only/HPC/tmp/rw/CWD binds, then the ephemeral-home dotfiles. Extra
+# read-only paths follow a `--` separator (see sandbox_build_binds).
+sandbox_build_binds "$CWD" "${RW_PATHS[@]+"${RW_PATHS[@]}"}" -- "${RO_PATHS[@]+"${RO_PATHS[@]}"}"
 sandbox_home_dotfiles
 
 # ---------------------------------------------------------------------------
@@ -329,20 +350,25 @@ if [[ "$NO_BROKER" -eq 0 && -x "${SCRIPT_DIR}/mqsub-broker" && -x "${SCRIPT_DIR}
     done
     unset _c _stub_real
 
-    # Pass this session's --rw-paths to the broker as the FIXED set of writable
-    # paths for every submitted job. The broker forces these and rejects any
-    # attempt to set them from inside the container, so the AI cannot widen what
-    # its jobs may write to beyond what you granted mqyolo at launch.
+    # Pass this session's --rw-paths/--ro-paths to the broker as the FIXED sets of
+    # writable and read-only paths for every submitted job. The broker forces these
+    # and rejects any attempt to set them from inside the container, so the AI can
+    # neither widen what its jobs may write to nor re-expose anything beyond what
+    # you granted mqyolo at launch.
     _broker_rw=()
     for _p in "${RW_PATHS[@]+"${RW_PATHS[@]}"}"; do
         _broker_rw+=(--rw-path "$(realpath "$_p" 2>/dev/null || echo "$_p")")
     done
+    _broker_ro=()
+    for _p in "${RO_PATHS[@]+"${RO_PATHS[@]}"}"; do
+        _broker_ro+=(--ro-path "$(realpath "$_p" 2>/dev/null || echo "$_p")")
+    done
     _broker_dbg=()
     [[ "$DEBUG" -eq 1 ]] && _broker_dbg=(--debug)
     "${SCRIPT_DIR}/mqsub-broker" --spool "$BROKER_SPOOL" --watch-pid "$$" \
-        "${_broker_rw[@]}" "${_broker_dbg[@]}" &
+        "${_broker_rw[@]}" "${_broker_ro[@]}" "${_broker_dbg[@]}" &
     BROKER_PID=$!
-    unset _broker_dbg _broker_rw _p
+    unset _broker_dbg _broker_rw _broker_ro _p
 
     # The shim dir lives at this path inside the container too (CONTAINER_HOME ->
     # /container_home). Prepend it to PATH so the stubs shadow the real mqsub.

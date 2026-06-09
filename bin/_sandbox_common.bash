@@ -7,6 +7,8 @@
 #   - the working directory:  read-write
 #   - /tmp, /var/tmp:         read-write
 #   - HPC data mounts, /etc:  read-only
+#   - deny-listed paths:      not visible at all (anti-exfiltration), with a
+#                             small read-only exception list — see SANDBOX_DENY_*
 #   - everything else:        not visible (--contain)
 #   - $HOME:                  ephemeral, dotfiles symlinked from the real home
 #
@@ -59,14 +61,54 @@ sandbox_make_home() {
 }
 
 # ---------------------------------------------------------------------------
-# sandbox_build_binds CWD [RW_PATH...]
-#   Populates BIND_ARGS with the read-only system/HPC binds, writable temp
-#   dirs, any extra read-write paths, and finally CWD read-write (added LAST so
-#   it shadows any read-only parent already bound).
+# Anti-exfiltration deny-list.
+#   Host paths that must NOT be exposed inside the sandbox at all — not even
+#   read-only — so a compromised/over-eager AI (or a job it submits) cannot read
+#   and exfiltrate them. SANDBOX_RO_ALLOW_PATHS are read-only EXCEPTIONS carved
+#   back out of the denied trees because the sandbox legitimately needs them:
+#   shared tools (/work/microbiome/sw is even on PATH) and reference databases.
+#   Enforcement lives in sandbox_build_binds (the wholesale mount list and the
+#   /proc/mounts loop skip denied paths; denied paths nested under a still-exposed
+#   parent are shadowed by an empty dir, then the exceptions are re-bound on top).
+# ---------------------------------------------------------------------------
+SANDBOX_DENY_PATHS=(/scratch /work/microbiome)
+SANDBOX_RO_ALLOW_PATHS=(/work/microbiome/sw /work/microbiome/db)
+
+# ---------------------------------------------------------------------------
+# sandbox_path_denied PATH
+#   True (0) if PATH is inside a SANDBOX_DENY_PATHS prefix and NOT inside a
+#   SANDBOX_RO_ALLOW_PATHS exception; false (1) otherwise.
+# ---------------------------------------------------------------------------
+sandbox_path_denied() {
+    local p="$1" d a
+    for a in "${SANDBOX_RO_ALLOW_PATHS[@]+"${SANDBOX_RO_ALLOW_PATHS[@]}"}"; do
+        [[ "$p" == "$a" || "$p" == "$a"/* ]] && return 1
+    done
+    for d in "${SANDBOX_DENY_PATHS[@]+"${SANDBOX_DENY_PATHS[@]}"}"; do
+        [[ "$p" == "$d" || "$p" == "$d"/* ]] && return 0
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# sandbox_build_binds CWD [RW_PATH...] [-- RO_PATH...]
+#   Populates BIND_ARGS with the read-only system/HPC binds, the anti-exfiltration
+#   deny-list (see SANDBOX_DENY_PATHS above), writable temp dirs, any extra
+#   read-write paths, any extra read-only paths (those given after a `--`
+#   separator), and finally CWD read-write (added LAST so it shadows any
+#   read-only parent already bound).
 # ---------------------------------------------------------------------------
 sandbox_build_binds() {
     local cwd="$1"; shift
-    local -a rw_paths=("$@")
+    # Remaining args are rw paths, then (after an optional `--`) ro paths.
+    local -a rw_paths=() ro_paths=()
+    local _seen_sep=0 _arg
+    for _arg in "$@"; do
+        if [[ "$_seen_sep" -eq 0 && "$_arg" == "--" ]]; then
+            _seen_sep=1; continue
+        fi
+        if [[ "$_seen_sep" -eq 0 ]]; then rw_paths+=("$_arg"); else ro_paths+=("$_arg"); fi
+    done
 
     # --- Read-only system/network config ---
     # Bind only the specific /etc files needed for DNS and TLS — do NOT bind the
@@ -95,6 +137,7 @@ sandbox_build_binds() {
     # parent directories are visible inside the container.
     local dir
     for dir in /home /mnt /pkg /external /scratch /nfs /data /storage /projects /work /project; do
+        sandbox_path_denied "$dir" && continue
         [[ -d "$dir" ]] && BIND_ARGS+=(--bind "${dir}:${dir}:ro")
     done
 
@@ -120,8 +163,42 @@ sandbox_build_binds() {
         [[ "$mountpoint" == /tmp || "$mountpoint" == /tmp/* ]] && continue
         [[ "$mountpoint" == /var/tmp || "$mountpoint" == /var/tmp/* ]] && continue
         [[ "$mountpoint" =~ $SKIP_PATTERN ]] && continue
+        # Never expose deny-listed mounts (e.g. a nested /work/microbiome lustre
+        # filesystem), even though they are real mountpoints.
+        sandbox_path_denied "$mountpoint" && continue
         [[ -d "$mountpoint" ]] && BIND_ARGS+=(--bind "${mountpoint}:${mountpoint}:ro")
     done < /proc/mounts
+
+    # --- Enforce the deny-list for paths nested under a still-exposed parent ---
+    # A denied dir nested under an ro-bound parent (e.g. /work/microbiome under the
+    # wholesale ro-bound /work) would otherwise leak through that parent bind.
+    # Shadow it with an empty dir (with the allowed sub-paths pre-created as
+    # mountpoints), so only the explicitly allowed sub-paths bound below remain
+    # visible. Top-level denied dirs (e.g. /scratch) are simply never bound above,
+    # so under --contain they never appear and need no shadow.
+    local _deny _shadow _allow
+    for _deny in "${SANDBOX_DENY_PATHS[@]+"${SANDBOX_DENY_PATHS[@]}"}"; do
+        [[ "$_deny" == /*/* ]] || continue
+        _shadow="${CONTAINER_HOME}/_denied${_deny//\//_}"
+        mkdir -p "$_shadow"
+        for _allow in "${SANDBOX_RO_ALLOW_PATHS[@]+"${SANDBOX_RO_ALLOW_PATHS[@]}"}"; do
+            [[ "$_allow" == "$_deny"/* ]] && mkdir -p "${_shadow}/${_allow#"$_deny"/}"
+        done
+        BIND_ARGS+=(--bind "${_shadow}:${_deny}:ro")
+    done
+    # Re-bind the allowed read-only exceptions on top of the shadows.
+    for _allow in "${SANDBOX_RO_ALLOW_PATHS[@]+"${SANDBOX_RO_ALLOW_PATHS[@]}"}"; do
+        [[ -d "$_allow" ]] && BIND_ARGS+=(--bind "${_allow}:${_allow}:ro")
+    done
+
+    # --- Extra caller-specified read-only paths (e.g. mqyolo --ro-paths) ---
+    # Bound AFTER the deny-list enforcement, so an explicit --ro-path can re-expose
+    # a specific subdirectory of an otherwise-denied tree if the user opts in.
+    local _ro_path _ro_canonical
+    for _ro_path in "${ro_paths[@]+"${ro_paths[@]}"}"; do
+        _ro_canonical="$(realpath "$_ro_path" 2>/dev/null || echo "$_ro_path")"
+        [[ -e "$_ro_canonical" ]] && BIND_ARGS+=(--bind "${_ro_canonical}:${_ro_canonical}:ro")
+    done
 
     # --- Writable temp dirs ---
     [[ -d /tmp ]]     && BIND_ARGS+=(--bind "/tmp:/tmp:rw")
