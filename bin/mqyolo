@@ -252,7 +252,9 @@ ENVIRONMENT VARIABLES
 
 PATH INSIDE THE CONTAINER
   ~/bin and ~/.local/bin (if present) are prepended ahead of the container
-  binaries so your personal scripts remain available.
+  binaries so your personal scripts remain available. pixi_cmr_init.py (shipped
+  with this repo) is also placed on PATH so the in-container AI can scaffold a
+  pixi.toml.
 EOF
             exit 0
             ;;
@@ -337,6 +339,18 @@ sandbox_home_dotfiles
 # ---------------------------------------------------------------------------
 SANDBOX_PATH_PREFIX=""
 MQYOLO_GUIDANCE_FILE=""   # in-container path to the mqsub guidance, set when broker is on
+
+# Extra directories to prepend to PATH inside the container, highest priority
+# first. Applied via SANDBOX_PATH_PREFIX (sandbox_build_env) AND re-prepended by
+# the shim ~/.bashrc below, so they keep winning even after the user's ~/.bashrc is
+# (re-)sourced. Paths are the in-container view (CONTAINER_HOME -> /container_home).
+_PATH_PREFIX_DIRS=()
+
+# --- Repo tools on PATH inside the container (see sandbox_stage_repo_tools) ---
+TOOLS_DIR="${CONTAINER_HOME}/.mqyolo/tools"
+sandbox_stage_repo_tools "$TOOLS_DIR" "$SCRIPT_DIR"
+_PATH_PREFIX_DIRS+=("/container_home/.mqyolo/tools")
+
 if [[ "$NO_BROKER" -eq 0 && -x "${SCRIPT_DIR}/mqsub-broker" && -x "${SCRIPT_DIR}/mqbroker-stub" ]]; then
     BROKER_SPOOL="${CONTAINER_HOME}/.mqyolo/broker"
     SHIM_DIR="${CONTAINER_HOME}/.mqyolo/shims"
@@ -371,21 +385,11 @@ if [[ "$NO_BROKER" -eq 0 && -x "${SCRIPT_DIR}/mqsub-broker" && -x "${SCRIPT_DIR}
     unset _broker_dbg _broker_rw _broker_ro _p
 
     # The shim dir lives at this path inside the container too (CONTAINER_HOME ->
-    # /container_home). Prepend it to PATH so the stubs shadow the real mqsub.
-    SANDBOX_PATH_PREFIX="/container_home/.mqyolo/shims"
+    # /container_home). It must beat everything (including the repo tools dir) so the
+    # container-side mqsub stub shadows the real mqsub; prepend it ahead of the rest.
+    _PATH_PREFIX_DIRS=("/container_home/.mqyolo/shims" "${_PATH_PREFIX_DIRS[@]}")
     # Tell the stubs where to drop requests (in-container path).
     ENV_ARGS+=(--env "MQBROKER_SPOOL=/container_home/.mqyolo/broker")
-
-    # Setting PATH up front is not enough: the user's ~/.bashrc (sourced at shell
-    # startup, and re-sourced by Claude Code's shell snapshot) prepends the real
-    # hpc_scripts bin dir, shadowing the shim. Give the container its OWN ~/.bashrc
-    # that sources the real one and THEN puts the shim dir first, so the stub wins
-    # no matter how often .bashrc is sourced. (.bash_profile/.profile both end by
-    # sourcing ~/.bashrc, so this covers login shells too.)
-    _real_bashrc="$(readlink -f "${HOME}/.bashrc" 2>/dev/null || true)"
-    sandbox_write_shim_bashrc "${CONTAINER_HOME}/.bashrc" "$_real_bashrc" \
-        "/container_home/.mqyolo/shims"
-    unset _real_bashrc
 
     # Guidance injected into the AI tool's instructions so it knows to offload
     # heavy work to the batch queue via mqsub instead of running it on the login
@@ -395,6 +399,18 @@ if [[ "$NO_BROKER" -eq 0 && -x "${SCRIPT_DIR}/mqsub-broker" && -x "${SCRIPT_DIR}
     _mqyolo_guidance_text > "${CONTAINER_HOME}/.mqyolo/guidance.md"
     MQYOLO_GUIDANCE_FILE="/container_home/.mqyolo/guidance.md"
 fi
+
+# Join the prefix dirs and expose them on PATH (sandbox_build_env prepends
+# SANDBOX_PATH_PREFIX to CONTAINER_PATH). Setting PATH up front is not enough: the
+# user's ~/.bashrc (sourced at shell startup, and re-sourced by Claude Code's shell
+# snapshot) prepends the real hpc_scripts bin dir, shadowing these. Give the
+# container its OWN ~/.bashrc that sources the real one and THEN re-prepends our
+# dirs, so they keep winning no matter how often .bashrc is sourced.
+# (.bash_profile/.profile both end by sourcing ~/.bashrc, covering login shells.)
+SANDBOX_PATH_PREFIX="$(IFS=:; printf '%s' "${_PATH_PREFIX_DIRS[*]}")"
+_real_bashrc="$(readlink -f "${HOME}/.bashrc" 2>/dev/null || true)"
+sandbox_write_shim_bashrc "${CONTAINER_HOME}/.bashrc" "$_real_bashrc" "$SANDBOX_PATH_PREFIX"
+unset _real_bashrc
 
 # ---------------------------------------------------------------------------
 # Environment variables (PATH honours SANDBOX_PATH_PREFIX set above)

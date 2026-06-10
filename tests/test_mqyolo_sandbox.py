@@ -340,6 +340,61 @@ def test_shim_bashrc_does_not_write_through_symlink(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# pixi_cmr_init.py (and any other repo tools) must be staged onto PATH inside the
+# container: sandbox_stage_repo_tools symlinks them into mqyolo's tools dir, and
+# the shim ~/.bashrc keeps that dir ahead of the user's bashrc-prepended dirs.
+# ---------------------------------------------------------------------------
+PIXI_CMR_INIT = BIN / "pixi_cmr_init.py"
+
+
+def test_pixi_cmr_init_present_in_repo():
+    # mqyolo stages this from the repo bin; it must actually be there.
+    assert PIXI_CMR_INIT.exists(), "pixi_cmr_init.py missing from repo bin"
+
+
+def test_stage_repo_tools_symlinks_pixi_cmr_init(tmp_path):
+    tools = tmp_path / "tools"
+    script = (
+        "source %s; sandbox_stage_repo_tools %s %s; readlink -f %s/pixi_cmr_init.py"
+        % (SANDBOX_LIB, shlex.quote(str(tools)), shlex.quote(str(BIN)),
+           shlex.quote(str(tools)))
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    # The staged symlink points at the repo's real pixi_cmr_init.py.
+    assert p.stdout.strip() == os.path.realpath(str(PIXI_CMR_INIT)), p.stdout
+
+
+def test_pixi_cmr_init_resolves_on_path_via_shim_bashrc(tmp_path):
+    # Stage the repo tool, then build the shim ~/.bashrc with the tools dir on the
+    # PATH prefix (exactly as mqyolo does). Even though a "real" bashrc prepends a
+    # decoy dir that ALSO contains a pixi_cmr_init.py (mimicking the deployed copy
+    # under /work/microbiome/sw), the staged repo copy must win.
+    tools = tmp_path / "tools"
+    deployed = tmp_path / "deployed"
+    deployed.mkdir()
+    decoy = deployed / "pixi_cmr_init.py"
+    decoy.write_text("#!/bin/sh\necho decoy\n")
+    decoy.chmod(0o755)
+    real = tmp_path / "real_bashrc"
+    real.write_text('export PATH="%s:$PATH"\n' % deployed)
+    dest = tmp_path / "dest_bashrc"
+    script = (
+        "source %s; "
+        "sandbox_stage_repo_tools %s %s; "
+        "sandbox_write_shim_bashrc %s %s %s; "
+        "PATH=/usr/bin:/bin; source %s; "
+        "command -v pixi_cmr_init.py"
+        % (SANDBOX_LIB, shlex.quote(str(tools)), shlex.quote(str(BIN)),
+           shlex.quote(str(dest)), shlex.quote(str(real)), shlex.quote(str(tools)),
+           shlex.quote(str(dest)))
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    assert p.stdout.strip() == str(tools / "pixi_cmr_init.py"), p.stdout
+
+
+# ---------------------------------------------------------------------------
 # Anti-exfiltration deny-list (sandbox_path_denied + sandbox_build_binds).
 # These run anywhere — no container needed.
 # ---------------------------------------------------------------------------

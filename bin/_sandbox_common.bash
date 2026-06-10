@@ -293,6 +293,31 @@ sandbox_home_dotfiles() {
 }
 
 # ---------------------------------------------------------------------------
+# Repo helper scripts that should be on PATH inside the sandbox. These ship with
+# this repo (the same tree mqyolo runs from) so the in-container AI always has them
+# and runs the version that ships with mqyolo, independent of any separately
+# deployed copy under /work/microbiome/sw.
+# ---------------------------------------------------------------------------
+SANDBOX_REPO_TOOLS=(pixi_cmr_init.py)
+
+# ---------------------------------------------------------------------------
+# sandbox_stage_repo_tools TOOLS_DIR SCRIPT_DIR
+#   Symlink each SANDBOX_REPO_TOOLS entry found in SCRIPT_DIR into TOOLS_DIR,
+#   pointing at the canonical target (bound ro under /home|/mnt|/work) so it
+#   resolves inside the container. mqyolo creates TOOLS_DIR under its ephemeral
+#   home and adds it to the container PATH (SANDBOX_PATH_PREFIX), so the shim
+#   ~/.bashrc keeps it ahead of the user's bashrc-prepended hpc_scripts bin dir.
+# ---------------------------------------------------------------------------
+sandbox_stage_repo_tools() {
+    local tools_dir="$1" script_dir="$2" _t
+    mkdir -p "$tools_dir"
+    for _t in "${SANDBOX_REPO_TOOLS[@]}"; do
+        [[ -e "${script_dir}/${_t}" ]] && \
+            ln -sf "$(readlink -f "${script_dir}/${_t}")" "${tools_dir}/${_t}"
+    done
+}
+
+# ---------------------------------------------------------------------------
 # sandbox_write_shim_bashrc DEST_BASHRC REAL_BASHRC SHIM_DIR
 #   Write DEST_BASHRC so a shell that sources it first runs the user's real
 #   bashrc (if given/existing) and THEN puts SHIM_DIR first on PATH. This is how
