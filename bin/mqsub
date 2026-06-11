@@ -266,17 +266,6 @@ class script_format:
         print("cd '{}'".format(os.getcwd()), file=outfile) # cd to current directory      
         if prelude:
             print(prelude+'\n\n',file=outfile)
-        if args.scratch_data:
-            for dir in args.scratch_data:
-                if os.path.exists(os.path.abspath(dir)):
-                    print("\n#Copy scratch-data to /scratch for processing",file=outfile)
-                    print("export MSCRATCH=/scratch/cmr_mqsub/$PBS_JOBID",file=outfile)
-                    print("mkdir -p $MSCRATCH",file=outfile)
-                    print("cp -r -L '{}' $MSCRATCH".format(os.path.abspath(dir)),file=outfile)
-                    print("CP_EXITSTATUS=$?",file=outfile)
-                    print("if [[ $CP_EXITSTATUS -eq 0 ]]; then : ; else  echo 'Exit status $CP_EXITSTATUS. Exitted due to failed cp command'; exit $CP_EXITSTATUS ; fi",file=outfile)
-                else:
-                    raise Exception('{} not found. Exiting'.format(dir))
         if args.tmp_data:
             for dir in args.tmp_data:
                 if os.path.exists(os.path.abspath(dir)):
@@ -315,12 +304,6 @@ class script_format:
 
     @staticmethod
     def tail(outfile):
-        if args.scratch_data:
-            # Command to test for unexpected MSCRATCH variable changes
-            # ./bin/mqsub_aqua --scratch-data bin -- export MSCRATCH=/home/aroneys/src/hpc_scripts/test_delete/asdf
-            print("\n#Delete scratch-data from /scratch",file=outfile)
-            print("if [[ $MSCRATCH != /scratch/cmr_mqsub/* ]]; then echo 'MSCRATCH is not in /scratch/cmr_mqsub'; exit 1; fi",file=outfile)
-            print("if [[ -d $MSCRATCH ]]; then rm -rf $MSCRATCH || exit 1; fi",file=outfile)
         if args.run_tmp_dir:
             working_dir = os.getcwd()
             print("\nFINAL_EXITSTATUS=$?",file=outfile)
@@ -470,8 +453,6 @@ def sandbox_wrap(command_str):
     # on the compute node at job runtime.
     if args.run_tmp_dir or args.tmp_data:
         rw_parts.append('"$TMPDIR"')
-    if args.scratch_data:
-        rw_parts.append('"$MSCRATCH"')
     rw_str = (' --rw-paths ' + ' '.join(rw_parts)) if rw_parts else ''
     # Read-only re-exposures (e.g. carving a path back out of mqyolo's
     # deny-listed trees). Inherited from mqyolo via the broker's --sandbox-ro-paths.
@@ -629,7 +610,7 @@ Further information can also be found in the CMR Compute Notes -  https://tinyur
         mem = int(DEFAULT_RAM_TO_CPU_RATIO*args.cpus)
     else:
         mem = args.mem
-    if mem < 8 and args.queue == 'aqua' and (args.scratch_data or args.tmp_data or args.run_tmp_dir):
+    if mem < 8 and args.queue == 'aqua' and (args.tmp_data or args.run_tmp_dir):
         mem = 8
         logging.debug("Using RAM {}".format(mem))
 
