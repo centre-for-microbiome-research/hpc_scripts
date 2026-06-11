@@ -546,8 +546,8 @@ Example usage:
     parser.add_argument('--chunk-size',type=int,dest='chunk_size', help='Number of commands (from --command-file) per a chunk ')
     parser.add_argument('--prelude', help='Code from this file will be run before each chunk')
     temp_data_group = parser.add_mutually_exclusive_group()
-    temp_data_group.add_argument('--scratch-data', dest='scratch_data', nargs='+', help=r'Data to be copied to a scratch space prior to running the main command(s). Useful for databases used in large chunks of jobs. Use $MSCRATCH to refer to the location.')
-    temp_data_group.add_argument('--tmp-data', dest='tmp_data', nargs='+', help=r'Data to be copied to a tmp space prior to running the main command(s). Useful for databases used in large chunks of jobs. Use $TMPDIR to refer to the location. tmp space can fill up if you are running many in parallel, in which case use --scratch-data instead.')
+    temp_data_group.add_argument('--scratch-data', dest='scratch_data', nargs='+', help=r'DEPRECATED: use --tmp-data instead, which copies data to node-local $TMPDIR. Specifying this fails.')
+    temp_data_group.add_argument('--tmp-data', dest='tmp_data', nargs='+', help=r'Data to be copied to a tmp space prior to running the main command(s). Useful for databases used in large chunks of jobs. Use $TMPDIR to refer to the location.')
     parser.add_argument('--run-tmp-dir', dest='run_tmp_dir',action='store_true', help='Executes your command(s) on the local SSD ($TMPDIR/mqsub_processing) of a node. IMPORTANT: Use absolute paths for your input files, and a relative path for your output.')
     parser.add_argument('--depend', nargs='+', help='Space separated list of ids for jobs this job should depend on.')
     parser.add_argument('--segregated-log-files', action='store_true', help='Put log files in ~/qsub_logs/<date>/<directory> instead of the current working directory.')
@@ -575,6 +575,12 @@ Further information can also be found in the CMR Compute Notes -  https://tinyur
     else:
         loglevel = logging.INFO
     logging.basicConfig(level=loglevel, format='%(asctime)s %(levelname)s: %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
+
+    if args.scratch_data:
+        logging.error(
+            "--scratch-data is deprecated. Use --tmp-data instead, which copies "
+            "the data to node-local $TMPDIR and refers to it via $TMPDIR.")
+        sys.exit(1)
 
     SCRIPT = 'script'
     COMMAND = 'command'
