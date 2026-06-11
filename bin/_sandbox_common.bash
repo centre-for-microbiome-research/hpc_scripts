@@ -222,6 +222,21 @@ sandbox_build_binds() {
     # --- Writable /pkg/cmr/{username}/pixi_dirs ---
     local _pixi_dirs="/pkg/cmr/${USER}/pixi_dirs"
     [[ -d "$_pixi_dirs" ]] && BIND_ARGS+=(--bind "${_pixi_dirs}:${_pixi_dirs}:rw")
+
+    # --- Writable pixi/rattler cache dir ---
+    # PIXI_CACHE_DIR / RATTLER_CACHE_DIR commonly point into shared storage on
+    # /pkg/cmr or /mnt/weka (see mqlint), which is bound READ-ONLY above, so pixi
+    # can't populate its cache. Bind the cache rw at its canonical path so
+    # `pixi install` / env regeneration works. The env var is forwarded as the
+    # original logical path (sandbox_build_env); inside the container it resolves
+    # through the ro-bound parent symlink onto this rw bind.
+    local _pixi_cache _pixi_cache_real
+    for _pixi_cache in "${PIXI_CACHE_DIR:-}" "${RATTLER_CACHE_DIR:-}"; do
+        [[ -n "$_pixi_cache" ]] || continue
+        _pixi_cache_real="$(realpath "$_pixi_cache" 2>/dev/null || echo "$_pixi_cache")"
+        mkdir -p "$_pixi_cache_real" 2>/dev/null || true
+        [[ -d "$_pixi_cache_real" ]] && BIND_ARGS+=(--bind "${_pixi_cache_real}:${_pixi_cache_real}:rw")
+    done
 }
 
 # ---------------------------------------------------------------------------

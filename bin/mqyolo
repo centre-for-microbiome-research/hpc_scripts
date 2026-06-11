@@ -417,6 +417,7 @@ unset _real_bashrc
 # ---------------------------------------------------------------------------
 sandbox_build_env ANTHROPIC_API_KEY OPENAI_API_KEY GITHUB_TOKEN \
                   OPENAI_BASE_URL ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK \
+                  PIXI_CACHE_DIR RATTLER_CACHE_DIR \
                   TERM COLORTERM NO_COLOR
 
 # ---------------------------------------------------------------------------

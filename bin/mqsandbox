@@ -74,8 +74,9 @@ sandbox_make_home
 trap 'rm -rf "$CONTAINER_HOME"' EXIT
 sandbox_build_binds "$CWD" "${RW_PATHS[@]+"${RW_PATHS[@]}"}" -- "${RO_PATHS[@]+"${RO_PATHS[@]}"}"
 sandbox_home_dotfiles
-# Forward terminal-rendering vars only; jobs should not inherit API keys.
-sandbox_build_env TERM COLORTERM NO_COLOR
+# Forward terminal-rendering vars and the pixi/rattler cache location (so jobs
+# that run pixi reuse the rw-bound cache); jobs should not inherit API keys.
+sandbox_build_env PIXI_CACHE_DIR RATTLER_CACHE_DIR TERM COLORTERM NO_COLOR
 
 if [[ "$DEBUG" -eq 1 ]]; then
     echo "mqsandbox: exec command:" >&2
