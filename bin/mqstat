@@ -979,10 +979,115 @@ def watch_jobs(get_jobs, interval=2):
 
     curses.wrapper(_draw)
 
+
+def member_resource_score(ncpus, ngpus):
+    """Resource-weighted score: ncpus + ngpus*32 (each GPU counts as 32 CPUs).
+
+    `qstat -f` on aqua only returns the calling user's own jobs, so we cannot see
+    other users' per-job memory or walltime. The cross-user source is `qusers`,
+    which exposes only running/queued CPU and GPU counts -- hence the formula is
+    reduced from ((rmem/8)+ncpus+(ngpus*32))*max(walltime,600) to ncpus+ngpus*32.
+    """
+    return ncpus + ngpus * 32
+
+
+def aggregate_member_scores(qusers_stats, members):
+    """Aggregate per-member running and total resource scores from qusers data.
+
+    Running counts are the currently-running jobs; total counts are running plus
+    queued (a member's whole set of jobs). Members with no jobs get zeros.
+    """
+    agg = {}
+    for member in members:
+        stats = qusers_stats.get(member, {})
+        cpus_running = stats.get('cpus_running', 0)
+        cpus_queued = stats.get('cpus_queued', 0)
+        gpus_running = stats.get('gpus_running', 0)
+        gpus_queued = stats.get('gpus_queued', 0)
+        cpus_total = cpus_running + cpus_queued
+        gpus_total = gpus_running + gpus_queued
+        agg[member] = {
+            'cpus_running': cpus_running,
+            'cpus_total': cpus_total,
+            'gpus_running': gpus_running,
+            'gpus_total': gpus_total,
+            'running_score': member_resource_score(cpus_running, gpus_running),
+            'total_score': member_resource_score(cpus_total, gpus_total),
+        }
+    return agg
+
+
+def rank_members(agg, top_running=7, top_total=3, list_all=False):
+    """Order microbiome members into the CMR table rows.
+
+    Default: the top `top_running` people by score over their *running* jobs,
+    then a None separator, then the top `top_total` people by score over their
+    *total* set of jobs, excluding anyone already shown.
+
+    With list_all=True: everyone, ranked by their total-jobs score, no limit and
+    no separator.
+
+    Each row is (member, stats, score, kind); None marks the separator.
+    """
+    if list_all:
+        ranked = sorted(
+            (kv for kv in agg.items() if kv[1]['total_score'] > 0),
+            key=lambda kv: kv[1]['total_score'],
+            reverse=True,
+        )
+        return [(m, st, st['total_score'], 'total') for m, st in ranked]
+
+    running = sorted(
+        (kv for kv in agg.items() if kv[1]['running_score'] > 0),
+        key=lambda kv: kv[1]['running_score'],
+        reverse=True,
+    )
+    first = running[:top_running]
+    shown = {m for m, _ in first}
+
+    total = sorted(
+        (kv for kv in agg.items() if kv[1]['total_score'] > 0 and kv[0] not in shown),
+        key=lambda kv: kv[1]['total_score'],
+        reverse=True,
+    )
+    second = total[:top_total]
+
+    rows = [(m, st, st['running_score'], 'running') for m, st in first]
+    if second:
+        rows.append(None)
+        rows.extend((m, st, st['total_score'], 'total') for m, st in second)
+    return rows
+
+
+def print_member_table(rows):
+    """Print the CMR member ranking table for rows from rank_members()."""
+    header = f"{'#':<3} {'Member':<20} {'CPU':>12} {'GPU':>10}"
+    print(header)
+    print(f"{'-'*3:<3} {'-'*20:<20} {'-'*12:>12} {'-'*10:>10}")
+
+    i = 0
+    for row in rows:
+        if row is None:
+            print('-' * visible_len(header))
+            continue
+        member, stats, _score, _kind = row
+        i += 1
+        real_name = get_real_name(member)
+        cpu_display = f"{stats['cpus_running']:,}/{stats['cpus_total']:,}"
+        total_gpus = stats['gpus_total']
+        gpu_display = f"{stats['gpus_running']}/{total_gpus}" if total_gpus > 0 else ""
+        print(f"{i:<3} {real_name[:20]:<20} {cpu_display:>12} {gpu_display:>10}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Cluster Usage Monitor")
     parser.add_argument("--list", action="store_true", help="Summarise qstat -f output")
     parser.add_argument("--qstat-file", help="Use qstat -f output from file")
+    parser.add_argument(
+        "--list-all-people",
+        action="store_true",
+        help="List every microbiome group member (ranked, no limit) instead of the top 10",
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -1064,29 +1169,14 @@ def main():
     print(f"Requested CPUs: {microbiome_requested_cpu:,} ({microbiome_cpu_requested_percent:.1f}% running)")
     print()
 
-    # Calculate score for each member: cpus_running + 10 * gpus_running
-    scored_members = []
-    for member in microbiome_members:
-        if member in qusers_stats:
-            stats = qusers_stats[member]
-            score = stats['cpus_running'] + 10 * stats['gpus_running']
-            real_name = get_real_name(member)
-            scored_members.append((real_name, stats, score))
-    # Sort by score descending and print top 5
-    sorted_members = sorted(scored_members, key=lambda x: x[2], reverse=True)[:5]
-    
-    if scored_members:
-        # Print table header
-        print(f"{'#':<3} {'Member':<20} {'CPU':>12} {'GPU':>10} {'Score':>6}")
-        print(f"{'-'*3:<3} {'-'*20:<20} {'-'*12:>12} {'-'*10:>10} {'-'*6:>6}")
-        
-        # Print each member with proper alignment
-        for i, (member, stats, score) in enumerate(sorted_members, 1):
-            cpu_display = f"{stats['cpus_running']:,}/{stats['cpus_running'] + stats['cpus_queued']:,}"
-            # Show empty space if no GPUs requested
-            total_gpus_requested = stats['gpus_running'] + stats['gpus_queued']
-            gpu_display = f"{stats['gpus_running']}/{total_gpus_requested}" if total_gpus_requested > 0 else ""
-            print(f"{i:<3} {member[:20]:<20} {cpu_display:>12} {gpu_display:>10} {score:>6}")
+    # Rank members by the resource-weighted formula. By default show the top 7
+    # by their running jobs, a separator, then the top 3 by their total set of
+    # jobs (excluding anyone already shown). --list-all-people lists everyone.
+    member_scores = aggregate_member_scores(qusers_stats, microbiome_members)
+    rows = rank_members(member_scores, list_all=args.list_all_people)
+
+    if any(row is not None for row in rows):
+        print_member_table(rows)
     else:
         print("No jobs for microbiome group members.")
     
