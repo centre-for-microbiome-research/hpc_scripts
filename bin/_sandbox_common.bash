@@ -333,6 +333,24 @@ sandbox_stage_repo_tools() {
 }
 
 # ---------------------------------------------------------------------------
+# sandbox_bind_codex_home REAL_CODEX DEST_CODEX [GUIDANCE_FILE]
+#   Bind the real Codex home read-write into the container so Codex config,
+#   sessions and auth changes persist. When guidance is provided, bind that file
+#   over DEST_CODEX/AGENTS.md inside the container without editing the real file.
+# ---------------------------------------------------------------------------
+sandbox_bind_codex_home() {
+    local real="$1" dest="$2" guidance="${3:-}"
+
+    [[ -n "$real" ]] || return 0
+    mkdir -p "$real"
+    BIND_ARGS+=(--bind "${real}:${dest}:rw")
+
+    if [[ -n "$guidance" && -f "$guidance" ]]; then
+        BIND_ARGS+=(--bind "${guidance}:${dest}/AGENTS.md:ro")
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # sandbox_write_shim_bashrc DEST_BASHRC REAL_BASHRC SHIM_DIR
 #   Write DEST_BASHRC so a shell that sources it first runs the user's real
 #   bashrc (if given/existing) and THEN puts SHIM_DIR first on PATH. This is how

@@ -37,8 +37,8 @@ Key invariants the tests guard (keep them true):
   disappears.
 - The in-container AI tool is told where heavy/long/high-RAM commands should run —
   injected for Claude with `--append-system-prompt-file` and for Codex via its
-  global `~/.codex/AGENTS.md` (without clobbering the user's real `~/.codex`). Only
-  when the broker is running. The guidance adapts to the boot environment
+  global `~/.codex/AGENTS.md` via a read-only file bind over the real read-write
+  `~/.codex` mount. Only when the broker is running. The guidance adapts to the boot environment
   (`_mqyolo_detect_resources`): on a login node it says offload to `mqsub`; inside
   a PBS job it reports the actual allocated CPUs/RAM (from NCPUS + qstat) and frames
   them as a finite budget — run work that fits directly, but still send larger jobs

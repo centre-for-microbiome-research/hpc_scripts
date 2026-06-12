@@ -394,6 +394,31 @@ def test_pixi_cmr_init_resolves_on_path_via_shim_bashrc(tmp_path):
     assert p.stdout.strip() == str(tools / "pixi_cmr_init.py"), p.stdout
 
 
+def test_bind_codex_home_mounts_real_dir_rw_and_guidance_readonly(tmp_path):
+    real = tmp_path / "real_codex"
+    guidance = tmp_path / "guidance.md"
+    guidance.write_text("use mqsub\n")
+
+    script = (
+        "set -euo pipefail\n"
+        "source %s; "
+        "BIND_ARGS=(); "
+        "sandbox_bind_codex_home %s /container_home/.codex %s; "
+        'for a in "${BIND_ARGS[@]}"; do [[ "$a" == --bind ]] || printf "%%s\\n" "$a"; done'
+        % (
+            SANDBOX_LIB,
+            shlex.quote(str(real)),
+            shlex.quote(str(guidance)),
+        )
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    assert real.is_dir()
+    binds = p.stdout.splitlines()
+    assert f"{real}:/container_home/.codex:rw" in binds
+    assert f"{guidance}:/container_home/.codex/AGENTS.md:ro" in binds
+
+
 # ---------------------------------------------------------------------------
 # Anti-exfiltration deny-list (sandbox_path_denied + sandbox_build_binds).
 # These run anywhere — no container needed.

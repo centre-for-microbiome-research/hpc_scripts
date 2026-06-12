@@ -240,6 +240,12 @@ CLAUDE SETTINGS
                       running a timestamped backup is saved to
                       ~/.claude/backups/
 
+CODEX SETTINGS
+  ~/.codex/           bound read-write so Codex config, auth and sessions
+                      persist across mqyolo runs. When the broker is running,
+                      mqyolo's generated guidance is mounted read-only over
+                      ~/.codex/AGENTS.md inside the container.
+
 ENVIRONMENT VARIABLES
   ANTHROPIC_API_KEY   Required for claude
   OPENAI_API_KEY      Required for codex
@@ -440,22 +446,15 @@ case "$TOOL" in
             "-c" "check_for_update_on_startup=false"
         )
         # Codex reads global instructions from $CODEX_HOME/AGENTS.md (~/.codex).
-        # Replace the symlink-into-real-home (from sandbox_home_dotfiles) with a
-        # real, writable dir: preserve the user's auth/config via read-only
-        # symlinks, drop our mqsub guidance as AGENTS.md, and let codex write its
-        # own session logs into this ephemeral dir. This never clobbers the user's
-        # real ~/.codex/AGENTS.md or sessions.
-        if [[ -n "$MQYOLO_GUIDANCE_FILE" ]]; then
-            _codex_real="$(readlink -f "${HOME}/.codex" 2>/dev/null || true)"
-            rm -f "${CONTAINER_HOME}/.codex"
-            mkdir -p "${CONTAINER_HOME}/.codex"
-            for _f in config.toml auth.json; do
-                [[ -n "$_codex_real" && -e "${_codex_real}/${_f}" ]] && \
-                    ln -sf "${_codex_real}/${_f}" "${CONTAINER_HOME}/.codex/${_f}"
-            done
-            cp "${CONTAINER_HOME}/.mqyolo/guidance.md" "${CONTAINER_HOME}/.codex/AGENTS.md"
-            unset _codex_real _f
-        fi
+        # Bind the real ~/.codex read-write so config, auth and sessions persist.
+        # The mqyolo guidance is exposed as AGENTS.md via a file bind, so we do
+        # not overwrite the user's real ~/.codex/AGENTS.md.
+        mkdir -p "${HOME}/.codex"
+        _codex_real="$(readlink -f "${HOME}/.codex" 2>/dev/null || echo "${HOME}/.codex")"
+        rm -rf "${CONTAINER_HOME}/.codex"
+        sandbox_bind_codex_home "$_codex_real" "/container_home/.codex" \
+            "${CONTAINER_HOME}/.mqyolo/guidance.md"
+        unset _codex_real
         ;;
     copilot)
         # No CLI flag for auto mode; use Shift+Tab inside the session for Autopilot mode
