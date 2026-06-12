@@ -173,7 +173,8 @@ USAGE
 
 TOOLS
   claude   (default) Claude Code — passes --dangerously-skip-permissions
-  codex              OpenAI Codex — passes --full-auto, --search, and disables update checks
+  codex              OpenAI Codex — bypasses Codex's own prompts/sandbox, enables search,
+                     and disables update checks
   copilot            GitHub Copilot CLI — no auto-mode flag; use Shift+Tab inside session for Autopilot mode
 
 OPTIONS
@@ -438,10 +439,11 @@ case "$TOOL" in
             YOLO_ARGS+=("--append-system-prompt-file" "$MQYOLO_GUIDANCE_FILE")
         ;;
     codex)
-        # Full auto mode inside the container, enable Codex web search, and
-        # suppress self-update prompts because the SIF rebuild handles updates.
+        # Run without Codex's own prompts/sandbox inside the mqyolo container,
+        # enable Codex web search, and suppress self-update prompts because the
+        # SIF rebuild handles updates.
         YOLO_ARGS=(
-            "--full-auto"
+            "--dangerously-bypass-approvals-and-sandbox"
             "--search"
             "-c" "check_for_update_on_startup=false"
         )

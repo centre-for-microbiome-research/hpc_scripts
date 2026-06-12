@@ -158,6 +158,36 @@ def test_mqyolo_print_guidance_pbs_job():
     assert "snakemake --profile aqua" in out
 
 
+def test_mqyolo_codex_uses_current_auto_mode_flag(tmp_path):
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    fake_apptainer = fakebin / "apptainer"
+    fake_apptainer.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+    fake_apptainer.chmod(0o755)
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    fake_sif = tmp_path / "ai_tool.sif"
+    fake_sif.write_text("")
+    env = {
+        **os.environ,
+        "PATH": f"{fakebin}:{os.environ['PATH']}",
+        "HOME": str(fake_home),
+        "AI_TOOL_SIF": str(fake_sif),
+    }
+
+    p = subprocess.run(
+        [str(MQYOLO), "--no-broker", "codex"],
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+    assert p.returncode == 0, p.stderr
+    out = p.stdout + p.stderr
+    assert "--dangerously-bypass-approvals-and-sandbox" in out
+    assert "--full-auto" not in out
+    assert "--search" in out
+
+
 # ---------------------------------------------------------------------------
 # Broker <-> stub round-trip helpers
 # ---------------------------------------------------------------------------
