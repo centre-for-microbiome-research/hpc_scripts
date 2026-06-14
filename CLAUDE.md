@@ -10,7 +10,7 @@ boxed into the same sandbox:
 - `bin/mqsandbox` — runs an arbitrary command inside the restricted container
 - `bin/_sandbox_common.bash` — shared bind/env construction (sourced by the two above)
 - `bin/mqsub-broker` — host-side broker; runs allowlisted commands, forces `--sandbox`
-- `bin/mqbroker-stub` — container-side stub (symlinked as mqsub/mqstat/mqwait/mqdel)
+- `bin/mqbroker-stub` — container-side stub (symlinked as mqsub/mqstat/mqwait/mqdel/qstat/qdel)
 - `bin/mqsub` — `--sandbox` / `--sandbox-rw-paths` wrap the job in `mqsandbox`
 
 **Whenever you change any of the files above, run the test suite and make sure it
@@ -33,6 +33,10 @@ Key invariants the tests guard (keep them true):
 - Jobs submitted from inside the container are always `--sandbox`ed and inherit
   mqyolo's fixed `--rw-paths`; the container cannot change them (`--no-sandbox` and
   `--sandbox-rw-paths` from the container are rejected).
+- `snakemake --profile aqua` works inside the container: its cluster helpers
+  (`snakemake_mqsub`, `snakemake_mqstat`) are staged onto PATH as repo tools, and
+  the `qstat`/`qdel` they (and snakemake's cluster-cancel) rely on are proxied to
+  the host via the broker alongside mqsub/mqstat/mqwait/mqdel.
 - The broker is tied to the mqyolo session and self-terminates when the mqyolo PID
   disappears.
 - The in-container AI tool is told where heavy/long/high-RAM commands should run —

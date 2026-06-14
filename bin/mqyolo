@@ -225,8 +225,9 @@ MQSUB FROM INSIDE THE CONTAINER
   qsub and the python3.9 mqsub depends on do not exist inside the container, so
   mqsub cannot run there directly. Instead, mqyolo starts a lightweight broker
   on the host for the duration of the session (one broker per mqyolo session).
-  Inside the container, mqsub/mqstat/mqwait/mqdel are thin stubs that forward the
-  request to the broker, which runs the real command on the host. mqsub jobs are
+  Inside the container, mqsub/mqstat/mqwait/mqdel (and qstat/qdel, so
+  `snakemake --profile aqua` works) are thin stubs that forward the request to the
+  broker, which runs the real command on the host. mqsub jobs are
   automatically submitted with --sandbox, so each job runs on its compute node
   inside the SAME restricted container (only its working directory plus mqyolo's
   --rw-paths writable, and the same deny-list with mqyolo's --ro-paths re-exposed
@@ -368,8 +369,11 @@ if [[ "$NO_BROKER" -eq 0 && -x "${SCRIPT_DIR}/mqsub-broker" && -x "${SCRIPT_DIR}
 
     # Symlink the stub as each proxied command. The target must be valid INSIDE
     # the container, so use the canonical path (bound ro under /home|/mnt|/work).
+    # qstat/qdel are proxied too so `snakemake --profile aqua` works in the
+    # container: its cluster-status helper (snakemake_mqstat) calls `qstat` and its
+    # cluster-cancel command is `qdel`, neither of which exists inside the sandbox.
     _stub_real="$(readlink -f "${SCRIPT_DIR}/mqbroker-stub")"
-    for _c in mqsub mqstat mqwait mqdel; do
+    for _c in mqsub mqstat mqwait mqdel qstat qdel; do
         ln -sf "$_stub_real" "${SHIM_DIR}/${_c}"
     done
     unset _c _stub_real

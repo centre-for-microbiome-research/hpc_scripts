@@ -329,7 +329,11 @@ sandbox_home_dotfiles() {
 # and runs the version that ships with mqyolo, independent of any separately
 # deployed copy under /work/microbiome/sw.
 # ---------------------------------------------------------------------------
-SANDBOX_REPO_TOOLS=(pixi_cmr_init.py)
+# snakemake_mqsub / snakemake_mqstat are the cluster submit/status helpers used by
+# the snakemake "aqua" (and mqsub/lyra) profiles. Staging them here puts them on
+# PATH inside the container so `snakemake --profile aqua` works there, running the
+# version that ships with mqyolo (its `mqsub`/`qstat` calls go through the broker).
+SANDBOX_REPO_TOOLS=(pixi_cmr_init.py snakemake_mqsub snakemake_mqstat)
 
 # ---------------------------------------------------------------------------
 # sandbox_stage_repo_tools TOOLS_DIR SCRIPT_DIR
