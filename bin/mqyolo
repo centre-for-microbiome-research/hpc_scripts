@@ -119,8 +119,8 @@ here adapts automatically.)
 `mqsub` runs the real submitter on the host and, by default, waits for the job
 and returns its output. Usage:
 
-    mqsub -t <cpus> -m <GB_RAM> --hours <H> -- <command and args>
-    mqsub --bg -t 8 -m 32 --days 2 -- <command>     # submit and return immediately
+    mqsub --no-email -t <cpus> -m <GB_RAM> --hours <H> -- <command and args>
+    mqsub --no-email --bg -t 8 -m 32 --days 2 -- <command>     # submit and return immediately
 
 - `-t` cpus, `-m` GB RAM, `--hours/--days/--weeks` walltime. Size them to the job.
 - Jobs run inside this SAME restricted sandbox on the compute node: only the
