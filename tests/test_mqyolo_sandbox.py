@@ -302,6 +302,28 @@ def test_broker_rejects_non_allowlisted_command():
         assert "not permitted" in out
 
 
+# `snakemake --profile aqua` drives the queue from inside the container via
+# snakemake_mqstat (which shells out to `qstat`) and a `qdel` cluster-cancel, so
+# the broker must allow both (mqsub/mqstat/mqwait/mqdel cover the rest).
+@pytest.mark.skipif(shutil.which("qstat") is None, reason="qstat not on PATH")
+def test_broker_allows_qstat():
+    with running_broker() as (spool, shim, *_):
+        qstat = _stub_as(shim, "qstat")
+        # A bogus job id: real qstat runs and errors, but the broker must NOT
+        # reject it as non-allowlisted (which would be rc 126 / "not permitted").
+        rc, out = _run_stub(qstat, spool, "-x", "-f", "0.nonexistent-mqyolo-test")
+        assert "not permitted" not in out, out
+        assert not (rc == 126 and "not permitted" in out)
+
+
+@pytest.mark.skipif(shutil.which("qdel") is None, reason="qdel not on PATH")
+def test_broker_allows_qdel():
+    with running_broker() as (spool, shim, *_):
+        qdel = _stub_as(shim, "qdel")
+        rc, out = _run_stub(qdel, spool, "0.nonexistent-mqyolo-test")
+        assert "not permitted" not in out, out
+
+
 def test_broker_propagates_nonzero_exit_and_stderr():
     with running_broker() as (spool, shim, *_):
         mqsub = _stub_as(shim, "mqsub")
@@ -393,6 +415,27 @@ def test_stage_repo_tools_symlinks_pixi_cmr_init(tmp_path):
     assert p.returncode == 0, p.stderr
     # The staged symlink points at the repo's real pixi_cmr_init.py.
     assert p.stdout.strip() == os.path.realpath(str(PIXI_CMR_INIT)), p.stdout
+
+
+def test_snakemake_cluster_tools_present_in_repo():
+    # The aqua/mqsub/lyra snakemake profiles call these; mqyolo stages them onto
+    # PATH inside the container, so they must exist in the repo bin.
+    assert (BIN / "snakemake_mqsub").exists(), "snakemake_mqsub missing from repo bin"
+    assert (BIN / "snakemake_mqstat").exists(), "snakemake_mqstat missing from repo bin"
+
+
+@pytest.mark.parametrize("tool", ["snakemake_mqsub", "snakemake_mqstat"])
+def test_stage_repo_tools_symlinks_snakemake_cluster_tools(tmp_path, tool):
+    # So `snakemake --profile aqua` finds the shipped helpers inside the container.
+    tools = tmp_path / "tools"
+    script = (
+        "source %s; sandbox_stage_repo_tools %s %s; readlink -f %s/%s"
+        % (SANDBOX_LIB, shlex.quote(str(tools)), shlex.quote(str(BIN)),
+           shlex.quote(str(tools)), shlex.quote(tool))
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    assert p.stdout.strip() == os.path.realpath(str(BIN / tool)), p.stdout
 
 
 def test_pixi_cmr_init_resolves_on_path_via_shim_bashrc(tmp_path):

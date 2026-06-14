@@ -5,9 +5,9 @@
 # qsub and the python3.9 that mqsub needs do not exist inside the container, and
 # an Apptainer container cannot spawn processes on the host. So mqyolo starts one
 # of these brokers per session in the host namespace. The container-side stubs
-# (mqbroker-stub, symlinked as mqsub/mqstat/mqwait/mqdel) drop request files into
-# a spool directory that is bind-mounted into the container; the broker runs the
-# real command on the host and writes the result back.
+# (mqbroker-stub, symlinked as mqsub/mqstat/mqwait/mqdel/qstat/qdel) drop request
+# files into a spool directory that is bind-mounted into the container; the broker
+# runs the real command on the host and writes the result back.
 #
 # Resource use is deliberately tiny: the broker blocks in inotifywait (zero CPU
 # while idle) and only wakes on a request or every --watch-interval seconds to
@@ -49,8 +49,11 @@ REQ_DIR="${SPOOL}/req"
 mkdir -p "$REQ_DIR"
 
 # Commands the broker is willing to run on the host. mqsub is special-cased to
-# force --sandbox so every job submitted from the container is boxed in.
-ALLOWED="mqsub mqstat mqwait mqdel qstat"
+# force --sandbox so every job submitted from the container is boxed in. qstat and
+# qdel are needed by `snakemake --profile aqua` (its cluster-status command
+# snakemake_mqstat shells out to `qstat`, and its cluster-cancel command is
+# `qdel`); PBS enforces that a user can only qdel their own jobs.
+ALLOWED="mqsub mqstat mqwait mqdel qstat qdel"
 
 log() { [[ "$DEBUG" -eq 1 ]] && echo "mqsub-broker: $*" >&2 || true; }
 
