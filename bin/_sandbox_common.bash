@@ -194,10 +194,19 @@ sandbox_build_binds() {
     # --- Extra caller-specified read-only paths (e.g. mqyolo --ro-paths) ---
     # Bound AFTER the deny-list enforcement, so an explicit --ro-path can re-expose
     # a specific subdirectory of an otherwise-denied tree if the user opts in.
-    local _ro_path _ro_canonical
+    # Expose each path at BOTH its symlink-resolved location and the literal path
+    # the user gave: on this HPC /scratch is a symlink to /mnt/weka/scratch, and
+    # that symlink does not exist inside the --contain'd container, so binding only
+    # the resolved path would leave the data invisible at the /scratch/... path the
+    # user actually asked for. The bind source must be the resolved real path.
+    local _ro_path _ro_src _ro_dst
     for _ro_path in "${ro_paths[@]+"${ro_paths[@]}"}"; do
-        _ro_canonical="$(realpath "$_ro_path" 2>/dev/null || echo "$_ro_path")"
-        [[ -e "$_ro_canonical" ]] && BIND_ARGS+=(--bind "${_ro_canonical}:${_ro_canonical}:ro")
+        _ro_src="$(realpath "$_ro_path" 2>/dev/null || echo "$_ro_path")"
+        [[ -e "$_ro_src" ]] || continue
+        BIND_ARGS+=(--bind "${_ro_src}:${_ro_src}:ro")
+        _ro_dst="$(realpath -s "$_ro_path" 2>/dev/null || echo "$_ro_path")"
+        [[ "$_ro_dst" == /* && "$_ro_dst" != "$_ro_src" ]] && \
+            BIND_ARGS+=(--bind "${_ro_src}:${_ro_dst}:ro")
     done
 
     # --- Writable temp dirs ---
@@ -205,10 +214,17 @@ sandbox_build_binds() {
     [[ -d /var/tmp ]] && BIND_ARGS+=(--bind "/var/tmp:/var/tmp:rw")
 
     # --- Extra caller-specified rw paths ---
-    local _rw_path _rw_canonical
+    # Like the read-only paths above, expose each at both its symlink-resolved
+    # location and the literal path the user gave (e.g. /scratch/... -> the real
+    # /mnt/weka/scratch/...), since the /scratch symlink is absent in the container.
+    local _rw_path _rw_src _rw_dst
     for _rw_path in "${rw_paths[@]+"${rw_paths[@]}"}"; do
-        _rw_canonical="$(realpath "$_rw_path" 2>/dev/null || echo "$_rw_path")"
-        [[ -e "$_rw_canonical" ]] && BIND_ARGS+=(--bind "${_rw_canonical}:${_rw_canonical}:rw")
+        _rw_src="$(realpath "$_rw_path" 2>/dev/null || echo "$_rw_path")"
+        [[ -e "$_rw_src" ]] || continue
+        BIND_ARGS+=(--bind "${_rw_src}:${_rw_src}:rw")
+        _rw_dst="$(realpath -s "$_rw_path" 2>/dev/null || echo "$_rw_path")"
+        [[ "$_rw_dst" == /* && "$_rw_dst" != "$_rw_src" ]] && \
+            BIND_ARGS+=(--bind "${_rw_src}:${_rw_dst}:rw")
     done
 
     # --- Writable current directory (added LAST to shadow any parent ro bind) ---

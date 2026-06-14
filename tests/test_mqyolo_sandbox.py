@@ -521,6 +521,46 @@ def test_build_binds_ro_paths_are_bound_readonly(tmp_path):
     assert "%s:%s:ro" % (real, real) in binds, binds
 
 
+def _realpath_no_symlinks(path):
+    """The literal absolute path bash's `realpath -s` produces (symlinks kept)."""
+    return subprocess.run(["realpath", "-s", path], text=True,
+                          capture_output=True).stdout.strip()
+
+
+def test_build_binds_ro_path_via_symlink_bound_at_literal_path(tmp_path):
+    # On this HPC /scratch is a symlink to /mnt/weka/scratch and that symlink is
+    # absent inside the --contain'd container, so a --ro-path given through a
+    # symlink must be exposed at BOTH the resolved real path (the bind source) and
+    # the literal path the user typed, or it is invisible where they asked for it.
+    target = tmp_path / "target" / "sub"
+    target.mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path / "target")
+    ro_path = str(link / "sub")
+
+    binds = _build_binds(tmp_path, ro_paths=[ro_path])
+    src = os.path.realpath(ro_path)          # bind source: symlinks resolved
+    dst = _realpath_no_symlinks(ro_path)     # user-facing dest: symlinks kept
+    assert src != dst, "test setup: symlink did not change the path"
+    assert "%s:%s:ro" % (src, src) in binds, binds   # resolved location
+    assert "%s:%s:ro" % (src, dst) in binds, binds   # literal location
+
+
+def test_build_binds_rw_path_via_symlink_bound_at_literal_path(tmp_path):
+    target = tmp_path / "target" / "sub"
+    target.mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path / "target")
+    rw_path = str(link / "sub")
+
+    binds = _build_binds(tmp_path, rw_paths=[rw_path])
+    src = os.path.realpath(rw_path)
+    dst = _realpath_no_symlinks(rw_path)
+    assert src != dst, "test setup: symlink did not change the path"
+    assert "%s:%s:rw" % (src, src) in binds, binds
+    assert "%s:%s:rw" % (src, dst) in binds, binds
+
+
 # ---------------------------------------------------------------------------
 # mqsandbox actually enforcing the filesystem constraints (needs the container)
 # ---------------------------------------------------------------------------

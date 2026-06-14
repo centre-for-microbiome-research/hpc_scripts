@@ -208,7 +208,10 @@ FILESYSTEM INSIDE THE CONTAINER
   HPC mounts          read-only
   --ro-paths          read-only   (extra paths granted at launch)
   /etc                read-only   (DNS, SSL certs, nsswitch)
-  /scratch            NOT visible — never bound, to limit data exfiltration
+  /scratch            NOT visible — never bound, to limit data exfiltration.
+                      Use --ro-paths/--rw-paths to opt a specific subdirectory
+                      back in; it appears at the same /scratch/... path you gave
+                      (even though /scratch is a symlink to /mnt/weka/scratch).
   /work/microbiome    NOT visible, EXCEPT /work/microbiome/sw and
                       /work/microbiome/db which are bound read-only (shared
                       tools and reference databases). Use --ro-paths to opt a
@@ -376,13 +379,18 @@ if [[ "$NO_BROKER" -eq 0 && -x "${SCRIPT_DIR}/mqsub-broker" && -x "${SCRIPT_DIR}
     # and rejects any attempt to set them from inside the container, so the AI can
     # neither widen what its jobs may write to nor re-expose anything beyond what
     # you granted mqyolo at launch.
+    # Pass the literal absolute paths (symlinks preserved, e.g. /scratch/... rather
+    # than the resolved /mnt/weka/scratch/...) so a job's sandbox sees them at the
+    # same place this session does; sandbox_build_binds resolves the real source and
+    # also binds the literal path, so the /scratch symlink (absent in the container)
+    # is not required.
     _broker_rw=()
     for _p in "${RW_PATHS[@]+"${RW_PATHS[@]}"}"; do
-        _broker_rw+=(--rw-path "$(realpath "$_p" 2>/dev/null || echo "$_p")")
+        _broker_rw+=(--rw-path "$(realpath -s "$_p" 2>/dev/null || echo "$_p")")
     done
     _broker_ro=()
     for _p in "${RO_PATHS[@]+"${RO_PATHS[@]}"}"; do
-        _broker_ro+=(--ro-path "$(realpath "$_p" 2>/dev/null || echo "$_p")")
+        _broker_ro+=(--ro-path "$(realpath -s "$_p" 2>/dev/null || echo "$_p")")
     done
     _broker_dbg=()
     [[ "$DEBUG" -eq 1 ]] && _broker_dbg=(--debug)
