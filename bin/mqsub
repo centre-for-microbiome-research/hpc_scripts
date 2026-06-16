@@ -747,7 +747,11 @@ Further information can also be found in the CMR Compute Notes -  https://tinyur
                 segregated_logs_dir=segregated_logs_dir)
 
             if content_type == COMMAND:
-                print(sandbox_wrap(' '.join(cmd)),file=tf)
+                # shlex.join (not ' '.join) so each argument is requoted and the
+                # command runs as the exact argv given, e.g.
+                # `mqsub -- bash -c 'echo hi'` keeps 'echo hi' as one argument
+                # rather than collapsing to `bash -c echo hi`.
+                print(sandbox_wrap(shlex.join(cmd)),file=tf)
             elif content_type == SCRIPT:
                 if args.script == '-':
                     with tempfile.NamedTemporaryFile(
