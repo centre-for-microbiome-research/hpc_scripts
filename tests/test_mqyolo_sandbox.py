@@ -556,6 +556,29 @@ def test_build_binds_excludes_scratch_and_microbiome(tmp_path):
     assert "/work/microbiome/db:/work/microbiome/db:ro" in binds, binds
 
 
+def test_build_binds_denies_canonical_aliases(tmp_path):
+    # The deny-list is written with LOGICAL paths (/scratch, /work/microbiome),
+    # but on this HPC the same data is reachable through the canonical mount
+    # alias (/scratch -> /mnt/weka/scratch, /work/microbiome ->
+    # /mnt/hpccs01/work/microbiome). Home symlinks like ~/s and ~/m are rewritten
+    # to those canonical targets, so denying only the logical path used to leak
+    # the data read-only. The canonical alias must be denied too: never bound
+    # read-only from its real path, and (when nested under an exposed parent like
+    # /mnt) shadowed by an empty dir.
+    binds = _build_binds(tmp_path)
+    for logical in ("/scratch", "/work/microbiome"):
+        canonical = os.path.realpath(logical)
+        if canonical == logical:
+            continue  # alias not present on this machine; nothing to assert
+        # The canonical tree is never re-exposed read-only from its real path.
+        assert "%s:%s:ro" % (canonical, canonical) not in binds, (canonical, binds)
+        # If it sits under a still-exposed parent (e.g. /mnt), it is shadowed by
+        # an empty dir bound from the ephemeral CONTAINER_HOME at the same path.
+        if canonical.count("/") >= 2:
+            shadow = [b for b in binds if b.endswith(":%s:ro" % canonical)]
+            assert len(shadow) == 1 and "_denied" in shadow[0], (canonical, binds)
+
+
 def test_build_binds_ro_paths_are_bound_readonly(tmp_path):
     rodir = tmp_path / "ro_extra"
     rodir.mkdir()

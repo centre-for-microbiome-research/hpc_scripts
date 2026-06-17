@@ -75,6 +75,38 @@ SANDBOX_DENY_PATHS=(/scratch /work/microbiome)
 SANDBOX_RO_ALLOW_PATHS=(/work/microbiome/sw /work/microbiome/db)
 
 # ---------------------------------------------------------------------------
+# The deny/allow lists above are written as the LOGICAL paths users see
+# (/scratch, /work/microbiome). On this HPC those are aliases onto canonical
+# filesystem paths — /scratch -> /mnt/weka/scratch, /work/microbiome ->
+# /mnt/hpccs01/work/microbiome — and the SAME data is reachable through both.
+# Denying only the logical path leaves the canonical one exposed:
+#   - the /proc/mounts loop binds /mnt/weka/scratch read-only (it is a real
+#     mountpoint and sandbox_path_denied did not recognise it), and
+#   - /mnt/hpccs01/work/microbiome shows through the wholesale /mnt:ro bind.
+# sandbox_home_dotfiles makes this reachable in practice: it rewrites home
+# symlinks like ~/s and ~/m to their `readlink -f` canonical target, pointing
+# straight at the un-denied alias. Append each entry's realpath so both aliases
+# are covered everywhere sandbox_path_denied is consulted (the /proc/mounts skip
+# AND the nested-path shadow loop in sandbox_build_binds).
+sandbox_add_canonical_deny_paths() {
+    local _p _rp
+    local -a _extra
+    _extra=()
+    for _p in "${SANDBOX_DENY_PATHS[@]}"; do
+        _rp="$(realpath "$_p" 2>/dev/null || true)"
+        [[ -n "$_rp" && "$_rp" != "$_p" ]] && _extra+=("$_rp")
+    done
+    SANDBOX_DENY_PATHS+=("${_extra[@]+"${_extra[@]}"}")
+    _extra=()
+    for _p in "${SANDBOX_RO_ALLOW_PATHS[@]}"; do
+        _rp="$(realpath "$_p" 2>/dev/null || true)"
+        [[ -n "$_rp" && "$_rp" != "$_p" ]] && _extra+=("$_rp")
+    done
+    SANDBOX_RO_ALLOW_PATHS+=("${_extra[@]+"${_extra[@]}"}")
+}
+sandbox_add_canonical_deny_paths
+
+# ---------------------------------------------------------------------------
 # sandbox_path_denied PATH
 #   True (0) if PATH is inside a SANDBOX_DENY_PATHS prefix and NOT inside a
 #   SANDBOX_RO_ALLOW_PATHS exception; false (1) otherwise.
