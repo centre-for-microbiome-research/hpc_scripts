@@ -466,8 +466,10 @@ if [[ "$NO_BROKER" -eq 0 && -x "${SCRIPT_DIR}/mqsub-broker" && -x "${SCRIPT_DIR}
     # qstat/qdel are proxied too so `snakemake --profile aqua` works in the
     # container: its cluster-status helper (snakemake_mqstat) calls `qstat` and its
     # cluster-cancel command is `qdel`, neither of which exists inside the sandbox.
+    # pbsnodes is proxied so node-status queries work too (PBS binaries are absent
+    # in the container).
     _stub_real="$(readlink -f "${SCRIPT_DIR}/mqbroker-stub")"
-    for _c in mqsub mqstat mqwait mqdel qstat qdel; do
+    for _c in mqsub mqstat mqwait mqdel qstat qdel pbsnodes; do
         ln -sf "$_stub_real" "${SHIM_DIR}/${_c}"
     done
     unset _c _stub_real

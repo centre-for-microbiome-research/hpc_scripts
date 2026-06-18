@@ -1,7 +1,7 @@
-cluster: snakemake_mqsub --segregated-log-files --queue microbiome
-cluster-status: snakemake_mqstat
+cluster: "snakemake_mqsub"
+cluster-status: "snakemake_mqstat"
+cluster-cancel: "qdel"
 jobs: 10000
-cluster-cancel: qdel
 use-conda: true
 conda-frontend: mamba
 rerun-incomplete: true # Without this, snakemake will attempt to resume when rerunning a rule, which fails immediately without error

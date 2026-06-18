@@ -52,8 +52,9 @@ mkdir -p "$REQ_DIR"
 # force --sandbox so every job submitted from the container is boxed in. qstat and
 # qdel are needed by `snakemake --profile aqua` (its cluster-status command
 # snakemake_mqstat shells out to `qstat`, and its cluster-cancel command is
-# `qdel`); PBS enforces that a user can only qdel their own jobs.
-ALLOWED="mqsub mqstat mqwait mqdel qstat qdel"
+# `qdel`); PBS enforces that a user can only qdel their own jobs. pbsnodes is a
+# read-only query of cluster node status (no PBS binaries exist in the container).
+ALLOWED="mqsub mqstat mqwait mqdel qstat qdel pbsnodes"
 
 log() { [[ "$DEBUG" -eq 1 ]] && echo "mqsub-broker: $*" >&2 || true; }
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 # mqbroker-stub - container-side stub that forwards a command to the host broker.
 #
-# Symlinked (by mqyolo) as mqsub, mqstat, mqwait, mqdel, qstat and qdel inside a
+# Symlinked (by mqyolo) as mqsub, mqstat, mqwait, mqdel, qstat, qdel and pbsnodes inside a
 # shim dir that is prepended to PATH in the container. When the AI tool runs e.g.
 # `mqsub ...`, this stub runs instead of the real (python3.9 + qsub) mqsub, which
 # cannot work inside the container. It serialises the command name, argv, CWD and any stdin
