@@ -14,5 +14,10 @@ test = "pytest tests"
 python = "*"
 pytest = "*"
 
+[feature.snakemake.dependencies]
+snakemake = "*"
+snakemake-executor-plugin-cluster-generic = "*"
+
 [environments]
 dev = ["dev"]
+snakemake = ["snakemake"]

@@ -110,6 +110,7 @@ def parse_pbsnodes_output():
             current_node["total_mem"] = 0
             current_node["used_gpu"] = 0
             current_node["total_gpu"] = 0
+            current_node["qlist"] = ""
             current_node["state"] = "unknown"
             continue
 
@@ -128,6 +129,8 @@ def parse_pbsnodes_output():
             current_node["total_gpu"] = int(line.split("=")[-1].strip())
         elif line.startswith("resources_assigned.ngpus"):
             current_node["used_gpu"] = int(line.split("=")[-1].strip())
+        elif line.startswith("resources_available.qlist"):
+            current_node["qlist"] = line.split("=")[-1].strip()
         elif line.startswith("state"):
             current_node["state"] = line.split("=")[-1].strip()
 
@@ -405,6 +408,24 @@ def calculate_cluster_stats(nodes):
     total_cpu_only_cores = sum(node['total_cpu'] for node in nodes if node['total_gpu'] == 0)
     used_cpu_only_cores = sum(node['used_cpu'] for node in nodes if node['total_gpu'] == 0)
 
+    def _qlist(node):
+        return node.get('qlist', '').split(',')
+
+    # General batch pool: nodes a normal job can actually route to via
+    # cpu_batch_exec. Nodes carrying only an ACL-restricted qlist (e.g. a
+    # ded_cpu_b-only node) lack cpu_batch_exec and are excluded here; the
+    # large-mem-only pool (cpu_batch_exlm) is counted separately below.
+    batch_nodes = [node for node in nodes if 'cpu_batch_exec' in _qlist(node)]
+    total_cpu_batch_cores = sum(node['total_cpu'] for node in batch_nodes)
+    used_cpu_batch_cores = sum(node['used_cpu'] for node in batch_nodes)
+
+    # Large-mem-only batch pool: nodes that accept cpu_batch_exlm but not the
+    # general cpu_batch_exec queue, so only high-memory jobs reach them.
+    himem_nodes = [node for node in nodes
+                   if 'cpu_batch_exlm' in _qlist(node) and 'cpu_batch_exec' not in _qlist(node)]
+    total_cpu_himem_cores = sum(node['total_cpu'] for node in himem_nodes)
+    used_cpu_himem_cores = sum(node['used_cpu'] for node in himem_nodes)
+
     total_gpus = sum(node['total_gpu'] for node in nodes)
     used_gpus = sum(node['used_gpu'] for node in nodes)
     
@@ -436,6 +457,12 @@ def calculate_cluster_stats(nodes):
         'total_cpu_only_cores': total_cpu_only_cores,
         'used_cpu_only_cores': used_cpu_only_cores,
         'cpu_only_utilization': (used_cpu_only_cores / total_cpu_only_cores * 100) if total_cpu_only_cores else 0,
+        'total_cpu_batch_cores': total_cpu_batch_cores,
+        'used_cpu_batch_cores': used_cpu_batch_cores,
+        'cpu_batch_utilization': (used_cpu_batch_cores / total_cpu_batch_cores * 100) if total_cpu_batch_cores else 0,
+        'total_cpu_himem_cores': total_cpu_himem_cores,
+        'used_cpu_himem_cores': used_cpu_himem_cores,
+        'cpu_himem_utilization': (used_cpu_himem_cores / total_cpu_himem_cores * 100) if total_cpu_himem_cores else 0,
         'total_gpus': total_gpus,
         'used_gpus': used_gpus,
         'gpu_utilization': (used_gpus / total_gpus * 100) if total_gpus else 0
@@ -1186,8 +1213,11 @@ def main():
     # ASCII art utilization bars
     print(f"CPU-all:  {create_ascii_bar(cluster_stats['cpu_utilization'])}")
     print(f"RAM-all:  {create_ascii_bar(cluster_stats['memory_utilization'])}")
+    if cluster_stats['total_cpu_batch_cores'] > 0:
+        print(f"CPU-std:  {create_ascii_bar(cluster_stats['cpu_batch_utilization'])}")
+    if cluster_stats['total_cpu_himem_cores'] > 0:
+        print(f"CPU-himem:{create_ascii_bar(cluster_stats['cpu_himem_utilization'])}")
     if cluster_stats['total_gpus'] > 0:
-        print(f"CPU-only: {create_ascii_bar(cluster_stats['cpu_only_utilization'])}")
         print(f"GPU:      {create_ascii_bar(cluster_stats['gpu_utilization'])}")
     offline_names = get_offline_node_names()
     offline_count = sum(1 for node in nodes if node['name'] in offline_names)

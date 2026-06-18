@@ -154,9 +154,45 @@ sandbox_build_binds() {
     # files leaves the container's /etc/alternatives intact.
     local _etc
     for _etc in /etc/resolv.conf /etc/hosts /etc/nsswitch.conf /etc/localtime \
-                /etc/passwd /etc/group /etc/ssl /etc/pki /etc/ca-certificates; do
+                /etc/ssl /etc/pki /etc/ca-certificates; do
         [[ -e "$_etc" ]] && BIND_ARGS+=(--bind "${_etc}:${_etc}:ro")
     done
+
+    # --- /etc/passwd and /etc/group with the calling user injected ---
+    # Do NOT bind the host's /etc/passwd / /etc/group verbatim: on this HPC the
+    # login user is resolved via LDAP/SSSD and is NOT in the host's *local*
+    # /etc/passwd. Under --contain the container can't reach SSSD, so binding the
+    # host file leaves the user with no passwd entry — `whoami`/`id -un`/getpwuid
+    # then fail, which silently breaks tools that depend on them (e.g. mqwait, which
+    # builds `qstat -f -u $(whoami)` and otherwise loops forever on the failure).
+    # Build merged files = host entries + the caller's getent entry (getent queries
+    # the host's full NSS, including SSSD), and bind those instead. Appended only if
+    # the uid/gid is not already present, so non-LDAP hosts don't get duplicates.
+    local _uid _gid _uname _pw_line _gr_line _pw_file _gr_file
+    _uid="$(id -u)"; _gid="$(id -g)"; _uname="${USER:-${LOGNAME:-user}}"
+    mkdir -p "$CONTAINER_HOME"
+    _pw_file="${CONTAINER_HOME}/sandbox_passwd"
+    _gr_file="${CONTAINER_HOME}/sandbox_group"
+    { [[ -r /etc/passwd ]] && cat /etc/passwd; } > "$_pw_file" 2>/dev/null || : > "$_pw_file"
+    { [[ -r /etc/group ]]  && cat /etc/group;  } > "$_gr_file" 2>/dev/null || : > "$_gr_file"
+    if ! grep -q "^[^:]*:[^:]*:${_uid}:" "$_pw_file"; then
+        _pw_line="$(getent passwd "$_uid" 2>/dev/null || true)"
+        [[ -z "$_pw_line" ]] && _pw_line="${_uname}:x:${_uid}:${_gid}:${_uname}:${HOME:-/container_home}:/bin/bash"
+        printf '%s\n' "$_pw_line" >> "$_pw_file"
+    fi
+    if ! grep -q "^[^:]*:[^:]*:${_gid}:" "$_gr_file"; then
+        _gr_line="$(getent group "$_gid" 2>/dev/null || true)"
+        [[ -z "$_gr_line" ]] && _gr_line="${_uname}:x:${_gid}:"
+        printf '%s\n' "$_gr_line" >> "$_gr_file"
+    fi
+    BIND_ARGS+=(--bind "${_pw_file}:/etc/passwd:ro" --bind "${_gr_file}:/etc/group:ro")
+    # The backing files live under CONTAINER_HOME, which is bound rw as
+    # /container_home — so the same inode is reachable via a writable path and the
+    # :ro /etc/passwd bind above would otherwise be mutable through it. Re-bind the
+    # files ro at their own /container_home location (later binds win) so no
+    # writable path reaches them and the read-only guarantee actually holds.
+    BIND_ARGS+=(--bind "${_pw_file}:/container_home/${_pw_file#"$CONTAINER_HOME"/}:ro" \
+                --bind "${_gr_file}:/container_home/${_gr_file#"$CONTAINER_HOME"/}:ro")
     # /etc/resolv.conf may be a symlink (e.g. systemd-resolved); bind the real
     # target so DNS works inside the container.
     local _resolv_real

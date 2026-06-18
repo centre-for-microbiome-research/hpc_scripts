@@ -90,8 +90,8 @@ _mqyolo_guidance_text() {
   runs on a separately-sized compute node:
       mqsub -t <cpus> -m <GB_RAM> --hours <H> -- <command>
   Such jobs run inside this same restricted sandbox (only the working directory,
-  plus any paths granted to mqyolo at launch, is writable). Companions: `mqstat`,
-  `mqwait`, `mqdel`.
+  plus any paths granted to mqyolo at launch, is writable). Companions: `qstat`,
+  `qdel`.
 
 **Snakemake:** for a few rules that each fit this allocation, run
 `snakemake --cores <N>` locally. For large or highly parallel workflows, prefer
@@ -126,7 +126,7 @@ and returns its output. Usage:
 - Jobs run inside this SAME restricted sandbox on the compute node: only the
   working directory (plus any paths granted to mqyolo at launch) is writable;
   everything else is read-only. Write outputs under the current directory.
-- Companions: `mqstat` (queue status), `mqwait` (wait for a job id), `mqdel`
+- Companions: `qstat` (queue status), `qdel` (cancel). Run `mqsub --help` for all options.
   (cancel). `qstat` also works. Run `mqsub --help` for all options.
 
 **Snakemake:** `snakemake --profile aqua` submits each rule to the batch queue
@@ -154,13 +154,13 @@ while [[ $# -gt 0 ]]; do
         --print-guidance) _mqyolo_guidance_text; exit 0 ;;
         --rw-paths)
             shift
-            while [[ $# -gt 0 && "$1" != --* ]]; do
+            while [[ $# -gt 0 && "$1" != --* && "$1" != claude && "$1" != codex && "$1" != copilot ]]; do
                 RW_PATHS+=("$1"); shift
             done
             ;;
         --ro-paths)
             shift
-            while [[ $# -gt 0 && "$1" != --* ]]; do
+            while [[ $# -gt 0 && "$1" != --* && "$1" != claude && "$1" != codex && "$1" != copilot ]]; do
                 RO_PATHS+=("$1"); shift
             done
             ;;
@@ -225,8 +225,7 @@ MQSUB FROM INSIDE THE CONTAINER
   qsub and the python3.9 mqsub depends on do not exist inside the container, so
   mqsub cannot run there directly. Instead, mqyolo starts a lightweight broker
   on the host for the duration of the session (one broker per mqyolo session).
-  Inside the container, mqsub/mqstat/mqwait/mqdel (and qstat/qdel, so
-  `snakemake --profile aqua` works) are thin stubs that forward the request to the
+  Inside the container, mqsub/qstat/qdel are thin stubs that forward the request to the
   broker, which runs the real command on the host. mqsub jobs are
   automatically submitted with --sandbox, so each job runs on its compute node
   inside the SAME restricted container (only its working directory plus mqyolo's
