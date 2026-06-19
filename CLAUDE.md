@@ -12,6 +12,14 @@ boxed into the same sandbox:
 - `bin/mqsub-broker` — host-side broker; runs allowlisted commands, forces `--sandbox`
 - `bin/mqbroker-stub` — container-side stub (symlinked as mqsub/mqstat/mqwait/mqdel/qstat/qdel)
 - `bin/mqsub` — `--sandbox` / `--sandbox-rw-paths` wrap the job in `mqsandbox`
+- `bin/generate_mqyolo_non_sensitive_folders.py` — downloads the CMR work-folders
+  Google Sheet and writes `mqyolo-non-sensitive-folders.json` (run via the
+  `update-non-sensitive-folders` pixi task)
+- `mqyolo-non-sensitive-folders.json` — repo-root list of `/work` folders flagged
+  "not sensitive" in the sheet; mqyolo reads it via a path relative to the script
+  on every launch and auto-mounts each existing folder read-only (appended to
+  `RO_PATHS`, so broker-submitted jobs inherit them too). It must ship with the
+  repo for the relative-path lookup to resolve in deployed copies.
 
 **Whenever you change any of the files above, run the test suite and make sure it
 passes before considering the change done:**

@@ -28,6 +28,38 @@ source "${SCRIPT_DIR}/_sandbox_common.bash"
 
 SIF="${AI_TOOL_SIF:-${SCRIPT_DIR}/../singularity/ai_tool.sif}"
 
+# JSON config listing /work folders flagged "not sensitive" in the CMR
+# work-folders sheet. Found via a path relative to this script so it ships with
+# the repo (and the deployed copy). Read fresh on every launch (see below);
+# regenerate it from the sheet with `pixi run update-non-sensitive-folders`.
+NON_SENSITIVE_FOLDERS_FILE="${SCRIPT_DIR}/../mqyolo-non-sensitive-folders.json"
+
+# Print one non-sensitive folder per line from the JSON config (nothing if the
+# file is absent or unparseable, so a missing/broken config is non-fatal). Uses
+# python3, falling back to jq, then a minimal grep for quoted absolute paths.
+_mqyolo_non_sensitive_folders() {
+    local file="$1"
+    [[ -f "$file" ]] || return 0
+    if command -v python3 &>/dev/null; then
+        python3 - "$file" <<'PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+    for p in data.get("non_sensitive_folders", []):
+        if isinstance(p, str) and p.strip():
+            print(p.strip())
+except Exception:
+    pass
+PY
+    elif command -v jq &>/dev/null; then
+        jq -r '.non_sensitive_folders[]? // empty' "$file" 2>/dev/null
+    else
+        # Last resort: the only quoted "/..." strings in the file are the folders.
+        grep -oE '"/[^"]*"' "$file" 2>/dev/null | tr -d '"'
+    fi
+}
+
 # Convert a PBS mem string (e.g. 96gb, 98304mb, 2tb) to whole GB, or "" if unknown.
 _mqyolo_mem_to_gb() {
     local v="${1,,}" num
@@ -271,6 +303,17 @@ EOF
         *)            break ;;
     esac
 done
+
+# Auto-mount folders flagged "not sensitive" in the CMR work-folders sheet as
+# read-only. They live under the otherwise-denied /work/microbiome tree, so they
+# are added to RO_PATHS, which re-exposes them read-only inside the sandbox (and
+# jobs submitted via the broker inherit them, just like explicit --ro-paths).
+# Non-existent paths are skipped later by sandbox_build_binds, so listing folders
+# that aren't present on this host is harmless.
+while IFS= read -r _folder; do
+    [[ -n "$_folder" ]] && RO_PATHS+=("$_folder")
+done < <(_mqyolo_non_sensitive_folders "$NON_SENSITIVE_FOLDERS_FILE")
+unset _folder
 
 # Runtime/image checks happen after arg parsing so that informational flags
 # (--help, --print-guidance) work even without a built container image.
