@@ -581,6 +581,38 @@ Further information can also be found in the CMR Compute Notes -  https://tinyur
     else:
         raise Exception("Must specify either --script-stdin, command, or a --command-file to chunk")
 
+    # Warn if the user is running aviary directly through mqsub. Aviary can
+    # submit its own PBS jobs (one per step) via its snakemake aqua profile,
+    # which is usually faster, uses standardised per-step runtime/RAM
+    # predictions, and improves overall server utilisation.
+    if content_type == COMMAND and args.command:
+        environment_setting = re.compile('^[A-Z_]+=')
+        exe = None
+        for token in args.command:
+            if environment_setting.match(token):
+                continue
+            exe = token
+            break
+        if exe is not None and os.path.basename(exe) == 'aviary':
+            sys.stderr.write('\n###################################################################\n')
+            sys.stderr.write("WARNING: You are running 'aviary' as a single mqsub job. Consider running\n")
+            sys.stderr.write("aviary directly with '--snakemake-profile aqua' instead, e.g.\n")
+            sys.stderr.write("    aviary ... --snakemake-profile aqua\n")
+            sys.stderr.write("This lets aviary submit 1 PBS job per step, which will likely run faster,\n")
+            sys.stderr.write("use standardised per-step runtime/RAM predictions, and improve overall\n")
+            sys.stderr.write("server utilisation.\n")
+            sys.stderr.write('###################################################################\n\n')
+
+            # The aviary subcommand is the first token after the executable that
+            # isn't an option (starting with '-').
+            tokens_after_exe = args.command[args.command.index(exe) + 1:]
+            subcommand = next((t for t in tokens_after_exe if not t.startswith('-')), None)
+            if subcommand in ('recover', 'complete') and '--request-gpu' not in tokens_after_exe:
+                sys.stderr.write('###################################################################\n')
+                sys.stderr.write("WARNING: 'aviary {}' is being run without --request-gpu. Consider adding\n".format(subcommand))
+                sys.stderr.write("the --request-gpu flag to speed up steps that can use GPUs.\n")
+                sys.stderr.write('###################################################################\n\n')
+
     def strip_ansi_codes(s):
         return re.sub(r'\x1b\[[0-9;]*m', '', s)
 
