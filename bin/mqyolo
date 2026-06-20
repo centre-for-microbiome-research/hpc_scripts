@@ -573,6 +573,11 @@ case "$TOOL" in
         ;;
 esac
 
+# Drop duplicate-destination binds (e.g. non-sensitive /work folders re-exposed
+# via --ro-paths over the ro-allow and /proc/mounts binds) so apptainer doesn't
+# warn "destination is already in the mount point list". Last bind per dest wins.
+sandbox_dedupe_binds
+
 # ---------------------------------------------------------------------------
 # Run (as a child, not exec, so the EXIT trap fires: broker teardown,
 # .claude.json save-back, and ephemeral-home cleanup all depend on it)

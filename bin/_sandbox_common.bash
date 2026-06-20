@@ -324,6 +324,43 @@ sandbox_build_binds() {
 }
 
 # ---------------------------------------------------------------------------
+# sandbox_dedupe_binds
+#   Collapse --bind entries in BIND_ARGS that target the SAME destination,
+#   keeping the LAST one. Apptainer otherwise warns "destination is already in
+#   the mount point list" and ignores the later bind; keeping the last matches
+#   the rest of this file's "later binds win" intent (rw CWD/--rw-paths are
+#   appended after the ro parents they shadow). The common collision: the
+#   non-sensitive /work folders re-exposed via mqyolo --ro-paths duplicate the
+#   read-only-allow binds and the per-mountpoint /proc/mounts binds.
+#
+#   BIND_ARGS is always a flat sequence of (--bind SPEC) pairs (every append in
+#   this file uses that form), so we walk it two elements at a time. SPEC is
+#   "src", "src:dst" or "src:dst:opts"; the destination defaults to src.
+# ---------------------------------------------------------------------------
+sandbox_dedupe_binds() {
+    local n=${#BIND_ARGS[@]}
+    (( n == 0 )) && return 0
+    local -a _out=()
+    local -A _seen=()
+    local i spec dst rest
+    # Iterate pairs from the END so the LAST bind for each destination is kept.
+    for (( i=n-2; i>=0; i-=2 )); do
+        [[ "${BIND_ARGS[i]}" == "--bind" ]] || continue
+        spec="${BIND_ARGS[i+1]}"
+        rest="${spec#*:}"
+        if [[ "$rest" == "$spec" ]]; then
+            dst="$spec"            # "src" only → destination equals source
+        else
+            dst="${rest%%:*}"      # "src:dst[:opts]" → destination field
+        fi
+        [[ -n "${_seen[$dst]:-}" ]] && continue
+        _seen[$dst]=1
+        _out=("--bind" "$spec" "${_out[@]+"${_out[@]}"}")
+    done
+    BIND_ARGS=("${_out[@]+"${_out[@]}"}")
+}
+
+# ---------------------------------------------------------------------------
 # sandbox_home_dotfiles
 #   Populates the ephemeral home (CONTAINER_HOME must already be set) with:
 #     - an empty dir shadowing ~/.ssh (so keys are not readable)

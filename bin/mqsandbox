@@ -78,6 +78,11 @@ sandbox_home_dotfiles
 # that run pixi reuse the rw-bound cache); jobs should not inherit API keys.
 sandbox_build_env PIXI_CACHE_DIR RATTLER_CACHE_DIR TERM COLORTERM NO_COLOR
 
+# Drop duplicate-destination binds so apptainer doesn't warn "destination is
+# already in the mount point list" (last bind per dest wins; see
+# sandbox_dedupe_binds). Jobs inherit the same --ro-paths that collide in mqyolo.
+sandbox_dedupe_binds
+
 if [[ "$DEBUG" -eq 1 ]]; then
     echo "mqsandbox: exec command:" >&2
     printf '  %q' "$RUNTIME" exec --contain \
