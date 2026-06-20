@@ -14,6 +14,10 @@ test = "pytest tests"
 python = "*"
 pytest = "*"
 
+[feature.dev.tasks]
+# Refresh mqyolo-non-sensitive-folders.json from the CMR work-folders sheet.
+update-non-sensitive-folders = "python bin/generate_mqyolo_non_sensitive_folders.py"
+
 [feature.snakemake.dependencies]
 snakemake = "*"
 snakemake-executor-plugin-cluster-generic = "*"

@@ -12,6 +12,14 @@ boxed into the same sandbox:
 - `bin/mqsub-broker` — host-side broker; runs allowlisted commands, forces `--sandbox`
 - `bin/mqbroker-stub` — container-side stub (symlinked as mqsub/mqstat/mqwait/mqdel/qstat/qdel)
 - `bin/mqsub` — `--sandbox` / `--sandbox-rw-paths` wrap the job in `mqsandbox`
+- `bin/generate_mqyolo_non_sensitive_folders.py` — downloads the CMR work-folders
+  Google Sheet and writes `mqyolo-non-sensitive-folders.json` (run via the
+  `update-non-sensitive-folders` pixi task)
+- `mqyolo-non-sensitive-folders.json` — repo-root list of `/work` folders flagged
+  "not sensitive" in the sheet; mqyolo reads it via a path relative to the script
+  on every launch and auto-mounts each existing folder read-only (appended to
+  `RO_PATHS`, so broker-submitted jobs inherit them too). It must ship with the
+  repo for the relative-path lookup to resolve in deployed copies.
 
 **Whenever you change any of the files above, run the test suite and make sure it
 passes before considering the change done:**
@@ -30,6 +38,9 @@ missing. Do not add this test file to `.github/workflows/test.yml`.
 Key invariants the tests guard (keep them true):
 - Only the working directory plus mqyolo's `--rw-paths` are writable in the sandbox;
   everything else (including nested lustre mounts like `/mnt/hpccs01`) is read-only.
+- mqyolo refuses to launch unless the working directory is within `/work/microbiome`,
+  `$HOME`, `/scratch/microbiome/$USER`, or `/tmp` (anti-leakage; the CWD is bound
+  read-write). Checked before the runtime/image checks.
 - Jobs submitted from inside the container are always `--sandbox`ed and inherit
   mqyolo's fixed `--rw-paths`; the container cannot change them (`--no-sandbox` and
   `--sandbox-rw-paths` from the container are rejected).

@@ -28,6 +28,66 @@ source "${SCRIPT_DIR}/_sandbox_common.bash"
 
 SIF="${AI_TOOL_SIF:-${SCRIPT_DIR}/../singularity/ai_tool.sif}"
 
+# JSON config listing /work folders flagged "not sensitive" in the CMR
+# work-folders sheet. Found via a path relative to this script so it ships with
+# the repo (and the deployed copy). Read fresh on every launch (see below);
+# regenerate it from the sheet with `pixi run update-non-sensitive-folders`.
+NON_SENSITIVE_FOLDERS_FILE="${SCRIPT_DIR}/../mqyolo-non-sensitive-folders.json"
+
+# Print one non-sensitive folder per line from the JSON config (nothing if the
+# file is absent or unparseable, so a missing/broken config is non-fatal). Uses
+# python3, falling back to jq, then a minimal grep for quoted absolute paths.
+_mqyolo_non_sensitive_folders() {
+    local file="$1"
+    [[ -f "$file" ]] || return 0
+    if command -v python3 &>/dev/null; then
+        python3 - "$file" <<'PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+    for p in data.get("non_sensitive_folders", []):
+        if isinstance(p, str) and p.strip():
+            print(p.strip())
+except Exception:
+    pass
+PY
+    elif command -v jq &>/dev/null; then
+        jq -r '.non_sensitive_folders[]? // empty' "$file" 2>/dev/null
+    else
+        # Last resort: the only quoted "/..." strings in the file are the folders.
+        grep -oE '"/[^"]*"' "$file" 2>/dev/null | tr -d '"'
+    fi
+}
+
+# Trees mqyolo may be launched from. The working directory is bound read-WRITE
+# into the sandbox, so launching from an arbitrary location would expose (and make
+# writable) unrelated data to the AI. Restrict CWD to a small set of expected
+# areas to limit accidental leakage. Each entry is matched against the resolved
+# CWD as both the literal path and its realpath, so the canonical aliases are
+# covered too (/work/microbiome -> /mnt/hpccs01/..., /scratch -> /mnt/weka/...).
+_mqyolo_allowed_launch_roots() {
+    printf '%s\n' \
+        /work/microbiome \
+        "${HOME:-}" \
+        "/scratch/microbiome/${USER:-}" \
+        /tmp
+}
+
+# True (0) if the resolved working directory CWD_REAL is at or under one of the
+# allowed launch roots; false (1) otherwise.
+_mqyolo_allowed_cwd() {
+    local cwd_real="$1" root root_real
+    while IFS= read -r root; do
+        [[ -n "$root" && "$root" != "/scratch/microbiome/" ]] || continue
+        for root_real in "$root" "$(realpath -m "$root" 2>/dev/null)"; do
+            [[ -n "$root_real" ]] || continue
+            [[ "$cwd_real" == "$root_real" || "$cwd_real" == "$root_real"/* ]] && return 0
+        done
+    done < <(_mqyolo_allowed_launch_roots)
+    return 1
+}
+
 # Convert a PBS mem string (e.g. 96gb, 98304mb, 2tb) to whole GB, or "" if unknown.
 _mqyolo_mem_to_gb() {
     local v="${1,,}" num
@@ -195,6 +255,14 @@ OPTIONS
   For example: mqyolo --resume <session-id>
                mqyolo codex --no-gitignore
 
+LAUNCH DIRECTORY
+  The working directory is bound read-write into the container, so mqyolo will
+  only start from within one of these trees (to limit accidental data exposure):
+    - /work/microbiome (or a subdirectory)
+    - $HOME (or a subdirectory)
+    - /scratch/microbiome/$USER (or a subdirectory)
+    - /tmp (or a subdirectory)
+
 CONTAINER
   Image:  $AI_TOOL_SIF, or <script-dir>/../singularity/ai_tool.sif by default
   Runtime: apptainer (preferred) or singularity
@@ -272,12 +340,39 @@ EOF
     esac
 done
 
+# Auto-mount folders flagged "not sensitive" in the CMR work-folders sheet as
+# read-only. They live under the otherwise-denied /work/microbiome tree, so they
+# are added to RO_PATHS, which re-exposes them read-only inside the sandbox (and
+# jobs submitted via the broker inherit them, just like explicit --ro-paths).
+# Non-existent paths are skipped later by sandbox_build_binds, so listing folders
+# that aren't present on this host is harmless.
+while IFS= read -r _folder; do
+    [[ -n "$_folder" ]] && RO_PATHS+=("$_folder")
+done < <(_mqyolo_non_sensitive_folders "$NON_SENSITIVE_FOLDERS_FILE")
+unset _folder
+
+# Restrict where mqyolo may be launched (anti-leakage). The working directory is
+# bound read-write into the sandbox; confining launches to these trees limits how
+# much unrelated data can accidentally be exposed/made writable. Checked before
+# the runtime/image checks so the message is clear regardless of build state.
+CWD="$(realpath "$(pwd)")"
+if ! _mqyolo_allowed_cwd "$CWD"; then
+    {
+        echo "Error: mqyolo must be launched from within one of:"
+        echo "  - /work/microbiome (or a subdirectory)"
+        echo "  - \$HOME (${HOME:-unset}) (or a subdirectory)"
+        echo "  - /scratch/microbiome/${USER:-<username>} (or a subdirectory)"
+        echo "  - /tmp (or a subdirectory)"
+        echo "Current directory is: ${CWD}"
+        echo "This restriction limits accidental read-write exposure of unrelated data inside the sandbox."
+    } >&2
+    exit 1
+fi
+
 # Runtime/image checks happen after arg parsing so that informational flags
 # (--help, --print-guidance) work even without a built container image.
 sandbox_detect_runtime
 sandbox_require_sif "$SIF"
-
-CWD="$(realpath "$(pwd)")"
 
 # ---------------------------------------------------------------------------
 # Build the filesystem sandbox (shared with mqsandbox via _sandbox_common.bash)
