@@ -60,6 +60,34 @@ PY
     fi
 }
 
+# Trees mqyolo may be launched from. The working directory is bound read-WRITE
+# into the sandbox, so launching from an arbitrary location would expose (and make
+# writable) unrelated data to the AI. Restrict CWD to a small set of expected
+# areas to limit accidental leakage. Each entry is matched against the resolved
+# CWD as both the literal path and its realpath, so the canonical aliases are
+# covered too (/work/microbiome -> /mnt/hpccs01/..., /scratch -> /mnt/weka/...).
+_mqyolo_allowed_launch_roots() {
+    printf '%s\n' \
+        /work/microbiome \
+        "${HOME:-}" \
+        "/scratch/microbiome/${USER:-}" \
+        /tmp
+}
+
+# True (0) if the resolved working directory CWD_REAL is at or under one of the
+# allowed launch roots; false (1) otherwise.
+_mqyolo_allowed_cwd() {
+    local cwd_real="$1" root root_real
+    while IFS= read -r root; do
+        [[ -n "$root" && "$root" != "/scratch/microbiome/" ]] || continue
+        for root_real in "$root" "$(realpath -m "$root" 2>/dev/null)"; do
+            [[ -n "$root_real" ]] || continue
+            [[ "$cwd_real" == "$root_real" || "$cwd_real" == "$root_real"/* ]] && return 0
+        done
+    done < <(_mqyolo_allowed_launch_roots)
+    return 1
+}
+
 # Convert a PBS mem string (e.g. 96gb, 98304mb, 2tb) to whole GB, or "" if unknown.
 _mqyolo_mem_to_gb() {
     local v="${1,,}" num
@@ -227,6 +255,14 @@ OPTIONS
   For example: mqyolo --resume <session-id>
                mqyolo codex --no-gitignore
 
+LAUNCH DIRECTORY
+  The working directory is bound read-write into the container, so mqyolo will
+  only start from within one of these trees (to limit accidental data exposure):
+    - /work/microbiome (or a subdirectory)
+    - $HOME (or a subdirectory)
+    - /scratch/microbiome/$USER (or a subdirectory)
+    - /tmp (or a subdirectory)
+
 CONTAINER
   Image:  $AI_TOOL_SIF, or <script-dir>/../singularity/ai_tool.sif by default
   Runtime: apptainer (preferred) or singularity
@@ -315,12 +351,28 @@ while IFS= read -r _folder; do
 done < <(_mqyolo_non_sensitive_folders "$NON_SENSITIVE_FOLDERS_FILE")
 unset _folder
 
+# Restrict where mqyolo may be launched (anti-leakage). The working directory is
+# bound read-write into the sandbox; confining launches to these trees limits how
+# much unrelated data can accidentally be exposed/made writable. Checked before
+# the runtime/image checks so the message is clear regardless of build state.
+CWD="$(realpath "$(pwd)")"
+if ! _mqyolo_allowed_cwd "$CWD"; then
+    {
+        echo "Error: mqyolo must be launched from within one of:"
+        echo "  - /work/microbiome (or a subdirectory)"
+        echo "  - \$HOME (${HOME:-unset}) (or a subdirectory)"
+        echo "  - /scratch/microbiome/${USER:-<username>} (or a subdirectory)"
+        echo "  - /tmp (or a subdirectory)"
+        echo "Current directory is: ${CWD}"
+        echo "This restriction limits accidental read-write exposure of unrelated data inside the sandbox."
+    } >&2
+    exit 1
+fi
+
 # Runtime/image checks happen after arg parsing so that informational flags
 # (--help, --print-guidance) work even without a built container image.
 sandbox_detect_runtime
 sandbox_require_sif "$SIF"
-
-CWD="$(realpath "$(pwd)")"
 
 # ---------------------------------------------------------------------------
 # Build the filesystem sandbox (shared with mqsandbox via _sandbox_common.bash)

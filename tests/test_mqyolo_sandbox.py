@@ -180,12 +180,44 @@ def test_mqyolo_codex_uses_current_auto_mode_flag(tmp_path):
         text=True,
         capture_output=True,
         env=env,
+        # Launch from $HOME so the launch-directory restriction is satisfied.
+        cwd=str(fake_home),
     )
     assert p.returncode == 0, p.stderr
     out = p.stdout + p.stderr
     assert "--dangerously-bypass-approvals-and-sandbox" in out
     assert "--full-auto" not in out
     assert "--search" in out
+
+
+def test_mqyolo_rejects_disallowed_launch_dir(tmp_path):
+    # The working directory is bound read-write into the sandbox, so mqyolo only
+    # allows launching from /work/microbiome, $HOME, /scratch/microbiome/$USER or
+    # /tmp. A directory outside those (here "/") is refused up front, before the
+    # container is even built.
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    env = {**os.environ, "HOME": str(fake_home), "AI_TOOL_SIF": "/nonexistent.sif"}
+    p = subprocess.run(
+        [str(MQYOLO), "--no-broker"],
+        text=True, capture_output=True, env=env, cwd="/",
+    )
+    assert p.returncode == 1, (p.returncode, p.stdout, p.stderr)
+    assert "must be launched from within" in p.stderr
+
+
+def test_mqyolo_allows_home_launch_dir(tmp_path):
+    # Launching from within $HOME passes the directory check. It may still fail
+    # afterwards for unrelated reasons (here, a missing image), but it must NOT be
+    # rejected with the launch-directory error.
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    env = {**os.environ, "HOME": str(fake_home), "AI_TOOL_SIF": "/nonexistent.sif"}
+    p = subprocess.run(
+        [str(MQYOLO), "--no-broker"],
+        text=True, capture_output=True, env=env, cwd=str(fake_home),
+    )
+    assert "must be launched from within" not in p.stderr
 
 
 # ---------------------------------------------------------------------------

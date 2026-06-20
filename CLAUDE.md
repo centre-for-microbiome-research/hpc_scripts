@@ -38,6 +38,9 @@ missing. Do not add this test file to `.github/workflows/test.yml`.
 Key invariants the tests guard (keep them true):
 - Only the working directory plus mqyolo's `--rw-paths` are writable in the sandbox;
   everything else (including nested lustre mounts like `/mnt/hpccs01`) is read-only.
+- mqyolo refuses to launch unless the working directory is within `/work/microbiome`,
+  `$HOME`, `/scratch/microbiome/$USER`, or `/tmp` (anti-leakage; the CWD is bound
+  read-write). Checked before the runtime/image checks.
 - Jobs submitted from inside the container are always `--sandbox`ed and inherit
   mqyolo's fixed `--rw-paths`; the container cannot change them (`--no-sandbox` and
   `--sandbox-rw-paths` from the container are rejected).
