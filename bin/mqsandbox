@@ -72,6 +72,10 @@ ENV_ARGS=()
 
 sandbox_make_home
 trap 'rm -rf "$CONTAINER_HOME"' EXIT
+# Default per-user scratch binds (when present), same as mqyolo: expose
+# /scratch/microbiome/$USER/non_sensitive read-only with its `scratch` subdir
+# read-write. Harmless if the broker already forwarded them (deduped below).
+sandbox_add_default_scratch_paths
 sandbox_build_binds "$CWD" "${RW_PATHS[@]+"${RW_PATHS[@]}"}" -- "${RO_PATHS[@]+"${RO_PATHS[@]}"}"
 sandbox_home_dotfiles
 # Forward terminal-rendering vars and the pixi/rattler cache location (so jobs

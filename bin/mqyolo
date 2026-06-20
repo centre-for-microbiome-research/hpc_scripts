@@ -126,6 +126,38 @@ _mqyolo_detect_resources() {
     [[ -n "$MQYOLO_NCPUS" ]] || MQYOLO_NCPUS="$(nproc 2>/dev/null || true)"
 }
 
+# If the user's per-user "non_sensitive" scratch tree is mounted, describe it to
+# the AI: the tree is readable and its `scratch` subdirectory is writable — a good
+# place for large or temporary outputs that belong on scratch rather than the
+# working directory. Mirrors sandbox_add_default_scratch_paths; prints nothing when
+# the tree is absent so the AI is never told about a mount that does not exist.
+_mqyolo_scratch_guidance() {
+    local ns="/scratch/microbiome/${USER:-}/non_sensitive"
+    [[ -n "${USER:-}" ]] || return 0
+    if [[ ! -d "$ns" ]]; then
+        printf '\n**Scratch space:** there is no `%s`\n' "$ns"
+        printf 'directory, so no per-user scratch area is mounted. If the user could use a\n'
+        printf 'writable scratch directory for large or temporary outputs, suggest they create\n'
+        printf 'one OUTSIDE the sandbox and relaunch mqyolo (the tree is then exposed read-only\n'
+        printf 'with its `scratch` subdirectory mounted read-write):\n'
+        printf '    mkdir -p %s/scratch\n' "$ns"
+        return 0
+    fi
+    printf '\n**Scratch space:** `%s` is mounted read-only' "$ns"
+    if [[ -d "${ns}/scratch" ]]; then
+        printf ', and its `scratch`\nsubdirectory (`%s/scratch`) is writable. ' "$ns"
+        printf 'Use that writable scratch directory for\n'
+        printf 'large or temporary outputs instead of the working directory when appropriate;\n'
+        printf 'submitted jobs see it at the same path.\n'
+    else
+        printf '. Its `scratch` subdirectory does not exist\n'
+        printf 'yet, so no writable scratch area is mounted. If the user could use a writable\n'
+        printf 'scratch directory for large or temporary outputs, suggest they create it\n'
+        printf 'OUTSIDE the sandbox and relaunch mqyolo so it gets mounted read-write:\n'
+        printf '    mkdir -p %s/scratch\n' "$ns"
+    fi
+}
+
 # Guidance injected into the AI tool's instructions (claude --append-system-prompt-file
 # / codex ~/.codex/AGENTS.md) so it knows where heavy work should run. Single
 # source of truth, also dumpable with `mqyolo --print-guidance`. Adapts to the
@@ -158,6 +190,7 @@ _mqyolo_guidance_text() {
 `snakemake --profile aqua`, which submits each rule to the queue via `mqsub`
 (separately sized) rather than squeezing everything into this one allocation.
 GUIDE
+        _mqyolo_scratch_guidance
         return 0
     fi
 
@@ -198,6 +231,7 @@ itself inside a single allocation and let it run rules locally within it, e.g.
 `mqsub -t 24 -m 96 -- snakemake --cores 24` (no aqua profile). Pick per-rule
 queue submission vs. one wrapping job based on the number and size of the rules.
 GUIDE
+    _mqyolo_scratch_guidance
 }
 
 # Parse tool name (default: claude), --debug, --rw-paths, --ro-paths, --no-broker
@@ -280,6 +314,9 @@ FILESYSTEM INSIDE THE CONTAINER
                       Use --ro-paths/--rw-paths to opt a specific subdirectory
                       back in; it appears at the same /scratch/... path you gave
                       (even though /scratch is a symlink to /mnt/weka/scratch).
+                      EXCEPTION, auto-mounted when present:
+                      /scratch/microbiome/$USER/non_sensitive read-only, and its
+                      `scratch` subdirectory read-write. Jobs inherit both.
   /work/microbiome    NOT visible, EXCEPT /work/microbiome/sw and
                       /work/microbiome/db which are bound read-only (shared
                       tools and reference databases). Use --ro-paths to opt a
@@ -350,6 +387,11 @@ while IFS= read -r _folder; do
     [[ -n "$_folder" ]] && RO_PATHS+=("$_folder")
 done < <(_mqyolo_non_sensitive_folders "$NON_SENSITIVE_FOLDERS_FILE")
 unset _folder
+
+# Default per-user scratch binds (when present): expose
+# /scratch/microbiome/$USER/non_sensitive read-only with its `scratch` subdir
+# read-write. Added to RO_PATHS/RW_PATHS so the broker forwards them to jobs too.
+sandbox_add_default_scratch_paths
 
 # Restrict where mqyolo may be launched (anti-leakage). The working directory is
 # bound read-write into the sandbox; confining launches to these trees limits how

@@ -123,6 +123,27 @@ sandbox_path_denied() {
 }
 
 # ---------------------------------------------------------------------------
+# sandbox_add_default_scratch_paths
+#   Appends the per-user "non_sensitive" scratch defaults to the caller's
+#   RO_PATHS / RW_PATHS arrays (which both mqyolo and mqsandbox populate before
+#   calling sandbox_build_binds):
+#     /scratch/microbiome/$USER/non_sensitive          -> read-only  (when present)
+#     /scratch/microbiome/$USER/non_sensitive/scratch  -> read-write (when present)
+#   Literal /scratch/... paths are appended (symlinks preserved) so they appear at
+#   the same path inside the container; sandbox_build_binds binds rw paths after ro
+#   ones, so the writable `scratch` subdir wins over its read-only parent. mqyolo
+#   also forwards these to the broker, so submitted jobs inherit the same binds.
+#   No-op when $USER is unset or the trees do not exist on this host.
+# ---------------------------------------------------------------------------
+sandbox_add_default_scratch_paths() {
+    local ns="/scratch/microbiome/${USER:-}/non_sensitive"
+    [[ -n "${USER:-}" ]] || return 0
+    [[ -d "$ns" ]]            && RO_PATHS+=("$ns")
+    [[ -d "${ns}/scratch" ]]  && RW_PATHS+=("${ns}/scratch")
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # sandbox_build_binds CWD [RW_PATH...] [-- RO_PATH...]
 #   Populates BIND_ARGS with the read-only system/HPC binds, the anti-exfiltration
 #   deny-list (see SANDBOX_DENY_PATHS above), writable temp dirs, any extra

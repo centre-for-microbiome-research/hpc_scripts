@@ -44,6 +44,13 @@ Key invariants the tests guard (keep them true):
 - Jobs submitted from inside the container are always `--sandbox`ed and inherit
   mqyolo's fixed `--rw-paths`; the container cannot change them (`--no-sandbox` and
   `--sandbox-rw-paths` from the container are rejected).
+- Both mqyolo and mqsandbox auto-mount the per-user scratch defaults when present
+  (`sandbox_add_default_scratch_paths` in `_sandbox_common.bash`):
+  `/scratch/microbiome/$USER/non_sensitive` read-only and its `scratch` subdir
+  read-write. mqyolo adds them to `RO_PATHS`/`RW_PATHS` so the broker forwards them
+  to jobs; mqsandbox also adds them itself (deduped) so direct/standalone sandbox
+  runs get them too. The AI guidance describes them via `_mqyolo_scratch_guidance`
+  (only when the tree exists).
 - `snakemake --profile aqua` works inside the container: its cluster helpers
   (`snakemake_mqsub`, `snakemake_mqstat`) are staged onto PATH as repo tools, and
   the `qstat`/`qdel` they (and snakemake's cluster-cancel) rely on are proxied to
