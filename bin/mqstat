@@ -912,8 +912,32 @@ def job_table(jobs, finished=False):
 
 
 def list_jobs(jobs):
-    """Print job table."""
-    for line in job_table(jobs):
+    """Print the running/queued job table for ``mqstat --list``.
+
+    Render via mqtop's ``format_jobs`` so the lines match what ``mqtop`` shows
+    (waited/age/cpu%/ram% columns, snake/aqua name tweaks and per-row colouring)
+    rather than this script's older icon-based layout. mqtop imports this module,
+    so load it lazily here to avoid an import cycle.
+    """
+    import importlib.util
+    from importlib.machinery import SourceFileLoader
+
+    mqtop_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mqtop")
+    loader = SourceFileLoader("mqtop_module", mqtop_path)
+    spec = importlib.util.spec_from_loader("mqtop_module", loader)
+    mqtop = importlib.util.module_from_spec(spec)
+    loader.exec_module(mqtop)
+
+    # A very wide width so names are never truncated in this non-interactive output.
+    lines, _ = mqtop.format_jobs(jobs, 10 ** 6)
+
+    # Preserve job_table's completeness warning if qstat -f hit the job cap.
+    if getattr(parse_qstat, "limit_hit", False):
+        print(
+            f"{Colors.RED}WARNING: qstat -f may not have returned all running/queued "
+            f"jobs; increase --max-jobs{Colors.ENDC}"
+        )
+    for line in lines:
         print(line)
 
 
