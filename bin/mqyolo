@@ -209,6 +209,13 @@ inspecting files) can be run directly. (If instead you want abundant local
 resources, start an interactive PBS job and run mqyolo inside it — the guidance
 here adapts automatically.)
 
+**Avoid large-scale filesystem traversal on the login node.** Commands that walk
+many thousands of files (5000+) — e.g. `find` over a big tree, recursive `ls -R`,
+`du -sh` of a large directory, `grep -r`/`rg` across a huge corpus, `tar`/`rsync`
+of many files — hammer the shared filesystem and degrade it for everyone. Either
+avoid them (narrow the path, cap the depth, or target specific files you already
+know) or run them through the queue with `mqsub`, never as a broad scan here.
+
 `mqsub` runs the real submitter on the host and, by default, waits for the job
 and returns its output. Usage:
 
@@ -220,7 +227,17 @@ and returns its output. Usage:
   working directory (plus any paths granted to mqyolo at launch) is writable;
   everything else is read-only. Write outputs under the current directory.
 - Companions: `qstat` (queue status), `qdel` (cancel). Run `mqsub --help` for all options.
-  (cancel). `qstat` also works. Run `mqsub --help` for all options.
+
+**Checking the queue.** `qstat` here lists only YOUR (`$USER`) jobs — other users'
+jobs are NOT shown, so a short `qstat` does not mean the cluster is idle. `mqstat`
+hints at how busy things are, but for an actual cluster-wide picture use commands
+that report aggregate counts (these are not restricted to your jobs):
+- `qstat -Q` — per-queue summary: the `Que` (queued/waiting) vs `Run` columns show
+  the backlog. A large `Que` relative to `Run` means jobs are waiting and your
+  submission may sit in the queue for a while.
+- `pbsnodes -aSj` — per-node free/total CPUs and memory (the `f/t` columns). Lots
+  of free capacity means jobs should start promptly; near-zero free means the
+  cluster is saturated.
 
 **Snakemake:** `snakemake --profile aqua` submits each rule to the batch queue
 via `mqsub` under the hood (one queue job per rule), so do not also wrap those
