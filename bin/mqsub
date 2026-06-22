@@ -566,6 +566,8 @@ Further information can also be found in the CMR Compute Notes -  https://tinyur
     SCRIPT = 'script'
     COMMAND = 'command'
 
+    content_type = COMMAND
+
     if args.script:
         content_type = SCRIPT
         if len(args.command) != 0:
