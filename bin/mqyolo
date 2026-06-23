@@ -2,13 +2,22 @@
 # mqyolo - Run claude, codex, or copilot inside a restricted Apptainer/Singularity container.
 #
 # Permissions inside the container:
-#   - Current directory: fully read/write
-#   - /tmp, /var/tmp:    read/write
-#   - Everything else:   read-only (Unix permissions still apply)
-#   - $HOME:             isolated ephemeral directory, not your real home
+#   - Current directory:        fully read/write
+#   - /tmp, /var/tmp:           read/write
+#   - Per-user scratch subdir:  read/write (/scratch/microbiome/$USER/non_sensitive/scratch)
+#   - --rw-paths PATH...:       read/write (extra paths granted at launch)
+#   - Everything else:          read-only (Unix permissions still apply)
+#   - Non-sensitive /work folders + /scratch/microbiome/$USER/non_sensitive: read-only
+#   - --ro-paths PATH...:       read-only (extra paths granted at launch)
+#   - $HOME:                    isolated ephemeral directory, not your real home
+#
+# mqyolo refuses to launch unless the working directory is within an allowed root
+# (/work/microbiome, $HOME, /scratch/microbiome/$USER, or /tmp), since the CWD is
+# bound read-write — this limits accidental exposure of unrelated data.
 #
 # Usage:
-#   mqyolo [claude|codex|copilot] [args...]
+#   mqyolo [claude|codex|copilot] [--rw-paths PATH...] [--ro-paths PATH...] [args...]
+#   Run `mqyolo --help` for the full FILESYSTEM/option reference.
 #
 # Environment variables:
 #   ANTHROPIC_API_KEY   Required for claude
@@ -16,9 +25,12 @@
 #   GITHUB_TOKEN        Required for copilot
 #   AI_TOOL_SIF         Override path to .sif file (default: same dir as this script)
 #
-# The filesystem-sandbox construction is shared with mqsandbox via
-# _sandbox_common.bash so that jobs submitted from inside the container (see the
-# "mqsub from inside the container" section below) run under the same constraints.
+# Each session also starts a host-side mqsub broker (see the "mqsub broker"
+# section below) so the in-container AI can drive mqsub/mqstat/qstat/qdel even
+# though qsub and python3.9 do not exist in the container; jobs it submits are
+# forced into this same sandbox. The filesystem-sandbox construction is shared
+# with mqsandbox via _sandbox_common.bash so those submitted jobs run under the
+# same constraints, and guidance on what to offload is injected into the AI tool.
 
 set -euo pipefail
 
@@ -208,6 +220,12 @@ on the login node. Quick, cheap work (edits, builds, unit tests, short scripts,
 inspecting files) can be run directly. (If instead you want abundant local
 resources, start an interactive PBS job and run mqyolo inside it — the guidance
 here adapts automatically.)
+
+**Rust builds on the login node: use `--jobs 1`.** When you do run `cargo build`
+or `cargo run` directly here, always pass `--jobs 1` (e.g.
+`cargo build --release --jobs 1`) so the compile uses a single job and does not
+spawn many parallel rustc/codegen processes on the shared head node. For a fuller
+parallel build, submit it to the queue instead: `mqsub -t 8 -m 32 -- cargo build --release`.
 
 **Avoid large-scale filesystem traversal on the login node.** Commands that walk
 many thousands of files (5000+) — e.g. `find` over a big tree, recursive `ls -R`,
