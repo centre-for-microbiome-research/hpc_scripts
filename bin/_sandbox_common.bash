@@ -442,7 +442,7 @@ sandbox_home_dotfiles() {
     local item name
     while IFS= read -r -d '' item; do
         name="${item##*/}"
-        [[ "$name" == ".claude" || "$name" == ".claude.json" || "$name" == ".cache" || "$name" == ".ssh" ]] && continue
+        [[ "$name" == ".claude" || "$name" == ".claude.json" || "$name" == ".cache" || "$name" == ".ssh" || "$name" == ".npm" ]] && continue
         # Resolve through any intermediate symlinks (e.g. /pkg -> /mnt/weka/pkg)
         # so the target is a canonical /mnt/... path that is bound in.
         ln -sf "$(readlink -f "$item" 2>/dev/null || echo "$item")" "${CONTAINER_HOME}/${name}" 2>/dev/null || true

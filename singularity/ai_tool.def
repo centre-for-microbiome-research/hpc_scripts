@@ -14,7 +14,7 @@ From: node:24
     #   curl:  needed for Codex CLI installation script.
     #   gawk:  needed for Codex CLI installation script.
     apt-get update
-    apt-get install -y --no-install-recommends time less rsync curl ca-certificates gawk
+    apt-get install -y --no-install-recommends time less rsync curl ca-certificates gawk jq
     rm -rf /var/lib/apt/lists/*
 
     # Install Claude Code, OpenAI Codex CLI, and GitHub Copilot CLI
