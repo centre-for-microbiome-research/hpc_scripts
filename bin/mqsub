@@ -742,7 +742,7 @@ Further information can also be found in the CMR Compute Notes -  https://tinyur
             else:
                 jobname = cmd[0]
 
-            jobname = jobname.replace("/","_").replace(".","",1)
+            jobname = re.sub(r'[^A-Za-z0-9._-]', '_', jobname.replace("/","_").replace(".","",1))
             logging.debug("Naming job as: {}".format(jobname))
 
             if content_type == COMMAND:
