@@ -13,8 +13,9 @@ From: node:24
     #   rsync: commonly invoked for file transfers inside sessions.
     #   curl:  needed for Codex CLI installation script.
     #   gawk:  needed for Codex CLI installation script.
+    #   man-db: provides the `man` command for reading manual pages.
     apt-get update
-    apt-get install -y --no-install-recommends time less rsync curl ca-certificates gawk jq
+    apt-get install -y --no-install-recommends time less rsync curl ca-certificates gawk jq man-db
     rm -rf /var/lib/apt/lists/*
 
     # Install Claude Code, OpenAI Codex CLI, and GitHub Copilot CLI
