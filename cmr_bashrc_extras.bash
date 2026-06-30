@@ -1,5 +1,7 @@
 # Add HPC scripts e.g. mqsub to the path
 export PATH="/mnt/hpccs01/work/microbiome/sw/hpc_scripts/bin:$PATH"
+# Add zellij
+export PATH="/work/microbiome/sw/zellij:$PATH"
 
 #function for command prompt and email notification of job completion
 function notify { command "$@" && success || fail; }
