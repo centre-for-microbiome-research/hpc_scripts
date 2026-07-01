@@ -32,4 +32,4 @@ shift
 env_name="${env_name//./-}"
 env_name="${env_name//_/-}"
 
-exec pixi shell --manifest-path "$CMR_PIXI_DIR" --frozen -e "$env_name" "$@"
+exec pixi shell --manifest-path "$CMR_PIXI_DIR" --as-is -e "$env_name" "$@"
