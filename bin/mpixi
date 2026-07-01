@@ -16,6 +16,9 @@ CMR_PIXI_DIR="${CMR_PIXI_DIR:-/pkg/cmr/mpixi/pixi.toml}"
 if [[ $# -lt 1 ]]; then
     echo "Usage: mpixi <environment-name>" >&2
     echo "e.g.:  mpixi checkm2-v1.0.2" >&2
+    echo >&2
+    echo "Available environments:" >&2
+    awk '/^\[environments\]/ { found=1; next } found && /^[a-z0-9-]+ = / { print "  " $1 }' "$CMR_PIXI_DIR" >&2
     exit 1
 fi
 
