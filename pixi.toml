@@ -13,6 +13,7 @@ test = "pytest tests"
 [feature.dev.dependencies]
 python = "*"
 pytest = "*"
+pexpect = "*"
 
 [feature.dev.tasks]
 # Refresh mqyolo-non-sensitive-folders.json from the CMR work-folders sheet.
