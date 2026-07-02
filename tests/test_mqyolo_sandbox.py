@@ -456,9 +456,10 @@ def test_snakemake_cluster_tools_present_in_repo():
     assert (BIN / "snakemake_mqstat").exists(), "snakemake_mqstat missing from repo bin"
 
 
-@pytest.mark.parametrize("tool", ["snakemake_mqsub", "snakemake_mqstat"])
-def test_stage_repo_tools_symlinks_snakemake_cluster_tools(tmp_path, tool):
-    # So `snakemake --profile aqua` finds the shipped helpers inside the container.
+@pytest.mark.parametrize("tool", ["snakemake_mqsub", "snakemake_mqstat", "mpixi"])
+def test_stage_repo_tools_symlinks_repo_tools(tmp_path, tool):
+    # So `snakemake --profile aqua` finds the shipped helpers, and mpixi (the pixi
+    # env wrapper) is available inside the container.
     tools = tmp_path / "tools"
     script = (
         "source %s; sandbox_stage_repo_tools %s %s; readlink -f %s/%s"
@@ -468,6 +469,40 @@ def test_stage_repo_tools_symlinks_snakemake_cluster_tools(tmp_path, tool):
     p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
     assert p.returncode == 0, p.stderr
     assert p.stdout.strip() == os.path.realpath(str(BIN / tool)), p.stdout
+
+
+def test_pixi_and_mpixi_declared_as_repo_tools():
+    # pixi (the package manager) and mpixi (its CMR wrapper) must be staged onto
+    # PATH inside the container so the in-container AI can build/run pixi envs.
+    # pixi is a large binary that ships only in the deployed bin/, so staging is
+    # existence-guarded and we only assert it is declared, not present in the repo.
+    script = (
+        'source %s; printf "%%s\\n" "${SANDBOX_REPO_TOOLS[@]}"' % shlex.quote(str(SANDBOX_LIB))
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    declared = p.stdout.split()
+    assert "pixi" in declared, declared
+    assert "mpixi" in declared, declared
+
+
+def test_stage_repo_tools_stages_pixi_when_present(tmp_path):
+    # When pixi is present in the bin dir mqyolo runs from (the deployed copy),
+    # sandbox_stage_repo_tools symlinks it into the tools dir at the shipped target.
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    pixi = fake_bin / "pixi"
+    pixi.write_text("#!/bin/sh\necho pixi\n")
+    pixi.chmod(0o755)
+    tools = tmp_path / "tools"
+    script = (
+        "source %s; sandbox_stage_repo_tools %s %s; readlink -f %s/pixi"
+        % (SANDBOX_LIB, shlex.quote(str(tools)), shlex.quote(str(fake_bin)),
+           shlex.quote(str(tools)))
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    assert p.stdout.strip() == os.path.realpath(str(pixi)), p.stdout
 
 
 def test_pixi_cmr_init_resolves_on_path_via_shim_bashrc(tmp_path):

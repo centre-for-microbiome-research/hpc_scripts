@@ -459,7 +459,15 @@ sandbox_home_dotfiles() {
 # the snakemake "aqua" (and mqsub/lyra) profiles. Staging them here puts them on
 # PATH inside the container so `snakemake --profile aqua` works there, running the
 # version that ships with mqyolo (its `mqsub`/`qstat` calls go through the broker).
-SANDBOX_REPO_TOOLS=(pixi_cmr_init.py snakemake_mqsub snakemake_mqstat)
+#
+# pixi (the package manager) and mpixi (the CMR wrapper that opens a pixi shell for
+# a centrally maintained tool env) are staged too so the in-container AI can build
+# and run pixi environments. pixi is a large binary that ships only in the deployed
+# bin/ (not the git checkout), so staging is existence-guarded (see
+# sandbox_stage_repo_tools): when mqyolo runs from the deployed copy pixi is staged
+# at high priority; from a dev checkout it is simply skipped and still resolves via
+# the /work/microbiome/sw/hpc_scripts/bin entry that sandbox_build_env adds to PATH.
+SANDBOX_REPO_TOOLS=(pixi_cmr_init.py snakemake_mqsub snakemake_mqstat pixi mpixi)
 
 # ---------------------------------------------------------------------------
 # sandbox_stage_repo_tools TOOLS_DIR SCRIPT_DIR

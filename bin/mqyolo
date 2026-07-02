@@ -1,5 +1,6 @@
 #!/bin/bash
-# mqyolo - Run claude, codex, or copilot inside a restricted Apptainer/Singularity container.
+# mqyolo - Run claude, codex, copilot, or any executable shipped in this bin/
+# directory inside a restricted Apptainer/Singularity container.
 #
 # Permissions inside the container:
 #   - Current directory:        fully read/write
@@ -16,7 +17,7 @@
 # bound read-write — this limits accidental exposure of unrelated data.
 #
 # Usage:
-#   mqyolo [claude|codex|copilot] [--rw-paths PATH...] [--ro-paths PATH...] [args...]
+#   mqyolo [claude|codex|copilot|<bin-executable>] [--rw-paths PATH...] [--ro-paths PATH...] [args...]
 #   Run `mqyolo --help` for the full FILESYSTEM/option reference.
 #
 # Environment variables:
@@ -271,25 +272,38 @@ GUIDE
 
 # Parse tool name (default: claude), --debug, --rw-paths, --ro-paths, --no-broker
 TOOL="claude"
+TOOL_SET=0        # 1 once the tool has been chosen (built-in name or repo executable)
+REPO_TOOL=0       # 1 if TOOL names an executable shipped alongside this script in bin/
 DEBUG=0
 NO_BROKER=0
 RW_PATHS=()
 RO_PATHS=()
+
+# True (0) if ARG names a tool: a bare filename (no path separators) that is an
+# executable shipped alongside this script in bin/. Used both to recognise the
+# tool positionally and to STOP --rw-paths/--ro-paths path lists before it, so the
+# tool name isn't swallowed as a path (mirrors the claude/codex/copilot guards).
+_mqyolo_is_repo_tool() {
+    [[ "$1" != */* && -f "${SCRIPT_DIR}/$1" && -x "${SCRIPT_DIR}/$1" ]]
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        claude|codex|copilot) TOOL="$1"; shift ;;
+        claude|codex|copilot) TOOL="$1"; TOOL_SET=1; shift ;;
         --debug)      DEBUG=1;   shift ;;
         --no-broker)  NO_BROKER=1; shift ;;
         --print-guidance) _mqyolo_guidance_text; exit 0 ;;
         --rw-paths)
             shift
             while [[ $# -gt 0 && "$1" != --* && "$1" != claude && "$1" != codex && "$1" != copilot ]]; do
+                { [[ "$TOOL_SET" -eq 0 ]] && _mqyolo_is_repo_tool "$1"; } && break
                 RW_PATHS+=("$1"); shift
             done
             ;;
         --ro-paths)
             shift
             while [[ $# -gt 0 && "$1" != --* && "$1" != claude && "$1" != codex && "$1" != copilot ]]; do
+                { [[ "$TOOL_SET" -eq 0 ]] && _mqyolo_is_repo_tool "$1"; } && break
                 RO_PATHS+=("$1"); shift
             done
             ;;
@@ -298,13 +312,19 @@ while [[ $# -gt 0 ]]; do
 mqyolo - run an AI coding tool inside a sandboxed Apptainer/Singularity container
 
 USAGE
-  mqyolo [claude|codex] [--debug] [--rw-paths PATH...] [--ro-paths PATH...] [--no-broker] [args...]
+  mqyolo [claude|codex|copilot|<bin-executable>] [--debug] [--rw-paths PATH...] [--ro-paths PATH...] [--no-broker] [args...]
 
 TOOLS
   claude   (default) Claude Code — passes --dangerously-skip-permissions
   codex              OpenAI Codex — bypasses Codex's own prompts/sandbox, enables search,
                      and disables update checks
   copilot            GitHub Copilot CLI — no auto-mode flag; use Shift+Tab inside session for Autopilot mode
+  <bin-executable>   Any executable file shipped in this script's own bin/ directory
+                     (given as a bare name, e.g. `mqyolo claude_science`). It is run
+                     by its canonical path inside the container, as-is — no wrapper
+                     flags and no injected mqsub guidance. Must be the first argument;
+                     remaining args pass through to it. The broker still runs, so it
+                     can use mqsub/qstat unless --no-broker is given.
 
 OPTIONS
   --debug              Print the full exec command before running
@@ -402,13 +422,25 @@ ENVIRONMENT VARIABLES
 
 PATH INSIDE THE CONTAINER
   ~/bin and ~/.local/bin (if present) are prepended ahead of the container
-  binaries so your personal scripts remain available. pixi_cmr_init.py (shipped
-  with this repo) is also placed on PATH so the in-container AI can scaffold a
-  pixi.toml.
+  binaries so your personal scripts remain available. Repo tools shipped with
+  mqyolo are also placed on PATH: pixi_cmr_init.py (scaffold a pixi.toml),
+  pixi and mpixi (build/run pixi environments), and the snakemake cluster
+  helpers (snakemake_mqsub/snakemake_mqstat).
 EOF
             exit 0
             ;;
-        *)            break ;;
+        *)
+            # Allow any executable shipped alongside this script in bin/ to be used
+            # as the tool, just like claude/codex/copilot. Only the FIRST positional
+            # is treated this way (TOOL_SET guards it), and only a bare filename in
+            # this script's own directory (no path separators) — everything else is a
+            # passthrough argument to the already-chosen tool.
+            if [[ "$TOOL_SET" -eq 0 ]] && _mqyolo_is_repo_tool "$1"; then
+                TOOL="$1"; REPO_TOOL=1; TOOL_SET=1; shift
+            else
+                break
+            fi
+            ;;
     esac
 done
 
@@ -648,12 +680,26 @@ case "$TOOL" in
         # (Copilot CLI has no global-instructions hook we can inject mqsub guidance into.)
         YOLO_ARGS=()
         ;;
+    *)
+        # A repo executable (see arg parsing): run it as-is with no wrapper flags and
+        # no injected guidance — it is not one of the AI tools we know how to drive.
+        YOLO_ARGS=()
+        ;;
 esac
 
 # Drop duplicate-destination binds (e.g. non-sensitive /work folders re-exposed
 # via --ro-paths over the ro-allow and /proc/mounts binds) so apptainer doesn't
 # warn "destination is already in the mount point list". Last bind per dest wins.
 sandbox_dedupe_binds
+
+# The command to exec inside the container. Built-in tools (claude/codex/copilot)
+# are resolved by name on the container PATH; a repo executable is run by its
+# canonical path, which is bound read-only into the container along with the rest
+# of bin/ (under /home|/mnt|/work), so it resolves regardless of PATH.
+TOOL_CMD="$TOOL"
+if [[ "$REPO_TOOL" -eq 1 ]]; then
+    TOOL_CMD="$(readlink -f "${SCRIPT_DIR}/${TOOL}")"
+fi
 
 # ---------------------------------------------------------------------------
 # Run (as a child, not exec, so the EXIT trap fires: broker teardown,
@@ -665,7 +711,7 @@ if [[ "$DEBUG" -eq 1 ]]; then
         "${BIND_ARGS[@]}" "${ENV_ARGS[@]}" \
         --pwd "${CWD}" "${SIF}" \
         bash -c '[[ -f ~/.bashrc ]] && source ~/.bashrc 2>/dev/null; exec "$@"' _ \
-        "${TOOL}" "${YOLO_ARGS[@]}" "$@" >&2
+        "${TOOL_CMD}" "${YOLO_ARGS[@]}" "$@" >&2
     echo >&2
 fi
 
@@ -676,5 +722,5 @@ fi
     --pwd "${CWD}" \
     "${SIF}" \
     bash -c '[[ -f ~/.bashrc ]] && source ~/.bashrc 2>/dev/null; exec "$@"' _ \
-    "${TOOL}" "${YOLO_ARGS[@]}" "$@"
+    "${TOOL_CMD}" "${YOLO_ARGS[@]}" "$@"
 exit $?
