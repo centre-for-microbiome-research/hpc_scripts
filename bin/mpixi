@@ -1,0 +1,35 @@
+#!/bin/bash
+# mpixi - drop into a pixi shell for one of the centrally maintained CMR tool
+# environments defined in /pkg/cmr/mpixi/pixi.toml, replacing per-tool conda
+# envs under /pkg/cmr/conda/envs/ (which are hard to keep patched/maintained).
+#
+# Usage:
+#   mpixi <environment-name>
+#
+# Example:
+#   mpixi checkm2-v1.0.2
+
+set -euo pipefail
+
+CMR_PIXI_TOML="${CMR_PIXI_TOML:-/pkg/cmr/mpixi/pixi.toml}"
+
+if [[ $# -lt 1 ]]; then
+    echo "Usage: mpixi <environment-name>" >&2
+    echo "e.g.:  mpixi checkm2-v1.0.2" >&2
+    echo >&2
+    echo "Available environments:" >&2
+    awk '/^\[environments\]/ { found=1; next } /^\[/ { found=0 } found && /^[a-z0-9-]+ = / { print "  " $1 }' "$CMR_PIXI_TOML" >&2
+    exit 1
+fi
+
+env_name="$1"
+shift
+
+# pixi environment names may only contain lowercase letters, digits and
+# dashes, but /pkg/cmr/conda/envs/ names contain dots and underscores
+# (e.g. checkm2-v1.0.2, fastx_toolkit-v0.0.14) - translate to match the
+# sanitized names used as environment keys in pixi.toml.
+env_name="${env_name//./-}"
+env_name="${env_name//_/-}"
+
+exec pixi shell --manifest-path "$CMR_PIXI_TOML" --as-is -e "$env_name" "$@"

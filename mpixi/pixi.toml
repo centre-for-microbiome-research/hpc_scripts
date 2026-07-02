@@ -1,0 +1,599 @@
+# Environment names below are the conda-env directory name from
+# /pkg/cmr/conda/envs/ and /pkg/cmr/sw/conda/envs/ with "." and "_" replaced
+# by "-" (pixi environment names may only contain lowercase letters, digits
+# and dashes). `mpixi` does the same translation, so e.g.
+# `mpixi checkm2-v1.0.2` still works as typed.
+
+# Install with `pixi install -a` and then `pixi run postinstall`.
+# Finally run `mpermissions -g microbiome .` to set group permissions for the new environments.
+
+[workspace]
+name = "cmr-mpixi"
+description = "Centrally maintained CMR bioinformatics tool environments, one pixi environment per tool version, replacing /pkg/cmr/conda/envs/"
+channels = ["conda-forge", "bioconda"]
+platforms = ["linux-64"]
+
+[activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# Default environment: provides Python for postinstall scripts (tomllib requires >=3.11)
+[dependencies]
+python = ">=3.11"
+
+[feature.aniclustermap-v1-4-0.dependencies]
+aniclustermap = "==1.4.0"
+
+[feature.antismash-v7-1-0.dependencies]
+antismash = "==7.1.0"
+
+[feature.anvio-v7.dependencies]
+anvio = "==7"
+
+[feature.arb-v2-23-0.dependencies]
+arb = "==2.23.0"
+
+[feature.aria2-v1-37-0.dependencies]
+aria2 = "==1.37.0"
+
+[feature.art-v2016-06-05.dependencies]
+art = "==2016.06.05"
+
+[feature.aviary-v0-11-1.dependencies]
+aviary = "==0.11.1"
+
+[feature.aviary-v0-11-1.activation]
+env = { CONDA_ENV_PATH = "/mnt/weka/pkg/cmr/sw/conda/envs/_aviary_envs/0.11.1", GTDBTK_DATA_PATH = "/work/microbiome/db/gtdb/gtdb_release220/auxillary_files/gtdbtk_package/full_package/release220", EGGNOG_DATA_DIR = "/mnt/hpccs01/work/microbiome/db/eggnog-mapper/2.1.3", CHECKM2DB = "/mnt/hpccs01/work/microbiome/db/CheckM2_database", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S4.3.0.GTDB_r220.metapackage_20240523.smpkg.zb", SNAKEMAKE_CONDA_PREFIX = "/mnt/weka/pkg/cmr/sw/conda/envs/_aviary_envs/0.11.1", METABULI_DB_PATH = "/work/microbiome/abisko/aroneys/db/metabuli" }
+
+[feature.aviary-v0-12-0.dependencies]
+aviary = "==0.12.0"
+
+[feature.aviary-v0-12-0.activation]
+env = { GTDBTK_DATA_PATH = "/work/microbiome/db/gtdb/gtdb_release220/auxillary_files/gtdbtk_package/full_package/release220", EGGNOG_DATA_DIR = "/mnt/hpccs01/work/microbiome/db/eggnog-mapper/2.1.3", CHECKM2DB = "/mnt/hpccs01/work/microbiome/db/CheckM2_database/uniref100.KO.1.dmnd", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S4.3.0.GTDB_r220.metapackage_20240523.smpkg.zb", METABULI_DB_PATH = "/work/microbiome/abisko/aroneys/db/metabuli", CONDA_ENV_PATH = "/mnt/weka/pkg/cmr/sw/conda/envs/_aviary_envs/0.12.0", SNAKEMAKE_CONDA_PREFIX = "/mnt/weka/pkg/cmr/sw/conda/envs/_aviary_envs/0.12.0" }
+
+[feature.aviary-v0-13-0.dependencies]
+aviary = "==0.13.0"
+
+[feature.aviary-v0-13-0.tasks]
+postinstall-base = { cmd = ["aviary", "build", "--gpu"], depends-on = [{ task = "postinstall-aviary-config", environment = "default" }] }
+
+[feature.aviary-v0-13-0.activation]
+env = { GTDBTK_DATA_PATH = "/work/microbiome/db/gtdb/gtdb_release232/auxillary_files/gtdbtk_package/full_package/release232", CHECKM2DB = "/work/microbiome/db/CheckM2_database/uniref100.KO.1.dmnd", EGGNOG_DATA_DIR = "/mnt/hpccs01/work/microbiome/db/eggnog-mapper/2.1.3", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S6.5.0.GTDB_r232.metapackage_20260319.smpkg.zb", METABULI_DB_PATH = "/work/microbiome/db/metabuli/2024-3-28-GTDB214.1+humanT2T" }
+
+[feature.bakta-v1-11-0.dependencies]
+bakta = "==1.11.0"
+
+[feature.bbmap-v39-18.dependencies]
+bbmap = "==39.18"
+
+[feature.bedops-v2-4-41.dependencies]
+bedops = "==2.4.41"
+
+[feature.bedtools-v2-31-1.dependencies]
+bedtools = "==2.31.1"
+
+[feature.binchicken-v0-12-6.dependencies]
+binchicken = "==0.12.6"
+
+[feature.binchicken-v0-12-6.activation]
+env = { SNAKEMAKE_CONDA_PREFIX = "/mnt/weka/pkg/cmr/sw/conda/envs/_binchicken_envs/0.12.6", CONDA_ENV_PATH = "/mnt/weka/pkg/cmr/sw/conda/envs/_binchicken_envs/0.12.6", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S4.3.0.GTDB_r220.metapackage_20240523.smpkg.zb", GTDBTK_DATA_PATH = "/work/microbiome/conda/envs/gtdbtk-v2.4.0/share/gtdbtk-2.4.0/db", CHECKM2DB = "/work/microbiome/db/CheckM2_database" }
+
+[feature.binchicken-v0-13-5.dependencies]
+binchicken = "==0.13.5"
+
+[feature.binchicken-v0-13-5.tasks]
+binchicken-build-no-aviary = { cmd = ["binchicken", "build", "--skip-aviary-envs"], depends-on = [{ task = "postinstall-binchicken-config", environment = "default" }] }
+postinstall-base = { cmd = ["binchicken", "build", "--build-gpu"], depends-on = [{ task = "postinstall-binchicken-aviary-config", environment = "default" }] }
+
+[feature.binchicken-v0-13-5.activation]
+env = { SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S4.3.0.GTDB_r220.metapackage_20240523.smpkg.zb", GTDBTK_DATA_PATH = "/work/microbiome/conda/envs/gtdbtk-v2.4.0/share/gtdbtk-2.4.0/db", CHECKM2DB = "/work/microbiome/db/CheckM2_database" }
+
+[feature.biolib-v0-1-9.dependencies]
+biolib = "==0.1.9"
+
+[feature.bmge-v1-12.dependencies]
+bmge = "==1.12"
+
+[feature.busco-v5-8-3.dependencies]
+busco = "==5.8.3"
+
+[feature.centrifuge-v1-0-4-1.dependencies]
+centrifuge = "==1.0.4.1"
+
+[feature.centrifuge-v1-0-4-2.dependencies]
+centrifuge = "==1.0.4.2"
+
+[feature.checkm-genome-v1-2-3.dependencies]
+checkm-genome = "==1.2.3"
+
+[feature.checkm2-v1-0-2.dependencies]
+checkm2 = "==1.0.2"
+
+[feature.checkm2-v1-0-2.activation]
+env = { CHECKM2DB = "/work/microbiome/db/CheckM2_database/uniref100.KO.1.dmnd" }
+
+[feature.checkm2-v1-1-0.dependencies]
+checkm2 = "==1.1.0"
+
+[feature.checkm2-v1-1-0.activation]
+env = { CHECKM2DB = "/work/microbiome/db/CheckM2_database/uniref100.KO.1.dmnd" }
+
+[feature.comparem-v0-1-2.dependencies]
+comparem = "==0.1.2"
+
+[feature.coverm-v0-7-0.dependencies]
+coverm = "==0.7.0"
+
+[feature.datamash-v1-8.dependencies]
+datamash = "==1.8"
+
+[feature.diamond-v2-1-11.dependencies]
+diamond = "==2.1.11"
+
+[feature.diamond-v2-1-9.dependencies]
+diamond = "==2.1.9"
+
+[feature.dram-v1-5-0.dependencies]
+dram = "==1.5.0"
+
+[feature.drep-v3-5-0.dependencies]
+drep = "==3.5.0"
+
+[feature.eggnog-mapper-v2-1-12.dependencies]
+eggnog-mapper = "==2.1.12"
+
+[feature.emboss-v6-6-0.dependencies]
+emboss = "==6.6.0"
+
+[feature.emu-v3-4-6.dependencies]
+emu = "==3.4.6"
+
+[feature.emu-v3-5-1.dependencies]
+emu = "==3.5.1"
+
+[feature.enrichm-v0-6-5.dependencies]
+enrichm = "==0.6.5"
+
+# DISABLED - enrichm-v0.6.6 was installed as an editable checkout from
+# /mnt/hpccs01/home/boyd20/gits/enrichM (not a published conda/pypi release),
+# so the version can't be pinned from a package registry. Home-page is
+# https://github.com/geronimp/enrichM - if that repo has a v0.6.6 tag, try
+# switching to a pypi-dependencies git source (see transcriptm-v0-5) instead.
+# [feature.enrichm-v0-6-6.dependencies]
+# enrichm = "==0.6.6"
+# [feature.enrichm-v0-6-6.activation]
+# env = { ENRICHM_DB = "/work/microbiome/db/enrichm/0.6.5/" }
+
+# DISABLED - same issue as enrichm-v0.6.6 (editable checkout from
+# /mnt/hpccs01/home/boyd20/gits/enrichM, not a registry release).
+# [feature.enrichm-v0-6-7.dependencies]
+# enrichm = "==0.6.7"
+# [feature.enrichm-v0-6-7.activation]
+# env = { ENRICHM_DB = "/work/microbiome/db/enrichm/0.6.5/" }
+
+# DISABLED - same issue as enrichm-v0.6.6 (editable checkout from
+# /mnt/hpccs01/home/boyd20/gits/enrichM, not a registry release). Note this
+# env's own dist-info reports itself as 0.6.8 with no recorded ENRICHM_DB.
+# [feature.enrichm-v0-6-8.dependencies]
+# enrichm = "==0.6.8"
+
+# DISABLED - same issue as enrichm-v0.6.6 (editable checkout from
+# /mnt/hpccs01/home/boyd20/gits/enrichM, not a registry release). Note this
+# env's dist-info is stale/reports 0.6.8, so double check the real version.
+# [feature.enrichm-v0-6-9.dependencies]
+# enrichm = "==0.6.9"
+# [feature.enrichm-v0-6-9.activation]
+# env = { ENRICHM_DB = "/work/microbiome/db/enrichm/0.6.8/" }
+
+[feature.entrez-direct-v22-4.dependencies]
+entrez-direct = "==22.4"
+
+[feature.expressbetadiversity-v1-0-10.dependencies]
+expressbetadiversity = "==1.0.10"
+
+[feature.fastani-v1-34.dependencies]
+fastani = "==1.34"
+
+[feature.fastx-toolkit-v0-0-14.dependencies]
+fastx_toolkit = "==0.0.14"
+
+[feature.fegenie-v1-2.dependencies]
+fegenie = "==1.2"
+
+[feature.flye-v2-9-5.dependencies]
+flye = "==2.9.5"
+
+[feature.galah-v0-4-2.dependencies]
+galah = "==0.4.2"
+
+[feature.genomad-v1-11-0.dependencies]
+genomad = "==1.11.0"
+
+[feature.genomad-v1-8-0.dependencies]
+genomad = "==1.8.0"
+
+[feature.genometreetk-v0-1-6.dependencies]
+genometreetk = "==0.1.6"
+
+[feature.gffread-v0-12-7.dependencies]
+gffread = "==0.12.7"
+
+[feature.glances-v3-4-0-5.dependencies]
+glances = "==3.4.0.5"
+
+[feature.gmgc-mapper-v0-2-0.dependencies]
+gmgc-mapper = "==0.2.0"
+
+[feature.graftm-v0-15-1.dependencies]
+graftm = "==0.15.1"
+
+[feature.gtdbtk-v2-4-0.dependencies]
+gtdbtk = "==2.4.0"
+
+[feature.gtdbtk-v2-4-0.activation]
+env = { GTDBTK_DATA_PATH = "/pkg/cmr/conda/envs/gtdbtk-v2.4.0/share/gtdbtk-2.4.0/db" }
+
+[feature.gtdbtk-v2-4-1.dependencies]
+gtdbtk = "==2.4.1"
+
+# [feature.h2o-v3-18-0-2.dependencies]
+# h2o = "==3.18.0.2"
+
+[feature.hmmer-v3-4.dependencies]
+hmmer = "==3.4"
+
+[feature.humann-v3-9.dependencies]
+humann = "==3.9"
+
+[feature.insilicoseq-v2-0-1.dependencies]
+insilicoseq = "==2.0.1"
+
+[feature.iqtree-v2-4-0.dependencies]
+iqtree = "==2.4.0"
+
+[feature.jq-v1-7-1.dependencies]
+jq = "==1.7.1"
+
+[feature.jupyter-v1-1-1.dependencies]
+jupyter = "==1.1.1"
+
+[feature.kingfisher-v0-4-1.dependencies]
+kingfisher = "==0.4.1"
+
+[feature.kneaddata-v0-10-0.dependencies]
+kneaddata = "==0.10.0"
+
+[feature.kneaddata-v0-12-0.dependencies]
+kneaddata = "==0.12.0"
+
+[feature.kneaddata-v0-12-2.dependencies]
+kneaddata = "==0.12.2"
+
+[feature.krona-v2-8-1.dependencies]
+krona = "==2.8.1"
+
+[feature.lorikeet-genome-v0-8-2.dependencies]
+lorikeet-genome = "==0.8.2"
+
+[feature.mafft-v7-526.dependencies]
+mafft = "==7.526"
+
+[feature.mamba.dependencies]
+mamba = "==1.5.9"
+
+[feature.markermag-v1-1-28.dependencies]
+markermag = "==1.1.28"
+
+[feature.metaphlan-v4-1-1.dependencies]
+metaphlan = "==4.1.1"
+
+[feature.mgcplotter-v1-0-1.dependencies]
+mgcplotter = "==1.0.1"
+
+[feature.minimap2-v2-28.dependencies]
+minimap2 = "==2.28"
+
+[feature.mmseqs2-v15-6f452.dependencies]
+mmseqs2 = "==15.6f452"
+
+[feature.mmseqs2-v17-b804f.dependencies]
+mmseqs2 = "==17.b804f"
+
+# DISABLED - mob_suite-v3.1.9/conda-meta has no package records at all (looks
+# broken/incomplete), so the real package/version could not be confirmed.
+# [feature.mob-suite-v3-1-9.dependencies]
+# mob_suite = "==3.1.9"
+
+[feature.nanoplot-v1-43-0.dependencies]
+nanoplot = "==1.43.0"
+
+[feature.nanoplot-v1-44-1.dependencies]
+nanoplot = "==1.44.1"
+
+[feature.nanosim-v3-2-1.dependencies]
+nanosim = "==3.2.1"
+
+[feature.nanosim-v3-2-3.dependencies]
+nanosim = "==3.2.3"
+
+[feature.orthofinder-v3-0-1b1.dependencies]
+orthofinder = "==3.0.1b1"
+
+# DISABLED - phagespotter is installed from a one-off wheel built out of
+# boyd20's personal repo (BIO-26_Phage_coverage_pipeline), not a published
+# package - there is nothing pixi can pin here without that source repo.
+# [feature.phagespotter-v0-0-1.dependencies]
+# phagespotter = "==0.1.0"  # dist-info reports 0.1.0, not 0.0.1 as the dir name implies
+
+[feature.phylophlan-v3-1-1.dependencies]
+phylophlan = "==3.1.1"
+
+[feature.poretools-v0-6-1a1.dependencies]
+poretools = "==0.6.1a1"
+
+[feature.prodigal-v2-6-3.dependencies]
+prodigal = "==2.6.3"
+
+[feature.prokka-v1-14-6.dependencies]
+prokka = "==1.14.6"
+
+# DISABLED - qiime2-amplicon-2025.4 is the QIIME2 "amplicon" distribution
+# (real package is "qiime2" 2025.4.0 plus a whole ecosystem of q2-* plugins
+# from the qiime2 channel), not a single pinnable tool - needs QIIME2's own
+# published environment file rather than a hand-pinned dependency here.
+# [feature.qiime2-amplicon-2025-4.dependencies]
+# qiime2 = "==2025.4.0"
+
+[feature.quast-v5-2-0.dependencies]
+quast = "==5.2.0"
+
+[feature.quast-v5-3-0.dependencies]
+quast = "==5.3.0"
+
+[feature.r-base-v4-4-1.dependencies]
+r-base = "==4.4.1"
+
+[feature.r-v4-4.dependencies]
+r-base = "==4.4.3"
+
+# DISABLED - recurm-v0.3.0/conda-meta has no matching recurm package, and no recurm binary/site-package was found in that env either.
+# Fix the dependency below (or find how recurm is actually provided) and
+# uncomment both this feature block and its [environments] entry.
+# [feature.recurm-v0-3-0.dependencies]
+# recurm = "==0.3.0"
+
+[feature.rgi-v6-0-5.dependencies]
+rgi = "==6.0.5"
+
+[feature.rseqc-v5-0-3.dependencies]
+rseqc = "==5.0.3"
+
+[feature.samtools-v1-21.dependencies]
+samtools = "==1.21"
+
+[feature.semibin-v2-1-0.dependencies]
+semibin = "==2.1.0"
+
+[feature.seqkit-v2-10-0.dependencies]
+seqkit = "==2.10.0"
+
+[feature.seqkit-v2-8-2.dependencies]
+seqkit = "==2.8.2"
+
+[feature.seqtk-v1-4.dependencies]
+seqtk = "==1.4"
+
+[feature.singlem-v0-18-3.dependencies]
+singlem = "==0.18.3"
+
+[feature.singlem-v0-21-3.dependencies]
+singlem = "==0.21.3"
+
+[feature.singularity-v3-8-6.dependencies]
+singularity = "==3.8.6"
+
+[feature.skani-v0-2-2.dependencies]
+skani = "==0.2.2"
+
+[feature.soapaligner-v2-21.dependencies]
+soapaligner = "==2.21"
+
+[feature.spades-v4-0-0.dependencies]
+spades = "==4.0.0"
+
+[feature.spades-v4-1-0.dependencies]
+spades = "==4.1.0"
+
+[feature.subread-v2-0-6.dependencies]
+subread = "==2.0.6"
+
+[feature.taxonkit-v0-17-0.dependencies]
+taxonkit = "==0.17.0"
+
+[feature.taxonkit-v0-19-0.dependencies]
+taxonkit = "==0.19.0"
+
+[feature.transcriptm-v0-3-1.dependencies]
+python = ">=3.10,<3.11"
+snakemake = "==7.32.4"
+"ruamel.yaml" = ">=0.15.99"
+numpy = "*"
+pandas = "*"
+biopython = "*"
+pigz = "*"
+agat = "*"
+bbmap = "==38.93"
+bedops = "*"
+bedtools = "*"
+coverm = ">=0.6,<0.7"
+dashing = "*"
+datamash = "*"
+fastani = "*"
+gffread = "*"
+kneaddata = "==0.10.0"
+parallel = "==20210822"
+prokka = "==1.14.6"
+samtools = "==1.13"
+subread = "*"
+zlib = "==1.2.13"
+bioconductor-strandcheckr = "==1.12.0"
+
+[feature.transcriptm-v0-3-1.pypi-dependencies]
+transcriptm = { git = "https://github.com/aroneys/transcriptm", rev = "fe5e90e36d25651bcad92446a6ca50b7a4a0cf47" }
+
+[feature.transcriptm-v0-5.dependencies]
+python = "==3.10.2"
+
+[feature.transcriptm-v0-5.pypi-dependencies]
+transcriptm = { git = "https://github.com/sternp/transcriptm", tag = "v0.5" }
+
+[feature.trinity-v2-15-2.dependencies]
+trinity = "==2.15.2"
+
+[feature.unicycler-v0-5-1.dependencies]
+unicycler = "==0.5.1"
+
+[feature.virsorter-v2-2-4.dependencies]
+virsorter = "==2.2.4"
+
+[environments]
+aniclustermap-v1-4-0 = { features = ["aniclustermap-v1-4-0"] }
+antismash-v7-1-0 = { features = ["antismash-v7-1-0"] }
+anvio-v7 = { features = ["anvio-v7"] }
+arb-v2-23-0 = { features = ["arb-v2-23-0"] }
+aria2-v1-37-0 = { features = ["aria2-v1-37-0"] }
+art-v2016-06-05 = { features = ["art-v2016-06-05"] }
+aviary-v0-11-1 = { features = ["aviary-v0-11-1"] }
+aviary-v0-12-0 = { features = ["aviary-v0-12-0"] }
+aviary-v0-13-0 = { features = ["aviary-v0-13-0"] }
+bakta-v1-11-0 = { features = ["bakta-v1-11-0"] }
+bbmap-v39-18 = { features = ["bbmap-v39-18"] }
+bedops-v2-4-41 = { features = ["bedops-v2-4-41"] }
+bedtools-v2-31-1 = { features = ["bedtools-v2-31-1"] }
+binchicken-v0-12-6 = { features = ["binchicken-v0-12-6"] }
+binchicken-v0-13-5 = { features = ["binchicken-v0-13-5"] }
+biolib-v0-1-9 = { features = ["biolib-v0-1-9"] }
+bmge-v1-12 = { features = ["bmge-v1-12"] }
+busco-v5-8-3 = { features = ["busco-v5-8-3"] }
+centrifuge-v1-0-4-1 = { features = ["centrifuge-v1-0-4-1"] }
+centrifuge-v1-0-4-2 = { features = ["centrifuge-v1-0-4-2"] }
+checkm-genome-v1-2-3 = { features = ["checkm-genome-v1-2-3"] }
+checkm2-v1-0-2 = { features = ["checkm2-v1-0-2"] }
+checkm2-v1-1-0 = { features = ["checkm2-v1-1-0"] }
+comparem-v0-1-2 = { features = ["comparem-v0-1-2"] }
+coverm-v0-7-0 = { features = ["coverm-v0-7-0"] }
+datamash-v1-8 = { features = ["datamash-v1-8"] }
+diamond-v2-1-11 = { features = ["diamond-v2-1-11"] }
+diamond-v2-1-9 = { features = ["diamond-v2-1-9"] }
+dram-v1-5-0 = { features = ["dram-v1-5-0"] }
+drep-v3-5-0 = { features = ["drep-v3-5-0"] }
+eggnog-mapper-v2-1-12 = { features = ["eggnog-mapper-v2-1-12"] }
+emboss-v6-6-0 = { features = ["emboss-v6-6-0"] }
+emu-v3-4-6 = { features = ["emu-v3-4-6"] }
+emu-v3-5-1 = { features = ["emu-v3-5-1"] }
+enrichm-v0-6-5 = { features = ["enrichm-v0-6-5"] }
+# enrichm-v0-6-6 = { features = ["enrichm-v0-6-6"] }
+# enrichm-v0-6-7 = { features = ["enrichm-v0-6-7"] }
+# enrichm-v0-6-8 = { features = ["enrichm-v0-6-8"] }
+# enrichm-v0-6-9 = { features = ["enrichm-v0-6-9"] }
+entrez-direct-v22-4 = { features = ["entrez-direct-v22-4"] }
+expressbetadiversity-v1-0-10 = { features = ["expressbetadiversity-v1-0-10"] }
+fastani-v1-34 = { features = ["fastani-v1-34"] }
+fastx-toolkit-v0-0-14 = { features = ["fastx-toolkit-v0-0-14"] }
+fegenie-v1-2 = { features = ["fegenie-v1-2"] }
+flye-v2-9-5 = { features = ["flye-v2-9-5"] }
+galah-v0-4-2 = { features = ["galah-v0-4-2"] }
+genomad-v1-11-0 = { features = ["genomad-v1-11-0"] }
+genomad-v1-8-0 = { features = ["genomad-v1-8-0"] }
+genometreetk-v0-1-6 = { features = ["genometreetk-v0-1-6"] }
+gffread-v0-12-7 = { features = ["gffread-v0-12-7"] }
+glances-v3-4-0-5 = { features = ["glances-v3-4-0-5"] }
+gmgc-mapper-v0-2-0 = { features = ["gmgc-mapper-v0-2-0"] }
+graftm-v0-15-1 = { features = ["graftm-v0-15-1"] }
+gtdbtk-v2-4-0 = { features = ["gtdbtk-v2-4-0"] }
+gtdbtk-v2-4-1 = { features = ["gtdbtk-v2-4-1"] }
+# h2o-v3-18-0-2 = { features = ["h2o-v3-18-0-2"] }
+hmmer-v3-4 = { features = ["hmmer-v3-4"] }
+humann-v3-9 = { features = ["humann-v3-9"] }
+insilicoseq-v2-0-1 = { features = ["insilicoseq-v2-0-1"] }
+iqtree-v2-4-0 = { features = ["iqtree-v2-4-0"] }
+jq-v1-7-1 = { features = ["jq-v1-7-1"] }
+jupyter-v1-1-1 = { features = ["jupyter-v1-1-1"] }
+kingfisher-v0-4-1 = { features = ["kingfisher-v0-4-1"] }
+kneaddata-v0-10-0 = { features = ["kneaddata-v0-10-0"] }
+kneaddata-v0-12-0 = { features = ["kneaddata-v0-12-0"] }
+kneaddata-v0-12-2 = { features = ["kneaddata-v0-12-2"] }
+krona-v2-8-1 = { features = ["krona-v2-8-1"] }
+lorikeet-genome-v0-8-2 = { features = ["lorikeet-genome-v0-8-2"] }
+mafft-v7-526 = { features = ["mafft-v7-526"] }
+mamba = { features = ["mamba"] }
+markermag-v1-1-28 = { features = ["markermag-v1-1-28"] }
+metaphlan-v4-1-1 = { features = ["metaphlan-v4-1-1"] }
+mgcplotter-v1-0-1 = { features = ["mgcplotter-v1-0-1"] }
+minimap2-v2-28 = { features = ["minimap2-v2-28"] }
+mmseqs2-v15-6f452 = { features = ["mmseqs2-v15-6f452"] }
+mmseqs2-v17-b804f = { features = ["mmseqs2-v17-b804f"] }
+# mob-suite-v3-1-9 = { features = ["mob-suite-v3-1-9"] }
+nanoplot-v1-43-0 = { features = ["nanoplot-v1-43-0"] }
+nanoplot-v1-44-1 = { features = ["nanoplot-v1-44-1"] }
+nanosim-v3-2-1 = { features = ["nanosim-v3-2-1"] }
+nanosim-v3-2-3 = { features = ["nanosim-v3-2-3"] }
+orthofinder-v3-0-1b1 = { features = ["orthofinder-v3-0-1b1"] }
+# phagespotter-v0-0-1 = { features = ["phagespotter-v0-0-1"] }
+phylophlan-v3-1-1 = { features = ["phylophlan-v3-1-1"] }
+poretools-v0-6-1a1 = { features = ["poretools-v0-6-1a1"] }
+prodigal-v2-6-3 = { features = ["prodigal-v2-6-3"] }
+prokka-v1-14-6 = { features = ["prokka-v1-14-6"] }
+# qiime2-amplicon-2025-4 = { features = ["qiime2-amplicon-2025-4"] }
+quast-v5-2-0 = { features = ["quast-v5-2-0"] }
+quast-v5-3-0 = { features = ["quast-v5-3-0"] }
+r-base-v4-4-1 = { features = ["r-base-v4-4-1"] }
+r-v4-4 = { features = ["r-v4-4"] }
+# recurm-v0-3-0 = { features = ["recurm-v0-3-0"] }
+rgi-v6-0-5 = { features = ["rgi-v6-0-5"] }
+rseqc-v5-0-3 = { features = ["rseqc-v5-0-3"] }
+samtools-v1-21 = { features = ["samtools-v1-21"] }
+semibin-v2-1-0 = { features = ["semibin-v2-1-0"] }
+seqkit-v2-10-0 = { features = ["seqkit-v2-10-0"] }
+seqkit-v2-8-2 = { features = ["seqkit-v2-8-2"] }
+seqtk-v1-4 = { features = ["seqtk-v1-4"] }
+singlem-v0-18-3 = { features = ["singlem-v0-18-3"] }
+singlem-v0-21-3 = { features = ["singlem-v0-21-3"] }
+singularity-v3-8-6 = { features = ["singularity-v3-8-6"] }
+skani-v0-2-2 = { features = ["skani-v0-2-2"] }
+soapaligner-v2-21 = { features = ["soapaligner-v2-21"] }
+spades-v4-0-0 = { features = ["spades-v4-0-0"] }
+spades-v4-1-0 = { features = ["spades-v4-1-0"] }
+subread-v2-0-6 = { features = ["subread-v2-0-6"] }
+taxonkit-v0-17-0 = { features = ["taxonkit-v0-17-0"] }
+taxonkit-v0-19-0 = { features = ["taxonkit-v0-19-0"] }
+transcriptm-v0-3-1 = { features = ["transcriptm-v0-3-1"] }
+transcriptm-v0-5 = { features = ["transcriptm-v0-5"] }
+trinity-v2-15-2 = { features = ["trinity-v2-15-2"] }
+unicycler-v0-5-1 = { features = ["unicycler-v0-5-1"] }
+virsorter-v2-2-4 = { features = ["virsorter-v2-2-4"] }
+
+[tasks.postinstall-activate-vars]
+# Write pixi activation env vars (PYTHONNOUSERSITE, CHECKM2DB, etc.) into each
+# environment's activate.d so they apply even when activated via `conda activate`
+cmd = "python write_activate_vars.py"
+
+[tasks.postinstall-aviary-config]
+# Write aviary's embedded .pixi/config.toml (detached-environments = false)
+cmd = ["python", "write_pixi_configs.py", "aviary-v0-13-0", "aviary"]
+
+[tasks.postinstall-binchicken-config]
+# Write binchicken's embedded .pixi/config.toml (detached-environments = false)
+cmd = ["python", "write_pixi_configs.py", "binchicken-v0-13-5", "binchicken"]
+
+[tasks.postinstall-binchicken-aviary-config]
+# Write aviary's .pixi/config.toml nested inside the binchicken env (detached-environments = false)
+cmd = ["python", "write_pixi_configs.py", "binchicken-v0-13-5", "aviary", "binchicken"]
+depends-on = [{ task = "binchicken-build-no-aviary", environment = "binchicken-v0-13-5" }]
+
+[tasks.postinstall]
+# Build steps that aviary/binchicken need after their conda deps are installed
+depends-on = [
+    "postinstall-activate-vars",
+    { task = "postinstall-base", environment = "aviary-v0-13-0" },
+    { task = "postinstall-base", environment = "binchicken-v0-13-5" },
+]
