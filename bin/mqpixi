@@ -1,21 +1,21 @@
 #!/bin/bash
-# mpixi - drop into a pixi shell for one of the centrally maintained CMR tool
-# environments defined in /pkg/cmr/mpixi/pixi.toml, replacing per-tool conda
+# mqpixi - drop into a pixi shell for one of the centrally maintained CMR tool
+# environments defined in /pkg/cmr/mqpixi/pixi.toml, replacing per-tool conda
 # envs under /pkg/cmr/conda/envs/ (which are hard to keep patched/maintained).
 #
 # Usage:
-#   mpixi <environment-name>
+#   mqpixi <environment-name>
 #
 # Example:
-#   mpixi checkm2-v1.0.2
+#   mqpixi checkm2-v1.0.2
 
 set -euo pipefail
 
-CMR_PIXI_TOML="${CMR_PIXI_TOML:-/pkg/cmr/mpixi/pixi.toml}"
+CMR_PIXI_TOML="${CMR_PIXI_TOML:-/pkg/cmr/mqpixi/pixi.toml}"
 
 if [[ $# -lt 1 ]]; then
-    echo "Usage: mpixi <environment-name>" >&2
-    echo "e.g.:  mpixi checkm2-v1.0.2" >&2
+    echo "Usage: mqpixi <environment-name>" >&2
+    echo "e.g.:  mqpixi checkm2-v1.0.2" >&2
     echo >&2
     echo "Available environments:" >&2
     awk '/^\[environments\]/ { found=1; next } /^\[/ { found=0 } found && /^[a-z0-9-]+ = / { print "  " $1 }' "$CMR_PIXI_TOML" >&2

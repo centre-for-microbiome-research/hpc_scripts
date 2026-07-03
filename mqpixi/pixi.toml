@@ -1,14 +1,14 @@
 # Environment names below are the conda-env directory name from
 # /pkg/cmr/conda/envs/ and /pkg/cmr/sw/conda/envs/ with "." and "_" replaced
 # by "-" (pixi environment names may only contain lowercase letters, digits
-# and dashes). `mpixi` does the same translation, so e.g.
-# `mpixi checkm2-v1.0.2` still works as typed.
+# and dashes). `mqpixi` does the same translation, so e.g.
+# `mqpixi checkm2-v1.0.2` still works as typed.
 
 # Install with `pixi install -a` and then `pixi run postinstall`.
 # Finally run `mpermissions -g microbiome .` to set group permissions for the new environments.
 
 [workspace]
-name = "cmr-mpixi"
+name = "cmr-mqpixi"
 description = "Centrally maintained CMR bioinformatics tool environments, one pixi environment per tool version, replacing /pkg/cmr/conda/envs/"
 channels = ["conda-forge", "bioconda"]
 platforms = ["linux-64"]
