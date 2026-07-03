@@ -52,6 +52,7 @@ env = { GTDBTK_DATA_PATH = "/work/microbiome/db/gtdb/gtdb_release220/auxillary_f
 
 [feature.aviary-v0-13-0.dependencies]
 aviary = "==0.13.0"
+snakemake-executor-plugin-cluster-generic = ">=1"
 
 [feature.aviary-v0-13-0.tasks]
 postinstall-base = { cmd = ["aviary", "build", "--gpu"], depends-on = [{ task = "postinstall-aviary-config", environment = "default" }] }
@@ -79,6 +80,7 @@ env = { SNAKEMAKE_CONDA_PREFIX = "/mnt/weka/pkg/cmr/sw/conda/envs/_binchicken_en
 
 [feature.binchicken-v0-13-5.dependencies]
 binchicken = "==0.13.5"
+snakemake-executor-plugin-cluster-generic = ">=1"
 
 [feature.binchicken-v0-13-5.tasks]
 binchicken-build-no-aviary = { cmd = ["binchicken", "build", "--skip-aviary-envs"], depends-on = [{ task = "postinstall-binchicken-config", environment = "default" }] }
