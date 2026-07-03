@@ -14,11 +14,11 @@ set -euo pipefail
 CMR_PIXI_TOML="${CMR_PIXI_TOML:-/pkg/cmr/mqpixi/pixi.toml}"
 
 if [[ $# -lt 1 ]]; then
-    echo "Usage: mqpixi <environment-name>" >&2
-    echo "e.g.:  mqpixi checkm2-v1.0.2" >&2
-    echo >&2
-    echo "Available environments:" >&2
-    awk '/^\[environments\]/ { found=1; next } /^\[/ { found=0 } found && /^[a-z0-9-]+ = / { print "  " $1 }' "$CMR_PIXI_TOML" >&2
+    echo "Usage: mqpixi <environment-name>"
+    echo "e.g.:  mqpixi checkm2-v1.0.2"
+    echo
+    echo "Available environments:"
+    awk '/^\[environments\]/ { found=1; next } /^\[/ { found=0 } found && /^[a-z0-9-]+ = / { print "  " $1 }' "$CMR_PIXI_TOML"
     exit 1
 fi
 
