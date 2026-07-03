@@ -467,7 +467,7 @@ sandbox_home_dotfiles() {
 # sandbox_stage_repo_tools): when mqyolo runs from the deployed copy pixi is staged
 # at high priority; from a dev checkout it is simply skipped and still resolves via
 # the /work/microbiome/sw/hpc_scripts/bin entry that sandbox_build_env adds to PATH.
-SANDBOX_REPO_TOOLS=(pixi_cmr_init.py snakemake_mqsub snakemake_mqstat pixi mpixi)
+SANDBOX_REPO_TOOLS=(pixi_cmr_init.py snakemake_mqsub snakemake_mqstat pixi mqpixi)
 
 # ---------------------------------------------------------------------------
 # sandbox_stage_repo_tools TOOLS_DIR SCRIPT_DIR
@@ -484,6 +484,10 @@ sandbox_stage_repo_tools() {
         [[ -e "${script_dir}/${_t}" ]] && \
             ln -sf "$(readlink -f "${script_dir}/${_t}")" "${tools_dir}/${_t}"
     done
+    # Never let a skipped (missing) last entry become our exit status: the
+    # `[[ -e ]] && ln` short-circuits to 1 when the file is absent, and under the
+    # caller's `set -e` a non-zero return here aborts mqyolo before launch.
+    return 0
 }
 
 # ---------------------------------------------------------------------------

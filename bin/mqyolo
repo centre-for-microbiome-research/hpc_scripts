@@ -424,7 +424,7 @@ PATH INSIDE THE CONTAINER
   ~/bin and ~/.local/bin (if present) are prepended ahead of the container
   binaries so your personal scripts remain available. Repo tools shipped with
   mqyolo are also placed on PATH: pixi_cmr_init.py (scaffold a pixi.toml),
-  pixi and mpixi (build/run pixi environments), and the snakemake cluster
+  pixi and mqpixi (build/run pixi environments), and the snakemake cluster
   helpers (snakemake_mqsub/snakemake_mqstat).
 EOF
             exit 0

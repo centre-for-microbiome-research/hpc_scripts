@@ -456,10 +456,11 @@ def test_snakemake_cluster_tools_present_in_repo():
     assert (BIN / "snakemake_mqstat").exists(), "snakemake_mqstat missing from repo bin"
 
 
-@pytest.mark.parametrize("tool", ["snakemake_mqsub", "snakemake_mqstat", "mpixi"])
+@pytest.mark.parametrize("tool", ["snakemake_mqsub", "snakemake_mqstat"])
 def test_stage_repo_tools_symlinks_repo_tools(tmp_path, tool):
-    # So `snakemake --profile aqua` finds the shipped helpers, and mpixi (the pixi
-    # env wrapper) is available inside the container.
+    # So `snakemake --profile aqua` finds the shipped helpers. (pixi and the mqpixi
+    # env wrapper ship only in the deployed bin/, so they are asserted separately as
+    # "declared" rather than symlinked from a dev checkout.)
     tools = tmp_path / "tools"
     script = (
         "source %s; sandbox_stage_repo_tools %s %s; readlink -f %s/%s"
@@ -471,11 +472,29 @@ def test_stage_repo_tools_symlinks_repo_tools(tmp_path, tool):
     assert p.stdout.strip() == os.path.realpath(str(BIN / tool)), p.stdout
 
 
-def test_pixi_and_mpixi_declared_as_repo_tools():
-    # pixi (the package manager) and mpixi (its CMR wrapper) must be staged onto
+def test_stage_repo_tools_survives_missing_tool(tmp_path):
+    # Regression: a declared-but-absent tool (e.g. the deployed-only pixi/mqpixi, or
+    # a renamed file) must NOT make sandbox_stage_repo_tools return non-zero. It is
+    # called as a bare command under mqyolo's `set -e`, so a non-zero return there
+    # aborts mqyolo before it launches. Simulate by pointing staging at an empty dir
+    # under `set -e` — nothing gets staged, but it must still succeed.
+    tools = tmp_path / "tools"
+    empty = tmp_path / "empty_bin"
+    empty.mkdir()
+    script = (
+        "set -euo pipefail; source %s; sandbox_stage_repo_tools %s %s; echo OK"
+        % (shlex.quote(str(SANDBOX_LIB)), shlex.quote(str(tools)), shlex.quote(str(empty)))
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    assert p.stdout.strip() == "OK", p.stdout
+
+
+def test_pixi_and_mqpixi_declared_as_repo_tools():
+    # pixi (the package manager) and mqpixi (its CMR wrapper) must be staged onto
     # PATH inside the container so the in-container AI can build/run pixi envs.
-    # pixi is a large binary that ships only in the deployed bin/, so staging is
-    # existence-guarded and we only assert it is declared, not present in the repo.
+    # Both ship only in the deployed bin/, so staging is existence-guarded and we
+    # only assert they are declared, not present in the repo.
     script = (
         'source %s; printf "%%s\\n" "${SANDBOX_REPO_TOOLS[@]}"' % shlex.quote(str(SANDBOX_LIB))
     )
@@ -483,7 +502,7 @@ def test_pixi_and_mpixi_declared_as_repo_tools():
     assert p.returncode == 0, p.stderr
     declared = p.stdout.split()
     assert "pixi" in declared, declared
-    assert "mpixi" in declared, declared
+    assert "mqpixi" in declared, declared
 
 
 def test_stage_repo_tools_stages_pixi_when_present(tmp_path):
