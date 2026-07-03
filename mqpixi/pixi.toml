@@ -20,24 +20,49 @@ env = { PYTHONNOUSERSITE = "1" }
 [dependencies]
 python = ">=3.11"
 
+# ---------- aniclustermap-v1-4-0 ----------
 [feature.aniclustermap-v1-4-0.dependencies]
 aniclustermap = "==1.4.0"
 
+[feature.aniclustermap-v1-4-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- antismash-v7-1-0 ----------
 [feature.antismash-v7-1-0.dependencies]
 antismash = "==7.1.0"
 
+[feature.antismash-v7-1-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- anvio-v7 ----------
 [feature.anvio-v7.dependencies]
 anvio = "==7"
 
+[feature.anvio-v7.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- arb-v2-23-0 ----------
 [feature.arb-v2-23-0.dependencies]
 arb = "==2.23.0"
 
+[feature.arb-v2-23-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- aria2-v1-37-0 ----------
 [feature.aria2-v1-37-0.dependencies]
 aria2 = "==1.37.0"
 
+[feature.aria2-v1-37-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- art-v2016-06-05 ----------
 [feature.art-v2016-06-05.dependencies]
 art = "==2016.06.05"
 
+[feature.art-v2016-06-05.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- aviary-v0-13-0 ----------
 [feature.aviary-v0-13-0.dependencies]
 aviary = "==0.13.0"
 snakemake-executor-plugin-cluster-generic = ">=1"
@@ -46,20 +71,37 @@ snakemake-executor-plugin-cluster-generic = ">=1"
 postinstall-base = { cmd = ["aviary", "build", "--gpu"], depends-on = [{ task = "postinstall-aviary-config", environment = "default" }] }
 
 [feature.aviary-v0-13-0.activation]
-env = { GTDBTK_DATA_PATH = "/work/microbiome/db/gtdb/gtdb_release232/auxillary_files/gtdbtk_package/full_package/release232", CHECKM2DB = "/work/microbiome/db/CheckM2_database/uniref100.KO.1.dmnd", EGGNOG_DATA_DIR = "/mnt/hpccs01/work/microbiome/db/eggnog-mapper/2.1.3", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S6.5.0.GTDB_r232.metapackage_20260319.smpkg.zb", METABULI_DB_PATH = "/work/microbiome/db/metabuli/2024-3-28-GTDB214.1+humanT2T" }
+env = { PYTHONNOUSERSITE = "1", GTDBTK_DATA_PATH = "/work/microbiome/db/gtdb/gtdb_release232/auxillary_files/gtdbtk_package/full_package/release232", CHECKM2DB = "/work/microbiome/db/CheckM2_database/uniref100.KO.1.dmnd", EGGNOG_DATA_DIR = "/mnt/hpccs01/work/microbiome/db/eggnog-mapper/2.1.3", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S6.5.0.GTDB_r232.metapackage_20260319.smpkg.zb", METABULI_DB_PATH = "/work/microbiome/db/metabuli/2024-3-28-GTDB214.1+humanT2T" }
 
+# ---------- bakta-v1-11-0 ----------
 [feature.bakta-v1-11-0.dependencies]
 bakta = "==1.11.0"
 
+[feature.bakta-v1-11-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- bbmap-v39-18 ----------
 [feature.bbmap-v39-18.dependencies]
 bbmap = "==39.18"
 
+[feature.bbmap-v39-18.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- bedops-v2-4-41 ----------
 [feature.bedops-v2-4-41.dependencies]
 bedops = "==2.4.41"
 
+[feature.bedops-v2-4-41.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- bedtools-v2-31-1 ----------
 [feature.bedtools-v2-31-1.dependencies]
 bedtools = "==2.31.1"
 
+[feature.bedtools-v2-31-1.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- binchicken-v0-13-5 ----------
 [feature.binchicken-v0-13-5.dependencies]
 binchicken = "==0.13.5"
 snakemake-executor-plugin-cluster-generic = ">=1"
@@ -69,207 +111,442 @@ binchicken-build-no-aviary = { cmd = ["binchicken", "build", "--skip-aviary-envs
 postinstall-base = { cmd = ["binchicken", "build", "--build-gpu"], depends-on = [{ task = "postinstall-binchicken-aviary-config", environment = "default" }] }
 
 [feature.binchicken-v0-13-5.activation]
-env = { SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S4.3.0.GTDB_r220.metapackage_20240523.smpkg.zb", GTDBTK_DATA_PATH = "/work/microbiome/conda/envs/gtdbtk-v2.4.0/share/gtdbtk-2.4.0/db", CHECKM2DB = "/work/microbiome/db/CheckM2_database" }
+env = { PYTHONNOUSERSITE = "1", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S4.3.0.GTDB_r220.metapackage_20240523.smpkg.zb", GTDBTK_DATA_PATH = "/work/microbiome/conda/envs/gtdbtk-v2.4.0/share/gtdbtk-2.4.0/db", CHECKM2DB = "/work/microbiome/db/CheckM2_database" }
 
+# ---------- biolib-v0-1-9 ----------
 [feature.biolib-v0-1-9.dependencies]
 biolib = "==0.1.9"
 
+[feature.biolib-v0-1-9.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- bmge-v1-12 ----------
 [feature.bmge-v1-12.dependencies]
 bmge = "==1.12"
 
+[feature.bmge-v1-12.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- busco-v5-8-3 ----------
 [feature.busco-v5-8-3.dependencies]
 busco = "==5.8.3"
 
+[feature.busco-v5-8-3.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- centrifuge-v1-0-4-1 ----------
 [feature.centrifuge-v1-0-4-1.dependencies]
 centrifuge = "==1.0.4.1"
 
+[feature.centrifuge-v1-0-4-1.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- centrifuge-v1-0-4-2 ----------
 [feature.centrifuge-v1-0-4-2.dependencies]
 centrifuge = "==1.0.4.2"
 
+[feature.centrifuge-v1-0-4-2.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- checkm-genome-v1-2-3 ----------
 [feature.checkm-genome-v1-2-3.dependencies]
 checkm-genome = "==1.2.3"
 
+[feature.checkm-genome-v1-2-3.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- checkm2-v1-0-2 ----------
 [feature.checkm2-v1-0-2.dependencies]
 checkm2 = "==1.0.2"
 
 [feature.checkm2-v1-0-2.activation]
-env = { CHECKM2DB = "/work/microbiome/db/CheckM2_database/uniref100.KO.1.dmnd" }
+env = { PYTHONNOUSERSITE = "1", CHECKM2DB = "/work/microbiome/db/CheckM2_database/uniref100.KO.1.dmnd" }
 
+# ---------- checkm2-v1-1-0 ----------
 [feature.checkm2-v1-1-0.dependencies]
 checkm2 = "==1.1.0"
 
 [feature.checkm2-v1-1-0.activation]
-env = { CHECKM2DB = "/work/microbiome/db/CheckM2_database/uniref100.KO.1.dmnd" }
+env = { PYTHONNOUSERSITE = "1", CHECKM2DB = "/work/microbiome/db/CheckM2_database/uniref100.KO.1.dmnd" }
 
+# ---------- comparem-v0-1-2 ----------
 [feature.comparem-v0-1-2.dependencies]
 comparem = "==0.1.2"
 
+[feature.comparem-v0-1-2.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- coverm-v0-7-0 ----------
 [feature.coverm-v0-7-0.dependencies]
 coverm = "==0.7.0"
 
+[feature.coverm-v0-7-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- datamash-v1-8 ----------
 [feature.datamash-v1-8.dependencies]
 datamash = "==1.8"
 
+[feature.datamash-v1-8.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- diamond-v2-1-11 ----------
 [feature.diamond-v2-1-11.dependencies]
 diamond = "==2.1.11"
 
+[feature.diamond-v2-1-11.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- diamond-v2-1-9 ----------
 [feature.diamond-v2-1-9.dependencies]
 diamond = "==2.1.9"
 
+[feature.diamond-v2-1-9.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- dram-v1-5-0 ----------
 [feature.dram-v1-5-0.dependencies]
 dram = "==1.5.0"
 
+[feature.dram-v1-5-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- drep-v3-5-0 ----------
 [feature.drep-v3-5-0.dependencies]
 drep = "==3.5.0"
 
+[feature.drep-v3-5-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- eggnog-mapper-v2-1-12 ----------
 [feature.eggnog-mapper-v2-1-12.dependencies]
 eggnog-mapper = "==2.1.12"
 
+[feature.eggnog-mapper-v2-1-12.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- emboss-v6-6-0 ----------
 [feature.emboss-v6-6-0.dependencies]
 emboss = "==6.6.0"
 
+[feature.emboss-v6-6-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- emu-v3-4-6 ----------
 [feature.emu-v3-4-6.dependencies]
 emu = "==3.4.6"
 
+[feature.emu-v3-4-6.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- emu-v3-5-1 ----------
 [feature.emu-v3-5-1.dependencies]
 emu = "==3.5.1"
 
+[feature.emu-v3-5-1.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- enrichm-v0-6-5 ----------
 [feature.enrichm-v0-6-5.dependencies]
 enrichm = "==0.6.5"
 
+[feature.enrichm-v0-6-5.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- entrez-direct-v22-4 ----------
 [feature.entrez-direct-v22-4.dependencies]
 entrez-direct = "==22.4"
 
+[feature.entrez-direct-v22-4.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- expressbetadiversity-v1-0-10 ----------
 [feature.expressbetadiversity-v1-0-10.dependencies]
 expressbetadiversity = "==1.0.10"
 
+[feature.expressbetadiversity-v1-0-10.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- fastani-v1-34 ----------
 [feature.fastani-v1-34.dependencies]
 fastani = "==1.34"
 
+[feature.fastani-v1-34.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- fastx-toolkit-v0-0-14 ----------
 [feature.fastx-toolkit-v0-0-14.dependencies]
 fastx_toolkit = "==0.0.14"
 
+[feature.fastx-toolkit-v0-0-14.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- fegenie-v1-2 ----------
 [feature.fegenie-v1-2.dependencies]
 fegenie = "==1.2"
 
+[feature.fegenie-v1-2.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- flye-v2-9-5 ----------
 [feature.flye-v2-9-5.dependencies]
 flye = "==2.9.5"
 
+[feature.flye-v2-9-5.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- galah-v0-4-2 ----------
 [feature.galah-v0-4-2.dependencies]
 galah = "==0.4.2"
 
+[feature.galah-v0-4-2.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- genomad-v1-11-0 ----------
 [feature.genomad-v1-11-0.dependencies]
 genomad = "==1.11.0"
 
+[feature.genomad-v1-11-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- genomad-v1-8-0 ----------
 [feature.genomad-v1-8-0.dependencies]
 genomad = "==1.8.0"
 
+[feature.genomad-v1-8-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- genometreetk-v0-1-6 ----------
 [feature.genometreetk-v0-1-6.dependencies]
 genometreetk = "==0.1.6"
 
+[feature.genometreetk-v0-1-6.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- gffread-v0-12-7 ----------
 [feature.gffread-v0-12-7.dependencies]
 gffread = "==0.12.7"
 
+[feature.gffread-v0-12-7.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- glances-v3-4-0-5 ----------
 [feature.glances-v3-4-0-5.dependencies]
 glances = "==3.4.0.5"
 
+[feature.glances-v3-4-0-5.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- gmgc-mapper-v0-2-0 ----------
 [feature.gmgc-mapper-v0-2-0.dependencies]
 gmgc-mapper = "==0.2.0"
 
+[feature.gmgc-mapper-v0-2-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- graftm-v0-15-1 ----------
 [feature.graftm-v0-15-1.dependencies]
 graftm = "==0.15.1"
 
+[feature.graftm-v0-15-1.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- gtdbtk-v2-4-0 ----------
 [feature.gtdbtk-v2-4-0.dependencies]
 gtdbtk = "==2.4.0"
 
 [feature.gtdbtk-v2-4-0.activation]
-env = { GTDBTK_DATA_PATH = "/pkg/cmr/conda/envs/gtdbtk-v2.4.0/share/gtdbtk-2.4.0/db" }
+env = { PYTHONNOUSERSITE = "1", GTDBTK_DATA_PATH = "/pkg/cmr/conda/envs/gtdbtk-v2.4.0/share/gtdbtk-2.4.0/db" }
 
+# ---------- gtdbtk-v2-4-1 ----------
 [feature.gtdbtk-v2-4-1.dependencies]
 gtdbtk = "==2.4.1"
+
+[feature.gtdbtk-v2-4-1.activation]
+env = { PYTHONNOUSERSITE = "1" }
 
 # [feature.h2o-v3-18-0-2.dependencies]
 # h2o = "==3.18.0.2"
 
+# ---------- hmmer-v3-4 ----------
 [feature.hmmer-v3-4.dependencies]
 hmmer = "==3.4"
 
+[feature.hmmer-v3-4.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- humann-v3-9 ----------
 [feature.humann-v3-9.dependencies]
 humann = "==3.9"
 
+[feature.humann-v3-9.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- insilicoseq-v2-0-1 ----------
 [feature.insilicoseq-v2-0-1.dependencies]
 insilicoseq = "==2.0.1"
 
+[feature.insilicoseq-v2-0-1.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- iqtree-v2-4-0 ----------
 [feature.iqtree-v2-4-0.dependencies]
 iqtree = "==2.4.0"
 
+[feature.iqtree-v2-4-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- jq-v1-7-1 ----------
 [feature.jq-v1-7-1.dependencies]
 jq = "==1.7.1"
 
+[feature.jq-v1-7-1.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- jupyter-v1-1-1 ----------
 [feature.jupyter-v1-1-1.dependencies]
 jupyter = "==1.1.1"
 
+[feature.jupyter-v1-1-1.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- kingfisher-v0-4-1 ----------
 [feature.kingfisher-v0-4-1.dependencies]
 kingfisher = "==0.4.1"
 
+[feature.kingfisher-v0-4-1.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- kneaddata-v0-10-0 ----------
 [feature.kneaddata-v0-10-0.dependencies]
 kneaddata = "==0.10.0"
 
+[feature.kneaddata-v0-10-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- kneaddata-v0-12-0 ----------
 [feature.kneaddata-v0-12-0.dependencies]
 kneaddata = "==0.12.0"
 
+[feature.kneaddata-v0-12-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- kneaddata-v0-12-2 ----------
 [feature.kneaddata-v0-12-2.dependencies]
 kneaddata = "==0.12.2"
 
+[feature.kneaddata-v0-12-2.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- krona-v2-8-1 ----------
 [feature.krona-v2-8-1.dependencies]
 krona = "==2.8.1"
 
+[feature.krona-v2-8-1.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- lorikeet-genome-v0-8-2 ----------
 [feature.lorikeet-genome-v0-8-2.dependencies]
 lorikeet-genome = "==0.8.2"
 
+[feature.lorikeet-genome-v0-8-2.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- mafft-v7-526 ----------
 [feature.mafft-v7-526.dependencies]
 mafft = "==7.526"
 
+[feature.mafft-v7-526.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- mamba ----------
 [feature.mamba.dependencies]
 mamba = "==1.5.9"
 
+[feature.mamba.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- markermag-v1-1-28 ----------
 [feature.markermag-v1-1-28.dependencies]
 markermag = "==1.1.28"
 
+[feature.markermag-v1-1-28.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- metaphlan-v4-1-1 ----------
 [feature.metaphlan-v4-1-1.dependencies]
 metaphlan = "==4.1.1"
 
+[feature.metaphlan-v4-1-1.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- mgcplotter-v1-0-1 ----------
 [feature.mgcplotter-v1-0-1.dependencies]
 mgcplotter = "==1.0.1"
 
+[feature.mgcplotter-v1-0-1.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- minimap2-v2-28 ----------
 [feature.minimap2-v2-28.dependencies]
 minimap2 = "==2.28"
 
+[feature.minimap2-v2-28.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- mmseqs2-v15-6f452 ----------
 [feature.mmseqs2-v15-6f452.dependencies]
 mmseqs2 = "==15.6f452"
 
+[feature.mmseqs2-v15-6f452.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- mmseqs2-v17-b804f ----------
 [feature.mmseqs2-v17-b804f.dependencies]
 mmseqs2 = "==17.b804f"
+
+[feature.mmseqs2-v17-b804f.activation]
+env = { PYTHONNOUSERSITE = "1" }
 
 # DISABLED - mob_suite-v3.1.9/conda-meta has no package records at all (looks
 # broken/incomplete), so the real package/version could not be confirmed.
 # [feature.mob-suite-v3-1-9.dependencies]
 # mob_suite = "==3.1.9"
 
+# ---------- nanoplot-v1-43-0 ----------
 [feature.nanoplot-v1-43-0.dependencies]
 nanoplot = "==1.43.0"
 
+[feature.nanoplot-v1-43-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- nanoplot-v1-44-1 ----------
 [feature.nanoplot-v1-44-1.dependencies]
 nanoplot = "==1.44.1"
 
+[feature.nanoplot-v1-44-1.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- nanosim-v3-2-1 ----------
 [feature.nanosim-v3-2-1.dependencies]
 nanosim = "==3.2.1"
 
+[feature.nanosim-v3-2-1.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- nanosim-v3-2-3 ----------
 [feature.nanosim-v3-2-3.dependencies]
 nanosim = "==3.2.3"
 
+[feature.nanosim-v3-2-3.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- orthofinder-v3-0-1b1 ----------
 [feature.orthofinder-v3-0-1b1.dependencies]
 orthofinder = "==3.0.1b1"
+
+[feature.orthofinder-v3-0-1b1.activation]
+env = { PYTHONNOUSERSITE = "1" }
 
 # DISABLED - phagespotter is installed from a one-off wheel built out of
 # boyd20's personal repo (BIO-26_Phage_coverage_pipeline), not a published
@@ -277,17 +554,33 @@ orthofinder = "==3.0.1b1"
 # [feature.phagespotter-v0-0-1.dependencies]
 # phagespotter = "==0.1.0"  # dist-info reports 0.1.0, not 0.0.1 as the dir name implies
 
+# ---------- phylophlan-v3-1-1 ----------
 [feature.phylophlan-v3-1-1.dependencies]
 phylophlan = "==3.1.1"
 
+[feature.phylophlan-v3-1-1.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- poretools-v0-6-1a1 ----------
 [feature.poretools-v0-6-1a1.dependencies]
 poretools = "==0.6.1a1"
 
+[feature.poretools-v0-6-1a1.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- prodigal-v2-6-3 ----------
 [feature.prodigal-v2-6-3.dependencies]
 prodigal = "==2.6.3"
 
+[feature.prodigal-v2-6-3.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- prokka-v1-14-6 ----------
 [feature.prokka-v1-14-6.dependencies]
 prokka = "==1.14.6"
+
+[feature.prokka-v1-14-6.activation]
+env = { PYTHONNOUSERSITE = "1" }
 
 # DISABLED - qiime2-amplicon-2025.4 is the QIIME2 "amplicon" distribution
 # (real package is "qiime2" 2025.4.0 plus a whole ecosystem of q2-* plugins
@@ -296,17 +589,33 @@ prokka = "==1.14.6"
 # [feature.qiime2-amplicon-2025-4.dependencies]
 # qiime2 = "==2025.4.0"
 
+# ---------- quast-v5-2-0 ----------
 [feature.quast-v5-2-0.dependencies]
 quast = "==5.2.0"
 
+[feature.quast-v5-2-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- quast-v5-3-0 ----------
 [feature.quast-v5-3-0.dependencies]
 quast = "==5.3.0"
 
+[feature.quast-v5-3-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- r-base-v4-4-1 ----------
 [feature.r-base-v4-4-1.dependencies]
 r-base = "==4.4.1"
 
+[feature.r-base-v4-4-1.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- r-v4-4 ----------
 [feature.r-v4-4.dependencies]
 r-base = "==4.4.3"
+
+[feature.r-v4-4.activation]
+env = { PYTHONNOUSERSITE = "1" }
 
 # DISABLED - recurm-v0.3.0/conda-meta has no matching recurm package, and no recurm binary/site-package was found in that env either.
 # Fix the dependency below (or find how recurm is actually provided) and
@@ -314,57 +623,126 @@ r-base = "==4.4.3"
 # [feature.recurm-v0-3-0.dependencies]
 # recurm = "==0.3.0"
 
+# ---------- rgi-v6-0-5 ----------
 [feature.rgi-v6-0-5.dependencies]
 rgi = "==6.0.5"
 
+[feature.rgi-v6-0-5.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- rseqc-v5-0-3 ----------
 [feature.rseqc-v5-0-3.dependencies]
 rseqc = "==5.0.3"
 
+[feature.rseqc-v5-0-3.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- samtools-v1-21 ----------
 [feature.samtools-v1-21.dependencies]
 samtools = "==1.21"
 
+[feature.samtools-v1-21.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- semibin-v2-1-0 ----------
 [feature.semibin-v2-1-0.dependencies]
 semibin = "==2.1.0"
 
+[feature.semibin-v2-1-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- seqkit-v2-10-0 ----------
 [feature.seqkit-v2-10-0.dependencies]
 seqkit = "==2.10.0"
 
+[feature.seqkit-v2-10-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- seqkit-v2-8-2 ----------
 [feature.seqkit-v2-8-2.dependencies]
 seqkit = "==2.8.2"
 
+[feature.seqkit-v2-8-2.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- seqtk-v1-4 ----------
 [feature.seqtk-v1-4.dependencies]
 seqtk = "==1.4"
 
+[feature.seqtk-v1-4.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- singlem-v0-18-3 ----------
 [feature.singlem-v0-18-3.dependencies]
 singlem = "==0.18.3"
 
+[feature.singlem-v0-18-3.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- singlem-v0-21-3 ----------
 [feature.singlem-v0-21-3.dependencies]
 singlem = "==0.21.3"
 
+[feature.singlem-v0-21-3.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- singularity-v3-8-6 ----------
 [feature.singularity-v3-8-6.dependencies]
 singularity = "==3.8.6"
 
+[feature.singularity-v3-8-6.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- skani-v0-2-2 ----------
 [feature.skani-v0-2-2.dependencies]
 skani = "==0.2.2"
 
+[feature.skani-v0-2-2.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- soapaligner-v2-21 ----------
 [feature.soapaligner-v2-21.dependencies]
 soapaligner = "==2.21"
 
+[feature.soapaligner-v2-21.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- spades-v4-0-0 ----------
 [feature.spades-v4-0-0.dependencies]
 spades = "==4.0.0"
 
+[feature.spades-v4-0-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- spades-v4-1-0 ----------
 [feature.spades-v4-1-0.dependencies]
 spades = "==4.1.0"
 
+[feature.spades-v4-1-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- subread-v2-0-6 ----------
 [feature.subread-v2-0-6.dependencies]
 subread = "==2.0.6"
 
+[feature.subread-v2-0-6.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- taxonkit-v0-17-0 ----------
 [feature.taxonkit-v0-17-0.dependencies]
 taxonkit = "==0.17.0"
 
+[feature.taxonkit-v0-17-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- taxonkit-v0-19-0 ----------
 [feature.taxonkit-v0-19-0.dependencies]
 taxonkit = "==0.19.0"
 
+[feature.taxonkit-v0-19-0.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- transcriptm-v0-3-1 ----------
 [feature.transcriptm-v0-3-1.dependencies]
 python = ">=3.10,<3.11"
 snakemake = "==7.32.4"
@@ -393,123 +771,138 @@ bioconductor-strandcheckr = "==1.12.0"
 [feature.transcriptm-v0-3-1.pypi-dependencies]
 transcriptm = { git = "https://github.com/aroneys/transcriptm", rev = "fe5e90e36d25651bcad92446a6ca50b7a4a0cf47" }
 
+[feature.transcriptm-v0-3-1.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- trinity-v2-15-2 ----------
 [feature.trinity-v2-15-2.dependencies]
 trinity = "==2.15.2"
 
+[feature.trinity-v2-15-2.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- unicycler-v0-5-1 ----------
 [feature.unicycler-v0-5-1.dependencies]
 unicycler = "==0.5.1"
 
+[feature.unicycler-v0-5-1.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- virsorter-v2-2-4 ----------
 [feature.virsorter-v2-2-4.dependencies]
 virsorter = "==2.2.4"
 
+[feature.virsorter-v2-2-4.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
 [environments]
-aniclustermap-v1-4-0 = { features = ["aniclustermap-v1-4-0"] }
-antismash-v7-1-0 = { features = ["antismash-v7-1-0"] }
-anvio-v7 = { features = ["anvio-v7"] }
-arb-v2-23-0 = { features = ["arb-v2-23-0"] }
-aria2-v1-37-0 = { features = ["aria2-v1-37-0"] }
-art-v2016-06-05 = { features = ["art-v2016-06-05"] }
-aviary-v0-13-0 = { features = ["aviary-v0-13-0"] }
-bakta-v1-11-0 = { features = ["bakta-v1-11-0"] }
-bbmap-v39-18 = { features = ["bbmap-v39-18"] }
-bedops-v2-4-41 = { features = ["bedops-v2-4-41"] }
-bedtools-v2-31-1 = { features = ["bedtools-v2-31-1"] }
-binchicken-v0-13-5 = { features = ["binchicken-v0-13-5"] }
-biolib-v0-1-9 = { features = ["biolib-v0-1-9"] }
-bmge-v1-12 = { features = ["bmge-v1-12"] }
-busco-v5-8-3 = { features = ["busco-v5-8-3"] }
-centrifuge-v1-0-4-1 = { features = ["centrifuge-v1-0-4-1"] }
-centrifuge-v1-0-4-2 = { features = ["centrifuge-v1-0-4-2"] }
-checkm-genome-v1-2-3 = { features = ["checkm-genome-v1-2-3"] }
-checkm2-v1-0-2 = { features = ["checkm2-v1-0-2"] }
-checkm2-v1-1-0 = { features = ["checkm2-v1-1-0"] }
-comparem-v0-1-2 = { features = ["comparem-v0-1-2"] }
-coverm-v0-7-0 = { features = ["coverm-v0-7-0"] }
-datamash-v1-8 = { features = ["datamash-v1-8"] }
-diamond-v2-1-11 = { features = ["diamond-v2-1-11"] }
-diamond-v2-1-9 = { features = ["diamond-v2-1-9"] }
-dram-v1-5-0 = { features = ["dram-v1-5-0"] }
-drep-v3-5-0 = { features = ["drep-v3-5-0"] }
-eggnog-mapper-v2-1-12 = { features = ["eggnog-mapper-v2-1-12"] }
-emboss-v6-6-0 = { features = ["emboss-v6-6-0"] }
-emu-v3-4-6 = { features = ["emu-v3-4-6"] }
-emu-v3-5-1 = { features = ["emu-v3-5-1"] }
-enrichm-v0-6-5 = { features = ["enrichm-v0-6-5"] }
-entrez-direct-v22-4 = { features = ["entrez-direct-v22-4"] }
-expressbetadiversity-v1-0-10 = { features = ["expressbetadiversity-v1-0-10"] }
-fastani-v1-34 = { features = ["fastani-v1-34"] }
-fastx-toolkit-v0-0-14 = { features = ["fastx-toolkit-v0-0-14"] }
-fegenie-v1-2 = { features = ["fegenie-v1-2"] }
-flye-v2-9-5 = { features = ["flye-v2-9-5"] }
-galah-v0-4-2 = { features = ["galah-v0-4-2"] }
-genomad-v1-11-0 = { features = ["genomad-v1-11-0"] }
-genomad-v1-8-0 = { features = ["genomad-v1-8-0"] }
-genometreetk-v0-1-6 = { features = ["genometreetk-v0-1-6"] }
-gffread-v0-12-7 = { features = ["gffread-v0-12-7"] }
-glances-v3-4-0-5 = { features = ["glances-v3-4-0-5"] }
-gmgc-mapper-v0-2-0 = { features = ["gmgc-mapper-v0-2-0"] }
-graftm-v0-15-1 = { features = ["graftm-v0-15-1"] }
-gtdbtk-v2-4-0 = { features = ["gtdbtk-v2-4-0"] }
-gtdbtk-v2-4-1 = { features = ["gtdbtk-v2-4-1"] }
-# h2o-v3-18-0-2 = { features = ["h2o-v3-18-0-2"] }
-hmmer-v3-4 = { features = ["hmmer-v3-4"] }
-humann-v3-9 = { features = ["humann-v3-9"] }
-insilicoseq-v2-0-1 = { features = ["insilicoseq-v2-0-1"] }
-iqtree-v2-4-0 = { features = ["iqtree-v2-4-0"] }
-jq-v1-7-1 = { features = ["jq-v1-7-1"] }
-jupyter-v1-1-1 = { features = ["jupyter-v1-1-1"] }
-kingfisher-v0-4-1 = { features = ["kingfisher-v0-4-1"] }
-kneaddata-v0-10-0 = { features = ["kneaddata-v0-10-0"] }
-kneaddata-v0-12-0 = { features = ["kneaddata-v0-12-0"] }
-kneaddata-v0-12-2 = { features = ["kneaddata-v0-12-2"] }
-krona-v2-8-1 = { features = ["krona-v2-8-1"] }
-lorikeet-genome-v0-8-2 = { features = ["lorikeet-genome-v0-8-2"] }
-mafft-v7-526 = { features = ["mafft-v7-526"] }
-mamba = { features = ["mamba"] }
-markermag-v1-1-28 = { features = ["markermag-v1-1-28"] }
-metaphlan-v4-1-1 = { features = ["metaphlan-v4-1-1"] }
-mgcplotter-v1-0-1 = { features = ["mgcplotter-v1-0-1"] }
-minimap2-v2-28 = { features = ["minimap2-v2-28"] }
-mmseqs2-v15-6f452 = { features = ["mmseqs2-v15-6f452"] }
-mmseqs2-v17-b804f = { features = ["mmseqs2-v17-b804f"] }
-# mob-suite-v3-1-9 = { features = ["mob-suite-v3-1-9"] }
-nanoplot-v1-43-0 = { features = ["nanoplot-v1-43-0"] }
-nanoplot-v1-44-1 = { features = ["nanoplot-v1-44-1"] }
-nanosim-v3-2-1 = { features = ["nanosim-v3-2-1"] }
-nanosim-v3-2-3 = { features = ["nanosim-v3-2-3"] }
-orthofinder-v3-0-1b1 = { features = ["orthofinder-v3-0-1b1"] }
-# phagespotter-v0-0-1 = { features = ["phagespotter-v0-0-1"] }
-phylophlan-v3-1-1 = { features = ["phylophlan-v3-1-1"] }
-poretools-v0-6-1a1 = { features = ["poretools-v0-6-1a1"] }
-prodigal-v2-6-3 = { features = ["prodigal-v2-6-3"] }
-prokka-v1-14-6 = { features = ["prokka-v1-14-6"] }
-# qiime2-amplicon-2025-4 = { features = ["qiime2-amplicon-2025-4"] }
-quast-v5-2-0 = { features = ["quast-v5-2-0"] }
-quast-v5-3-0 = { features = ["quast-v5-3-0"] }
-r-base-v4-4-1 = { features = ["r-base-v4-4-1"] }
-r-v4-4 = { features = ["r-v4-4"] }
-# recurm-v0-3-0 = { features = ["recurm-v0-3-0"] }
-rgi-v6-0-5 = { features = ["rgi-v6-0-5"] }
-rseqc-v5-0-3 = { features = ["rseqc-v5-0-3"] }
-samtools-v1-21 = { features = ["samtools-v1-21"] }
-semibin-v2-1-0 = { features = ["semibin-v2-1-0"] }
-seqkit-v2-10-0 = { features = ["seqkit-v2-10-0"] }
-seqkit-v2-8-2 = { features = ["seqkit-v2-8-2"] }
-seqtk-v1-4 = { features = ["seqtk-v1-4"] }
-singlem-v0-18-3 = { features = ["singlem-v0-18-3"] }
-singlem-v0-21-3 = { features = ["singlem-v0-21-3"] }
-singularity-v3-8-6 = { features = ["singularity-v3-8-6"] }
-skani-v0-2-2 = { features = ["skani-v0-2-2"] }
-soapaligner-v2-21 = { features = ["soapaligner-v2-21"] }
-spades-v4-0-0 = { features = ["spades-v4-0-0"] }
-spades-v4-1-0 = { features = ["spades-v4-1-0"] }
-subread-v2-0-6 = { features = ["subread-v2-0-6"] }
-taxonkit-v0-17-0 = { features = ["taxonkit-v0-17-0"] }
-taxonkit-v0-19-0 = { features = ["taxonkit-v0-19-0"] }
-transcriptm-v0-3-1 = { features = ["transcriptm-v0-3-1"] }
-trinity-v2-15-2 = { features = ["trinity-v2-15-2"] }
-unicycler-v0-5-1 = { features = ["unicycler-v0-5-1"] }
-virsorter-v2-2-4 = { features = ["virsorter-v2-2-4"] }
+aniclustermap-v1-4-0 = { features = ["aniclustermap-v1-4-0"], no-default-feature = true }
+antismash-v7-1-0 = { features = ["antismash-v7-1-0"], no-default-feature = true }
+anvio-v7 = { features = ["anvio-v7"], no-default-feature = true }
+arb-v2-23-0 = { features = ["arb-v2-23-0"], no-default-feature = true }
+aria2-v1-37-0 = { features = ["aria2-v1-37-0"], no-default-feature = true }
+art-v2016-06-05 = { features = ["art-v2016-06-05"], no-default-feature = true }
+aviary-v0-13-0 = { features = ["aviary-v0-13-0"], no-default-feature = true }
+bakta-v1-11-0 = { features = ["bakta-v1-11-0"], no-default-feature = true }
+bbmap-v39-18 = { features = ["bbmap-v39-18"], no-default-feature = true }
+bedops-v2-4-41 = { features = ["bedops-v2-4-41"], no-default-feature = true }
+bedtools-v2-31-1 = { features = ["bedtools-v2-31-1"], no-default-feature = true }
+binchicken-v0-13-5 = { features = ["binchicken-v0-13-5"], no-default-feature = true }
+biolib-v0-1-9 = { features = ["biolib-v0-1-9"], no-default-feature = true }
+bmge-v1-12 = { features = ["bmge-v1-12"], no-default-feature = true }
+busco-v5-8-3 = { features = ["busco-v5-8-3"], no-default-feature = true }
+centrifuge-v1-0-4-1 = { features = ["centrifuge-v1-0-4-1"], no-default-feature = true }
+centrifuge-v1-0-4-2 = { features = ["centrifuge-v1-0-4-2"], no-default-feature = true }
+checkm-genome-v1-2-3 = { features = ["checkm-genome-v1-2-3"], no-default-feature = true }
+checkm2-v1-0-2 = { features = ["checkm2-v1-0-2"], no-default-feature = true }
+checkm2-v1-1-0 = { features = ["checkm2-v1-1-0"], no-default-feature = true }
+comparem-v0-1-2 = { features = ["comparem-v0-1-2"], no-default-feature = true }
+coverm-v0-7-0 = { features = ["coverm-v0-7-0"], no-default-feature = true }
+datamash-v1-8 = { features = ["datamash-v1-8"], no-default-feature = true }
+diamond-v2-1-11 = { features = ["diamond-v2-1-11"], no-default-feature = true }
+diamond-v2-1-9 = { features = ["diamond-v2-1-9"], no-default-feature = true }
+dram-v1-5-0 = { features = ["dram-v1-5-0"], no-default-feature = true }
+drep-v3-5-0 = { features = ["drep-v3-5-0"], no-default-feature = true }
+eggnog-mapper-v2-1-12 = { features = ["eggnog-mapper-v2-1-12"], no-default-feature = true }
+emboss-v6-6-0 = { features = ["emboss-v6-6-0"], no-default-feature = true }
+emu-v3-4-6 = { features = ["emu-v3-4-6"], no-default-feature = true }
+emu-v3-5-1 = { features = ["emu-v3-5-1"], no-default-feature = true }
+enrichm-v0-6-5 = { features = ["enrichm-v0-6-5"], no-default-feature = true }
+entrez-direct-v22-4 = { features = ["entrez-direct-v22-4"], no-default-feature = true }
+expressbetadiversity-v1-0-10 = { features = ["expressbetadiversity-v1-0-10"], no-default-feature = true }
+fastani-v1-34 = { features = ["fastani-v1-34"], no-default-feature = true }
+fastx-toolkit-v0-0-14 = { features = ["fastx-toolkit-v0-0-14"], no-default-feature = true }
+fegenie-v1-2 = { features = ["fegenie-v1-2"], no-default-feature = true }
+flye-v2-9-5 = { features = ["flye-v2-9-5"], no-default-feature = true }
+galah-v0-4-2 = { features = ["galah-v0-4-2"], no-default-feature = true }
+genomad-v1-11-0 = { features = ["genomad-v1-11-0"], no-default-feature = true }
+genomad-v1-8-0 = { features = ["genomad-v1-8-0"], no-default-feature = true }
+genometreetk-v0-1-6 = { features = ["genometreetk-v0-1-6"], no-default-feature = true }
+gffread-v0-12-7 = { features = ["gffread-v0-12-7"], no-default-feature = true }
+glances-v3-4-0-5 = { features = ["glances-v3-4-0-5"], no-default-feature = true }
+gmgc-mapper-v0-2-0 = { features = ["gmgc-mapper-v0-2-0"], no-default-feature = true }
+graftm-v0-15-1 = { features = ["graftm-v0-15-1"], no-default-feature = true }
+gtdbtk-v2-4-0 = { features = ["gtdbtk-v2-4-0"], no-default-feature = true }
+gtdbtk-v2-4-1 = { features = ["gtdbtk-v2-4-1"], no-default-feature = true }
+# h2o-v3-18-0-2 = { features = ["h2o-v3-18-0-2"], no-default-feature = true }
+hmmer-v3-4 = { features = ["hmmer-v3-4"], no-default-feature = true }
+humann-v3-9 = { features = ["humann-v3-9"], no-default-feature = true }
+insilicoseq-v2-0-1 = { features = ["insilicoseq-v2-0-1"], no-default-feature = true }
+iqtree-v2-4-0 = { features = ["iqtree-v2-4-0"], no-default-feature = true }
+jq-v1-7-1 = { features = ["jq-v1-7-1"], no-default-feature = true }
+jupyter-v1-1-1 = { features = ["jupyter-v1-1-1"], no-default-feature = true }
+kingfisher-v0-4-1 = { features = ["kingfisher-v0-4-1"], no-default-feature = true }
+kneaddata-v0-10-0 = { features = ["kneaddata-v0-10-0"], no-default-feature = true }
+kneaddata-v0-12-0 = { features = ["kneaddata-v0-12-0"], no-default-feature = true }
+kneaddata-v0-12-2 = { features = ["kneaddata-v0-12-2"], no-default-feature = true }
+krona-v2-8-1 = { features = ["krona-v2-8-1"], no-default-feature = true }
+lorikeet-genome-v0-8-2 = { features = ["lorikeet-genome-v0-8-2"], no-default-feature = true }
+mafft-v7-526 = { features = ["mafft-v7-526"], no-default-feature = true }
+mamba = { features = ["mamba"], no-default-feature = true }
+markermag-v1-1-28 = { features = ["markermag-v1-1-28"], no-default-feature = true }
+metaphlan-v4-1-1 = { features = ["metaphlan-v4-1-1"], no-default-feature = true }
+mgcplotter-v1-0-1 = { features = ["mgcplotter-v1-0-1"], no-default-feature = true }
+minimap2-v2-28 = { features = ["minimap2-v2-28"], no-default-feature = true }
+mmseqs2-v15-6f452 = { features = ["mmseqs2-v15-6f452"], no-default-feature = true }
+mmseqs2-v17-b804f = { features = ["mmseqs2-v17-b804f"], no-default-feature = true }
+# mob-suite-v3-1-9 = { features = ["mob-suite-v3-1-9"], no-default-feature = true }
+nanoplot-v1-43-0 = { features = ["nanoplot-v1-43-0"], no-default-feature = true }
+nanoplot-v1-44-1 = { features = ["nanoplot-v1-44-1"], no-default-feature = true }
+nanosim-v3-2-1 = { features = ["nanosim-v3-2-1"], no-default-feature = true }
+nanosim-v3-2-3 = { features = ["nanosim-v3-2-3"], no-default-feature = true }
+orthofinder-v3-0-1b1 = { features = ["orthofinder-v3-0-1b1"], no-default-feature = true }
+# phagespotter-v0-0-1 = { features = ["phagespotter-v0-0-1"], no-default-feature = true }
+phylophlan-v3-1-1 = { features = ["phylophlan-v3-1-1"], no-default-feature = true }
+poretools-v0-6-1a1 = { features = ["poretools-v0-6-1a1"], no-default-feature = true }
+prodigal-v2-6-3 = { features = ["prodigal-v2-6-3"], no-default-feature = true }
+prokka-v1-14-6 = { features = ["prokka-v1-14-6"], no-default-feature = true }
+# qiime2-amplicon-2025-4 = { features = ["qiime2-amplicon-2025-4"], no-default-feature = true }
+quast-v5-2-0 = { features = ["quast-v5-2-0"], no-default-feature = true }
+quast-v5-3-0 = { features = ["quast-v5-3-0"], no-default-feature = true }
+r-base-v4-4-1 = { features = ["r-base-v4-4-1"], no-default-feature = true }
+r-v4-4 = { features = ["r-v4-4"], no-default-feature = true }
+# recurm-v0-3-0 = { features = ["recurm-v0-3-0"], no-default-feature = true }
+rgi-v6-0-5 = { features = ["rgi-v6-0-5"], no-default-feature = true }
+rseqc-v5-0-3 = { features = ["rseqc-v5-0-3"], no-default-feature = true }
+samtools-v1-21 = { features = ["samtools-v1-21"], no-default-feature = true }
+semibin-v2-1-0 = { features = ["semibin-v2-1-0"], no-default-feature = true }
+seqkit-v2-10-0 = { features = ["seqkit-v2-10-0"], no-default-feature = true }
+seqkit-v2-8-2 = { features = ["seqkit-v2-8-2"], no-default-feature = true }
+seqtk-v1-4 = { features = ["seqtk-v1-4"], no-default-feature = true }
+singlem-v0-18-3 = { features = ["singlem-v0-18-3"], no-default-feature = true }
+singlem-v0-21-3 = { features = ["singlem-v0-21-3"], no-default-feature = true }
+singularity-v3-8-6 = { features = ["singularity-v3-8-6"], no-default-feature = true }
+skani-v0-2-2 = { features = ["skani-v0-2-2"], no-default-feature = true }
+soapaligner-v2-21 = { features = ["soapaligner-v2-21"], no-default-feature = true }
+spades-v4-0-0 = { features = ["spades-v4-0-0"], no-default-feature = true }
+spades-v4-1-0 = { features = ["spades-v4-1-0"], no-default-feature = true }
+subread-v2-0-6 = { features = ["subread-v2-0-6"], no-default-feature = true }
+taxonkit-v0-17-0 = { features = ["taxonkit-v0-17-0"], no-default-feature = true }
+taxonkit-v0-19-0 = { features = ["taxonkit-v0-19-0"], no-default-feature = true }
+transcriptm-v0-3-1 = { features = ["transcriptm-v0-3-1"], no-default-feature = true }
+trinity-v2-15-2 = { features = ["trinity-v2-15-2"], no-default-feature = true }
+unicycler-v0-5-1 = { features = ["unicycler-v0-5-1"], no-default-feature = true }
+virsorter-v2-2-4 = { features = ["virsorter-v2-2-4"], no-default-feature = true }
 
 [tasks.postinstall-activate-vars]
 # Write pixi activation env vars (PYTHONNOUSERSITE, CHECKM2DB, etc.) into each
