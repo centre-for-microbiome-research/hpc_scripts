@@ -32,4 +32,26 @@ shift
 env_name="${env_name//./-}"
 env_name="${env_name//_/-}"
 
+# All environment names defined in the manifest.
+list_environments() {
+    awk '/^\[environments\]/ { found=1; next } /^\[/ { found=0 } found && /^[a-z0-9-]+ = / { print $1 }' "$CMR_PIXI_TOML"
+}
+
+# If there is no environment matching the requested name exactly, treat the
+# name as a program name and pick the most recent versioned environment. The
+# convention is <program_name>-v<version_with_dashes_instead_of_dots>, e.g.
+# `mqpixi singlem` resolves to singlem-v0-21-3 when singlem-v0-18-3 also exists.
+if ! list_environments | grep -qxF "$env_name"; then
+    # Extract the version suffix, translate dashes back to dots so `sort -V`
+    # orders them numerically, then pick the highest and reconstruct the name.
+    latest_version="$(list_environments \
+        | sed -n "s/^${env_name}-v\(.*\)$/\1/p" \
+        | tr '-' '.' \
+        | sort -V \
+        | tail -n1)"
+    if [[ -n "$latest_version" ]]; then
+        env_name="${env_name}-v${latest_version//./-}"
+    fi
+fi
+
 exec pixi shell --manifest-path "$CMR_PIXI_TOML" --as-is -e "$env_name" "$@"
