@@ -219,6 +219,36 @@ class TestCmrLint(unittest.TestCase):
         self.assertIn('does not exist', message)
     
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch('cmr_lint.getpass.getuser')
+    def test_check_non_sensitive_scratch(self, mock_getuser):
+        """The non_sensitive scratch pointers report existence of each path."""
+        mock_getuser.return_value = 'testuser'
+        base = '/scratch/microbiome/testuser/non_sensitive'
+        scratch = f'{base}/scratch'
+
+        def isdir_map(present):
+            return lambda p: p in present
+
+        # Both present
+        with patch('cmr_lint.os.path.isdir', side_effect=isdir_map({base, scratch})):
+            result = cmr_lint.check_non_sensitive_scratch()
+        self.assertEqual([r[1] for r in result], [base, scratch])
+        self.assertEqual([r[0] for r in result], [True, True])
+
+        # Base only
+        with patch('cmr_lint.os.path.isdir', side_effect=isdir_map({base})):
+            result = cmr_lint.check_non_sensitive_scratch()
+        self.assertEqual([r[0] for r in result], [True, False])
+
+        # Neither present: still returns both pointers, each with a path and note.
+        with patch('cmr_lint.os.path.isdir', side_effect=isdir_map(set())):
+            result = cmr_lint.check_non_sensitive_scratch()
+        self.assertEqual([r[0] for r in result], [False, False])
+        for exists, path, note in result:
+            self.assertTrue(path.startswith(base))
+            self.assertTrue(note)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     def test_generate_template_condarc(self):
         """Test generating template .condarc content."""
         suggested_envs_dir = '/pkg/cmr/testuser/conda/envs'

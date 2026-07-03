@@ -16,6 +16,12 @@ It also checks:
 
 If any of these conditions are not met, it provides warnings and suggestions
 for fixing the configuration.
+
+It additionally prints informational pointers (which never affect the exit
+status) about the per-user non_sensitive scratch tree that mqyolo/mqsandbox
+auto-mount when present:
+  - /scratch/microbiome/$USER/non_sensitive          (read-only in sandboxes)
+  - /scratch/microbiome/$USER/non_sensitive/scratch  (read-write in sandboxes)
 """
 
 import argparse
@@ -349,6 +355,27 @@ def check_ps1():
     return True, "PS1 does not contain \\s-\\v"
 
 
+def check_non_sensitive_scratch():
+    """Report existence of the per-user non_sensitive scratch tree.
+
+    These are informational pointers, not pass/fail checks: mqyolo and mqsandbox
+    auto-mount /scratch/microbiome/$USER/non_sensitive read-only and its `scratch`
+    subdir read-write when they exist, giving sandboxed AI sessions a writable
+    scratch area (submitted jobs see it at the same path). Their absence is not a
+    misconfiguration, so this does not affect mqlint's exit status.
+
+    Returns a list of (exists, path, note) tuples.
+    """
+    username = getpass.getuser()
+    base = f"/scratch/microbiome/{username}/non_sensitive"
+    return [
+        (os.path.isdir(base), base,
+         "auto-mounted read-only in mqyolo/mqsandbox sandboxes"),
+        (os.path.isdir(f"{base}/scratch"), f"{base}/scratch",
+         "auto-mounted read-write in mqyolo/mqsandbox sandboxes"),
+    ]
+
+
 def check_old_qsub_logs():
     """Check for qsub log folders older than 3 months in ~/qsub_logs."""
     from datetime import datetime, timedelta
@@ -470,6 +497,20 @@ def main():
 
     status_ps1 = "✓" if ps1_ok else "✗"
     print(f"{status_ps1} PS1 prompt: {ps1_msg}")
+
+    # Informational pointers (do not affect all_good / exit status): the per-user
+    # non_sensitive scratch tree that mqyolo/mqsandbox auto-mount when it exists.
+    scratch_pointers = check_non_sensitive_scratch()
+    print("\nmqyolo scratch pointers:")
+    print("-" * 40)
+    for exists, path, note in scratch_pointers:
+        marker = "✓" if exists else "•"
+        state = "exists" if exists else "not present"
+        print(f"{marker} {path} — {state} ({note})")
+    if not all(exists for exists, _, _ in scratch_pointers):
+        base = scratch_pointers[0][1]
+        print("  ↳ To give mqyolo sandboxes a writable scratch area, create:")
+        print(f"      mkdir -p {base}/scratch")
 
     # If verbose, show current config
     if args.verbose and config:
