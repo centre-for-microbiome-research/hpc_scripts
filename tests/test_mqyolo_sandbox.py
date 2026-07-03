@@ -490,6 +490,38 @@ def test_stage_repo_tools_survives_missing_tool(tmp_path):
     assert p.stdout.strip() == "OK", p.stdout
 
 
+@pytest.mark.parametrize(
+    "subdirs, expect_rw",
+    [
+        (["scratch"], ["scratch"]),
+        (["tmp"], ["tmp"]),
+        (["scratch", "tmp"], ["scratch", "tmp"]),
+        ([], []),
+        (["other"], []),  # only the declared subdirs are made writable
+    ],
+)
+def test_add_default_scratch_paths_mounts_writable_subdirs(tmp_path, subdirs, expect_rw):
+    # sandbox_add_default_scratch_paths exposes the non_sensitive tree read-only and
+    # each existing SANDBOX_SCRATCH_RW_SUBDIRS entry (scratch, tmp) read-write. Drive
+    # it with an override base dir so we don't touch the real /scratch tree.
+    ns = tmp_path / "non_sensitive"
+    ns.mkdir()
+    for d in subdirs:
+        (ns / d).mkdir()
+    script = (
+        "set -euo pipefail; source %s; RO_PATHS=(); RW_PATHS=(); "
+        "sandbox_add_default_scratch_paths %s; "
+        'printf "RO:%%s\\n" "${RO_PATHS[@]:-}"; printf "RW:%%s\\n" "${RW_PATHS[@]:-}"'
+        % (shlex.quote(str(SANDBOX_LIB)), shlex.quote(str(ns)))
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    ro = [l[len("RO:"):] for l in p.stdout.splitlines() if l.startswith("RO:") and l != "RO:"]
+    rw = [l[len("RW:"):] for l in p.stdout.splitlines() if l.startswith("RW:") and l != "RW:"]
+    assert ro == [str(ns)], p.stdout
+    assert rw == [str(ns / d) for d in expect_rw], p.stdout
+
+
 def test_pixi_and_mqpixi_declared_as_repo_tools():
     # pixi (the package manager) and mqpixi (its CMR wrapper) must be staged onto
     # PATH inside the container so the in-container AI can build/run pixi envs.

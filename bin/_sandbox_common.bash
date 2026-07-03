@@ -123,23 +123,33 @@ sandbox_path_denied() {
 }
 
 # ---------------------------------------------------------------------------
-# sandbox_add_default_scratch_paths
+# sandbox_add_default_scratch_paths [NON_SENSITIVE_DIR]
 #   Appends the per-user "non_sensitive" scratch defaults to the caller's
 #   RO_PATHS / RW_PATHS arrays (which both mqyolo and mqsandbox populate before
 #   calling sandbox_build_binds):
 #     /scratch/microbiome/$USER/non_sensitive          -> read-only  (when present)
 #     /scratch/microbiome/$USER/non_sensitive/scratch  -> read-write (when present)
-#   Literal /scratch/... paths are appended (symlinks preserved) so they appear at
-#   the same path inside the container; sandbox_build_binds binds rw paths after ro
-#   ones, so the writable `scratch` subdir wins over its read-only parent. mqyolo
-#   also forwards these to the broker, so submitted jobs inherit the same binds.
-#   No-op when $USER is unset or the trees do not exist on this host.
+#     /scratch/microbiome/$USER/non_sensitive/tmp      -> read-write (when present)
+#   The writable subdirs are SANDBOX_SCRATCH_RW_SUBDIRS. Literal /scratch/... paths
+#   are appended (symlinks preserved) so they appear at the same path inside the
+#   container; sandbox_build_binds binds rw paths after ro ones, so a writable
+#   subdir wins over its read-only parent. mqyolo also forwards these to the broker,
+#   so submitted jobs inherit the same binds. The base dir defaults to the current
+#   user's tree; pass NON_SENSITIVE_DIR to override (used by tests). No-op when the
+#   default is used and $USER is unset, or when the trees do not exist on this host.
 # ---------------------------------------------------------------------------
+SANDBOX_SCRATCH_RW_SUBDIRS=(scratch tmp)
+
 sandbox_add_default_scratch_paths() {
-    local ns="/scratch/microbiome/${USER:-}/non_sensitive"
-    [[ -n "${USER:-}" ]] || return 0
-    [[ -d "$ns" ]]            && RO_PATHS+=("$ns")
-    [[ -d "${ns}/scratch" ]]  && RW_PATHS+=("${ns}/scratch")
+    local ns="${1:-}" _sub
+    if [[ -z "$ns" ]]; then
+        [[ -n "${USER:-}" ]] || return 0
+        ns="/scratch/microbiome/${USER}/non_sensitive"
+    fi
+    [[ -d "$ns" ]] && RO_PATHS+=("$ns")
+    for _sub in "${SANDBOX_SCRATCH_RW_SUBDIRS[@]}"; do
+        [[ -d "${ns}/${_sub}" ]] && RW_PATHS+=("${ns}/${_sub}")
+    done
     return 0
 }
 

@@ -5,7 +5,7 @@
 # Permissions inside the container:
 #   - Current directory:        fully read/write
 #   - /tmp, /var/tmp:           read/write
-#   - Per-user scratch subdir:  read/write (/scratch/microbiome/$USER/non_sensitive/scratch)
+#   - Per-user scratch subdirs: read/write (/scratch/microbiome/$USER/non_sensitive/{scratch,tmp})
 #   - --rw-paths PATH...:       read/write (extra paths granted at launch)
 #   - Everything else:          read-only (Unix permissions still apply)
 #   - Non-sensitive /work folders + /scratch/microbiome/$USER/non_sensitive: read-only
@@ -145,28 +145,36 @@ _mqyolo_detect_resources() {
 # working directory. Mirrors sandbox_add_default_scratch_paths; prints nothing when
 # the tree is absent so the AI is never told about a mount that does not exist.
 _mqyolo_scratch_guidance() {
-    local ns="/scratch/microbiome/${USER:-}/non_sensitive"
+    local ns="/scratch/microbiome/${USER:-}/non_sensitive" _sub i
+    local -a _writable=()
     [[ -n "${USER:-}" ]] || return 0
     if [[ ! -d "$ns" ]]; then
         printf '\n**Scratch space:** there is no `%s`\n' "$ns"
         printf 'directory, so no per-user scratch area is mounted. If the user could use a\n'
         printf 'writable scratch directory for large or temporary outputs, suggest they create\n'
         printf 'one OUTSIDE the sandbox and relaunch mqyolo (the tree is then exposed read-only\n'
-        printf 'with its `scratch` subdirectory mounted read-write):\n'
+        printf 'with its `scratch`/`tmp` subdirectories mounted read-write):\n'
         printf '    mkdir -p %s/scratch\n' "$ns"
         return 0
     fi
+    for _sub in "${SANDBOX_SCRATCH_RW_SUBDIRS[@]}"; do
+        [[ -d "${ns}/${_sub}" ]] && _writable+=("${ns}/${_sub}")
+    done
     printf '\n**Scratch space:** `%s` is mounted read-only' "$ns"
-    if [[ -d "${ns}/scratch" ]]; then
-        printf ', and its `scratch`\nsubdirectory (`%s/scratch`) is writable. ' "$ns"
-        printf 'Use that writable scratch directory for\n'
+    if (( ${#_writable[@]} )); then
+        printf ', and these subdirectories\nare writable: `%s`' "${_writable[0]}"
+        for (( i = 1; i < ${#_writable[@]}; i++ )); do
+            printf ', `%s`' "${_writable[$i]}"
+        done
+        printf '. Use a writable scratch directory for\n'
         printf 'large or temporary outputs instead of the working directory when appropriate;\n'
-        printf 'submitted jobs see it at the same path.\n'
+        printf 'submitted jobs see them at the same path.\n'
     else
-        printf '. Its `scratch` subdirectory does not exist\n'
-        printf 'yet, so no writable scratch area is mounted. If the user could use a writable\n'
-        printf 'scratch directory for large or temporary outputs, suggest they create it\n'
-        printf 'OUTSIDE the sandbox and relaunch mqyolo so it gets mounted read-write:\n'
+        printf '. Neither its `scratch` nor `tmp`\n'
+        printf 'subdirectory exists yet, so no writable scratch area is mounted. If the user\n'
+        printf 'could use a writable scratch directory for large or temporary outputs, suggest\n'
+        printf 'they create it OUTSIDE the sandbox and relaunch mqyolo so it gets mounted\n'
+        printf 'read-write:\n'
         printf '    mkdir -p %s/scratch\n' "$ns"
     fi
 }
