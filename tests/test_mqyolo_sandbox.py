@@ -757,21 +757,37 @@ def test_mqsandbox_enforces_constraints():
 
 @requires_container
 def test_mqsandbox_hides_denied_paths():
-    # Inside the sandbox /scratch must not exist at all, and /work/microbiome must
-    # expose ONLY its sw and db sub-paths (the carved-out read-only exceptions) —
-    # everything else under it is hidden behind the shadow dir. This holds
-    # regardless of what the host trees actually contain.
+    # /work/microbiome must expose ONLY its sw and db sub-paths (the carved-out
+    # read-only exceptions) — everything else under it is hidden behind the shadow
+    # dir. /scratch is a denied tree too, with ONE carve-out: the per-user
+    # non_sensitive default that sandbox_add_default_scratch_paths auto-mounts when
+    # it exists on the host. When present, that path (and nothing else under
+    # /scratch) is visible — crucially, sibling users' scratch stays hidden; when
+    # absent, /scratch does not exist in the sandbox at all.
+    user = os.environ.get("USER", "")
+    ns_host = "/scratch/microbiome/%s/non_sensitive" % user
+    ns_present = bool(user) and os.path.isdir(ns_host)
+
     cwd = tempfile.mkdtemp(prefix="mqs_cwd_", dir=str(REPO))
     script = (
-        'echo -n "scratch:"; ([[ -e /scratch ]] && echo PRESENT || echo ABSENT); '
-        'echo -n "microbiome:"; (ls -1 /work/microbiome 2>/dev/null | sort | tr "\\n" "," )'
-        '; echo'
+        'echo -n "scratch:"; ([[ -e /scratch ]] && echo PRESENT || echo ABSENT); echo; '
+        'echo -n "ns:"; ([[ -d %s ]] && echo PRESENT || echo ABSENT); echo; '
+        'echo -n "scratch-users:"; (ls -1 /scratch/microbiome 2>/dev/null | sort | tr "\\n" ","); echo; '
+        'echo -n "microbiome:"; (ls -1 /work/microbiome 2>/dev/null | sort | tr "\\n" ","); echo'
+        % shlex.quote(ns_host)
     )
     try:
         rc, out = _run_in_sandbox(cwd, script)
         assert rc == 0, out
-        assert "scratch:ABSENT" in out, out
         assert "microbiome:db,sw," in out, out
+        if ns_present:
+            # The default is exposed at its literal path, and /scratch reveals ONLY
+            # this user under microbiome — no sibling users leak in.
+            assert "ns:PRESENT" in out, out
+            assert "scratch-users:%s," % user in out, out
+        else:
+            # Nothing to carve out, so the whole denied tree stays hidden.
+            assert "scratch:ABSENT" in out, out
     finally:
         shutil.rmtree(cwd, ignore_errors=True)
 
