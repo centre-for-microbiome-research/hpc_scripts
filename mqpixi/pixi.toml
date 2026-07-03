@@ -38,18 +38,6 @@ aria2 = "==1.37.0"
 [feature.art-v2016-06-05.dependencies]
 art = "==2016.06.05"
 
-[feature.aviary-v0-11-1.dependencies]
-aviary = "==0.11.1"
-
-[feature.aviary-v0-11-1.activation]
-env = { CONDA_ENV_PATH = "/mnt/weka/pkg/cmr/sw/conda/envs/_aviary_envs/0.11.1", GTDBTK_DATA_PATH = "/work/microbiome/db/gtdb/gtdb_release220/auxillary_files/gtdbtk_package/full_package/release220", EGGNOG_DATA_DIR = "/mnt/hpccs01/work/microbiome/db/eggnog-mapper/2.1.3", CHECKM2DB = "/mnt/hpccs01/work/microbiome/db/CheckM2_database", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S4.3.0.GTDB_r220.metapackage_20240523.smpkg.zb", SNAKEMAKE_CONDA_PREFIX = "/mnt/weka/pkg/cmr/sw/conda/envs/_aviary_envs/0.11.1", METABULI_DB_PATH = "/work/microbiome/abisko/aroneys/db/metabuli" }
-
-[feature.aviary-v0-12-0.dependencies]
-aviary = "==0.12.0"
-
-[feature.aviary-v0-12-0.activation]
-env = { GTDBTK_DATA_PATH = "/work/microbiome/db/gtdb/gtdb_release220/auxillary_files/gtdbtk_package/full_package/release220", EGGNOG_DATA_DIR = "/mnt/hpccs01/work/microbiome/db/eggnog-mapper/2.1.3", CHECKM2DB = "/mnt/hpccs01/work/microbiome/db/CheckM2_database/uniref100.KO.1.dmnd", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S4.3.0.GTDB_r220.metapackage_20240523.smpkg.zb", METABULI_DB_PATH = "/work/microbiome/abisko/aroneys/db/metabuli", CONDA_ENV_PATH = "/mnt/weka/pkg/cmr/sw/conda/envs/_aviary_envs/0.12.0", SNAKEMAKE_CONDA_PREFIX = "/mnt/weka/pkg/cmr/sw/conda/envs/_aviary_envs/0.12.0" }
-
 [feature.aviary-v0-13-0.dependencies]
 aviary = "==0.13.0"
 snakemake-executor-plugin-cluster-generic = ">=1"
@@ -71,12 +59,6 @@ bedops = "==2.4.41"
 
 [feature.bedtools-v2-31-1.dependencies]
 bedtools = "==2.31.1"
-
-[feature.binchicken-v0-12-6.dependencies]
-binchicken = "==0.12.6"
-
-[feature.binchicken-v0-12-6.activation]
-env = { SNAKEMAKE_CONDA_PREFIX = "/mnt/weka/pkg/cmr/sw/conda/envs/_binchicken_envs/0.12.6", CONDA_ENV_PATH = "/mnt/weka/pkg/cmr/sw/conda/envs/_binchicken_envs/0.12.6", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S4.3.0.GTDB_r220.metapackage_20240523.smpkg.zb", GTDBTK_DATA_PATH = "/work/microbiome/conda/envs/gtdbtk-v2.4.0/share/gtdbtk-2.4.0/db", CHECKM2DB = "/work/microbiome/db/CheckM2_database" }
 
 [feature.binchicken-v0-13-5.dependencies]
 binchicken = "==0.13.5"
@@ -154,37 +136,6 @@ emu = "==3.5.1"
 
 [feature.enrichm-v0-6-5.dependencies]
 enrichm = "==0.6.5"
-
-# DISABLED - enrichm-v0.6.6 was installed as an editable checkout from
-# /mnt/hpccs01/home/boyd20/gits/enrichM (not a published conda/pypi release),
-# so the version can't be pinned from a package registry. Home-page is
-# https://github.com/geronimp/enrichM - if that repo has a v0.6.6 tag, try
-# switching to a pypi-dependencies git source (see transcriptm-v0-5) instead.
-# [feature.enrichm-v0-6-6.dependencies]
-# enrichm = "==0.6.6"
-# [feature.enrichm-v0-6-6.activation]
-# env = { ENRICHM_DB = "/work/microbiome/db/enrichm/0.6.5/" }
-
-# DISABLED - same issue as enrichm-v0.6.6 (editable checkout from
-# /mnt/hpccs01/home/boyd20/gits/enrichM, not a registry release).
-# [feature.enrichm-v0-6-7.dependencies]
-# enrichm = "==0.6.7"
-# [feature.enrichm-v0-6-7.activation]
-# env = { ENRICHM_DB = "/work/microbiome/db/enrichm/0.6.5/" }
-
-# DISABLED - same issue as enrichm-v0.6.6 (editable checkout from
-# /mnt/hpccs01/home/boyd20/gits/enrichM, not a registry release). Note this
-# env's own dist-info reports itself as 0.6.8 with no recorded ENRICHM_DB.
-# [feature.enrichm-v0-6-8.dependencies]
-# enrichm = "==0.6.8"
-
-# DISABLED - same issue as enrichm-v0.6.6 (editable checkout from
-# /mnt/hpccs01/home/boyd20/gits/enrichM, not a registry release). Note this
-# env's dist-info is stale/reports 0.6.8, so double check the real version.
-# [feature.enrichm-v0-6-9.dependencies]
-# enrichm = "==0.6.9"
-# [feature.enrichm-v0-6-9.activation]
-# env = { ENRICHM_DB = "/work/microbiome/db/enrichm/0.6.8/" }
 
 [feature.entrez-direct-v22-4.dependencies]
 entrez-direct = "==22.4"
@@ -442,12 +393,6 @@ bioconductor-strandcheckr = "==1.12.0"
 [feature.transcriptm-v0-3-1.pypi-dependencies]
 transcriptm = { git = "https://github.com/aroneys/transcriptm", rev = "fe5e90e36d25651bcad92446a6ca50b7a4a0cf47" }
 
-[feature.transcriptm-v0-5.dependencies]
-python = "==3.10.2"
-
-[feature.transcriptm-v0-5.pypi-dependencies]
-transcriptm = { git = "https://github.com/sternp/transcriptm", tag = "v0.5" }
-
 [feature.trinity-v2-15-2.dependencies]
 trinity = "==2.15.2"
 
@@ -464,14 +409,11 @@ anvio-v7 = { features = ["anvio-v7"] }
 arb-v2-23-0 = { features = ["arb-v2-23-0"] }
 aria2-v1-37-0 = { features = ["aria2-v1-37-0"] }
 art-v2016-06-05 = { features = ["art-v2016-06-05"] }
-aviary-v0-11-1 = { features = ["aviary-v0-11-1"] }
-aviary-v0-12-0 = { features = ["aviary-v0-12-0"] }
 aviary-v0-13-0 = { features = ["aviary-v0-13-0"] }
 bakta-v1-11-0 = { features = ["bakta-v1-11-0"] }
 bbmap-v39-18 = { features = ["bbmap-v39-18"] }
 bedops-v2-4-41 = { features = ["bedops-v2-4-41"] }
 bedtools-v2-31-1 = { features = ["bedtools-v2-31-1"] }
-binchicken-v0-12-6 = { features = ["binchicken-v0-12-6"] }
 binchicken-v0-13-5 = { features = ["binchicken-v0-13-5"] }
 biolib-v0-1-9 = { features = ["biolib-v0-1-9"] }
 bmge-v1-12 = { features = ["bmge-v1-12"] }
@@ -493,10 +435,6 @@ emboss-v6-6-0 = { features = ["emboss-v6-6-0"] }
 emu-v3-4-6 = { features = ["emu-v3-4-6"] }
 emu-v3-5-1 = { features = ["emu-v3-5-1"] }
 enrichm-v0-6-5 = { features = ["enrichm-v0-6-5"] }
-# enrichm-v0-6-6 = { features = ["enrichm-v0-6-6"] }
-# enrichm-v0-6-7 = { features = ["enrichm-v0-6-7"] }
-# enrichm-v0-6-8 = { features = ["enrichm-v0-6-8"] }
-# enrichm-v0-6-9 = { features = ["enrichm-v0-6-9"] }
 entrez-direct-v22-4 = { features = ["entrez-direct-v22-4"] }
 expressbetadiversity-v1-0-10 = { features = ["expressbetadiversity-v1-0-10"] }
 fastani-v1-34 = { features = ["fastani-v1-34"] }
@@ -569,7 +507,6 @@ subread-v2-0-6 = { features = ["subread-v2-0-6"] }
 taxonkit-v0-17-0 = { features = ["taxonkit-v0-17-0"] }
 taxonkit-v0-19-0 = { features = ["taxonkit-v0-19-0"] }
 transcriptm-v0-3-1 = { features = ["transcriptm-v0-3-1"] }
-transcriptm-v0-5 = { features = ["transcriptm-v0-5"] }
 trinity-v2-15-2 = { features = ["trinity-v2-15-2"] }
 unicycler-v0-5-1 = { features = ["unicycler-v0-5-1"] }
 virsorter-v2-2-4 = { features = ["virsorter-v2-2-4"] }
