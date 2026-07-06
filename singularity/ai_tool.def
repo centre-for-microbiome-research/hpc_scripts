@@ -13,8 +13,16 @@ From: node:24
     #   rsync: commonly invoked for file transfers inside sessions.
     #   curl:  needed for Codex CLI installation script.
     #   gawk:  needed for Codex CLI installation script.
+    #   man-db: provides the `man` command for reading manual pages.
+    # Debian's docker base images exclude /usr/share/man/* via a dpkg config
+    # drop-in, so man pages are never unpacked even when a package ships them.
+    # Remove that exclusion first so man-db (and packages installed alongside it)
+    # actually land their manual pages.
+    rm -f /etc/dpkg/dpkg.cfg.d/docker
     apt-get update
-    apt-get install -y --no-install-recommends time less rsync curl ca-certificates gawk jq
+    apt-get install -y --no-install-recommends time less rsync curl ca-certificates gawk jq man-db
+    # Reinstall the already-present tools so their now-unexcluded man pages unpack.
+    apt-get install -y --reinstall --no-install-recommends coreutils git less rsync
     rm -rf /var/lib/apt/lists/*
 
     # Install Claude Code, OpenAI Codex CLI, and GitHub Copilot CLI
