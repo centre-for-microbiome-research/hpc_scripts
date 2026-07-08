@@ -562,6 +562,12 @@ sandbox_build_env() {
     CONTAINER_PATH="/usr/local/bin:/usr/bin:/bin"
     [[ -d "${HOME}/.local/bin" ]] && CONTAINER_PATH="${CONTAINER_PATH}:${HOME}/.local/bin"
     [[ -d "${HOME}/bin" ]]        && CONTAINER_PATH="${CONTAINER_PATH}:${HOME}/bin"
+    # ~/.cargo/bin holds cargo/rustc/rust-analyzer (a rustup proxy). CARGO_HOME is
+    # bound rw and ~/.rustup is readable, so tools resolved here work — but only if
+    # the dir is on PATH. Needed for e.g. Claude Code's rust-analyzer LSP plugin,
+    # which spawns `rust-analyzer` by bare name.
+    local _cargo_bin="${CARGO_HOME:-${HOME}/.cargo}/bin"
+    [[ -d "$_cargo_bin" ]] && CONTAINER_PATH="${CONTAINER_PATH}:${_cargo_bin}"
     [[ -d "/work/microbiome/sw/hpc_scripts/bin" ]] && CONTAINER_PATH="${CONTAINER_PATH}:/work/microbiome/sw/hpc_scripts/bin"
     # Prepend the broker shim dir (if any) so the container-side mqsub stub wins.
     [[ -n "${SANDBOX_PATH_PREFIX:-}" ]] && CONTAINER_PATH="${SANDBOX_PATH_PREFIX}:${CONTAINER_PATH}"
