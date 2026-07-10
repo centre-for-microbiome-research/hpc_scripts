@@ -544,6 +544,8 @@ sandbox_write_shim_bashrc() {
 #   If SANDBOX_PATH_PREFIX is set, it is prepended to PATH (used for the broker
 #   shim dir so the container-side mqsub stub shadows the real binary).
 # ---------------------------------------------------------------------------
+SANDBOX_CONTAINER_TOOL_DIRS=(/usr/local/bin /root/.local/bin)
+
 sandbox_build_env() {
     local var
     for var in "$@"; do
@@ -557,9 +559,20 @@ sandbox_build_env() {
     local _cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
     [[ -d "$_cargo_home" ]] && ENV_ARGS+=(--env "CARGO_HOME=${_cargo_home}")
 
-    # Build PATH with the container-installed binaries first so host wrappers in
-    # ~/bin or ~/.local/bin do not shadow them.
-    CONTAINER_PATH="/usr/local/bin:/usr/bin:/bin"
+    # Build PATH with the container-installed tool dirs first so host wrappers in
+    # ~/bin or ~/.local/bin do not shadow the tools installed in the image. Codex's
+    # installer defaults to $HOME/.local/bin during the image build; in %post that
+    # is /root/.local/bin, so include it unconditionally (it only exists inside the
+    # container, not necessarily on the host where this function runs).
+    CONTAINER_PATH=""
+    local _tool_dir
+    for _tool_dir in "${SANDBOX_CONTAINER_TOOL_DIRS[@]}"; do
+        case ":${SANDBOX_PATH_PREFIX:-}:" in
+            *":${_tool_dir}:"*) ;;
+            *) CONTAINER_PATH="${CONTAINER_PATH:+${CONTAINER_PATH}:}${_tool_dir}" ;;
+        esac
+    done
+    CONTAINER_PATH="${CONTAINER_PATH:+${CONTAINER_PATH}:}/usr/bin:/bin"
     [[ -d "${HOME}/.local/bin" ]] && CONTAINER_PATH="${CONTAINER_PATH}:${HOME}/.local/bin"
     [[ -d "${HOME}/bin" ]]        && CONTAINER_PATH="${CONTAINER_PATH}:${HOME}/bin"
     # ~/.cargo/bin holds cargo/rustc/rust-analyzer (a rustup proxy). CARGO_HOME is

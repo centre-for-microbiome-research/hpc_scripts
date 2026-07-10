@@ -28,8 +28,14 @@ From: node:24
     # Install Claude Code, OpenAI Codex CLI, and GitHub Copilot CLI
     npm install -g @anthropic-ai/claude-code@latest @github/copilot@latest
 
-    # Codex doesn't install the newest via npm, try the recommended way
-    curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh
+    # Codex doesn't install the newest via npm, try the recommended way. Install
+    # into shared image paths: during %post $HOME is /root, and the installer's
+    # default /root/.local/bin is not a good runtime PATH target for non-root users.
+    curl -fsSL https://chatgpt.com/codex/install.sh | \
+        CODEX_NON_INTERACTIVE=1 \
+        CODEX_INSTALL_DIR=/usr/local/bin \
+        CODEX_HOME=/opt/codex \
+        sh
 
     # Isolated home directory for the container (never touches real $HOME)
     mkdir -p /container_home

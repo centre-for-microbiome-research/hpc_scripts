@@ -429,11 +429,11 @@ ENVIRONMENT VARIABLES
   TERM, COLORTERM, NO_COLOR  Passed through for correct terminal rendering
 
 PATH INSIDE THE CONTAINER
-  ~/bin and ~/.local/bin (if present) are prepended ahead of the container
-  binaries so your personal scripts remain available. Repo tools shipped with
-  mqyolo are also placed on PATH: pixi_cmr_init.py (scaffold a pixi.toml),
-  pixi and mqpixi (build/run pixi environments), and the snakemake cluster
-  helpers (snakemake_mqsub/snakemake_mqstat).
+  Container-installed tools are preferred over same-named user wrappers, including
+  Codex installed by the image build. Repo tools shipped with mqyolo are also
+  placed on PATH: pixi_cmr_init.py (scaffold a pixi.toml), pixi and mqpixi
+  (build/run pixi environments), and the snakemake cluster helpers
+  (snakemake_mqsub/snakemake_mqstat).
 EOF
             exit 0
             ;;
@@ -572,6 +572,10 @@ _PATH_PREFIX_DIRS=()
 TOOLS_DIR="${CONTAINER_HOME}/.mqyolo/tools"
 sandbox_stage_repo_tools "$TOOLS_DIR" "$SCRIPT_DIR"
 _PATH_PREFIX_DIRS+=("/container_home/.mqyolo/tools")
+# Re-prepend the image's own tool install locations after the user's bashrc is
+# sourced, so a personal ~/bin/codex or ~/.local/bin/codex cannot shadow the
+# Codex installed in the container image.
+_PATH_PREFIX_DIRS+=("${SANDBOX_CONTAINER_TOOL_DIRS[@]}")
 
 if [[ "$NO_BROKER" -eq 0 && -x "${SCRIPT_DIR}/mqsub-broker" && -x "${SCRIPT_DIR}/mqbroker-stub" ]]; then
     BROKER_SPOOL="${CONTAINER_HOME}/.mqyolo/broker"

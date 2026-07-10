@@ -188,6 +188,7 @@ def test_mqyolo_codex_uses_current_auto_mode_flag(tmp_path):
     assert "--dangerously-bypass-approvals-and-sandbox" in out
     assert "--full-auto" not in out
     assert "--search" in out
+    assert "PATH=/container_home/.mqyolo/tools:/usr/local/bin:/root/.local/bin:/usr/bin:/bin" in out
 
 
 def test_mqyolo_rejects_disallowed_launch_dir(tmp_path):
@@ -406,6 +407,23 @@ def test_shim_bashrc_keeps_shim_first_on_path(tmp_path):
     p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
     assert p.returncode == 0, p.stderr
     assert p.stdout.strip() == shim, p.stdout
+
+
+def test_shim_bashrc_reprepends_container_tool_dirs_before_user_paths(tmp_path):
+    prefix = "/container_home/.mqyolo/tools:/usr/local/bin:/root/.local/bin"
+    real = tmp_path / "real_bashrc"
+    real.write_text('export PATH="/container_home/bin:/container_home/.local/bin:$PATH"\n')
+    dest = tmp_path / "dest_bashrc"
+    script = (
+        'source %s; '
+        'sandbox_write_shim_bashrc %s %s %s; '
+        'PATH=/usr/bin:/bin; source %s; '
+        'printf "%%s\\n" "$PATH"'
+        % (SANDBOX_LIB, str(dest), str(real), prefix, str(dest))
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    assert p.stdout.strip().startswith(prefix + ":/container_home/bin"), p.stdout
 
 
 def test_shim_bashrc_does_not_write_through_symlink(tmp_path):
