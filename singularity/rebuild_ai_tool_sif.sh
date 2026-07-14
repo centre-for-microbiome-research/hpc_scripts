@@ -17,4 +17,5 @@ cd "$SDIR"
 echo "$(date): starting ai_tool.sif rebuild" >&2
 "$SINGULARITY" build --fakeroot ai_tool.new.sif ai_tool.def
 mv ai_tool.new.sif ai_tool.sif
+apptainer cache clean --days 30 --force
 echo "$(date): rebuild complete" >&2
