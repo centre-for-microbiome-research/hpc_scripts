@@ -656,20 +656,37 @@ def test_sandbox_path_denied_classification():
     assert got == want, "got %s want %s" % (got, want)
 
 
-def _build_binds(cwd, rw_paths=(), ro_paths=()):
-    """Drive sandbox_build_binds and return the list of `src:dst:mode` bind specs."""
+def _build_binds(cwd, rw_paths=(), ro_paths=(), deny_mounts=None, wholesale_dirs=None):
+    """Drive sandbox_build_binds and return the list of `src:dst:mode` bind specs.
+
+    `deny_mounts`, when given, overrides the sshfs mounts sandbox_build_binds
+    would deny (normally auto-discovered from /proc/mounts) so the remote-mount
+    denial can be exercised without a real sshfs mount. `wholesale_dirs`, when
+    given, overrides the fixed top-level dirs bound read-only (SANDBOX_WHOLESALE_BIND_DIRS)
+    so a fake symlinked mount can be exercised without touching real /work etc.
+    """
     args = " ".join(shlex.quote(p) for p in rw_paths)
     if ro_paths:
         args += " -- " + " ".join(shlex.quote(p) for p in ro_paths)
+    inject = ""
+    if deny_mounts is not None:
+        inject += "SANDBOX_DENY_MOUNTS=(%s)\n" % " ".join(
+            shlex.quote(m) for m in deny_mounts
+        )
+    if wholesale_dirs is not None:
+        inject += "SANDBOX_WHOLESALE_BIND_DIRS=(%s)\n" % " ".join(
+            shlex.quote(d) for d in wholesale_dirs
+        )
     script = (
         "set -euo pipefail\n"
         "source %s\n"
+        "%s"
         "CONTAINER_HOME=$(mktemp -d)\n"
         "BIND_ARGS=()\n"
         "sandbox_build_binds %s %s\n"
         'for a in "${BIND_ARGS[@]}"; do [[ "$a" == --bind ]] || printf "%%s\\n" "$a"; done\n'
         "rm -rf \"$CONTAINER_HOME\"\n"
-        % (SANDBOX_LIB, shlex.quote(str(cwd)), args)
+        % (SANDBOX_LIB, inject, shlex.quote(str(cwd)), args)
     )
     p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
     assert p.returncode == 0, p.stderr
@@ -761,6 +778,101 @@ def test_build_binds_rw_path_via_symlink_bound_at_literal_path(tmp_path):
     assert src != dst, "test setup: symlink did not change the path"
     assert "%s:%s:rw" % (src, src) in binds, binds
     assert "%s:%s:rw" % (src, dst) in binds, binds
+
+
+# ---------------------------------------------------------------------------
+# Remote FUSE (sshfs) mounts are denied by default. mqyolo/mqsandbox may run on a
+# workstation that sshfs-mounts sensitive remote trees (e.g. /work/projects); that
+# data must NOT appear in the sandbox — not even read-only — unless a path is
+# expressly opted in with --ro-paths/--rw-paths.
+# ---------------------------------------------------------------------------
+def test_collect_remote_deny_mounts_matches_sshfs(tmp_path):
+    # sandbox_collect_remote_deny_mounts picks out sshfs (fuse.sshfs and plain
+    # sshfs) mountpoints from a /proc/mounts-format file and ignores everything else.
+    fake = tmp_path / "mounts"
+    fake.write_text(
+        "user@host:/data /work/projects fuse.sshfs rw,nosuid,nodev 0 0\n"
+        "/dev/sda1 / ext4 rw 0 0\n"
+        "proc /proc proc rw 0 0\n"
+        "user@host:/x /mnt/remote sshfs rw 0 0\n"
+        "tmpfs /run tmpfs rw 0 0\n"
+        "/dev/sdb1 /mnt/data ext4 rw 0 0\n"
+    )
+    script = (
+        "source %s\n"
+        "sandbox_collect_remote_deny_mounts %s\n"
+        'printf "%%s\\n" "${SANDBOX_DENY_MOUNTS[@]}"\n'
+        % (SANDBOX_LIB, shlex.quote(str(fake)))
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    assert p.stdout.split() == ["/work/projects", "/mnt/remote"], p.stdout
+
+
+def test_sandbox_path_denied_includes_remote_mounts():
+    # A discovered sshfs mount (and everything under it) is denied, while a sibling
+    # path that merely shares a parent is not.
+    script = (
+        "source %s\n"
+        "SANDBOX_DENY_MOUNTS=(/work/projects)\n"
+        "sandbox_path_denied /work/projects && echo D || echo A\n"
+        "sandbox_path_denied /work/projects/secret && echo D || echo A\n"
+        "sandbox_path_denied /work/other && echo D || echo A\n"
+        % SANDBOX_LIB
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    assert p.stdout.split() == ["D", "D", "A"], p.stdout
+
+
+def test_build_binds_denies_remote_fuse_mount(tmp_path):
+    # A remote sshfs mount nested under a still-exposed parent (/work) must never be
+    # bound read-only from its real path, and must be shadowed by an empty dir so it
+    # cannot leak through /work's recursive bind.
+    mount = "/work/projects"
+    binds = _build_binds(tmp_path, deny_mounts=[mount])
+    assert "%s:%s:ro" % (mount, mount) not in binds, binds
+    shadow = [b for b in binds if b.endswith(":%s:ro" % mount)]
+    assert len(shadow) == 1 and "_denied" in shadow[0], binds
+
+
+def test_build_binds_remote_fuse_mount_reexposed_via_ro_path(tmp_path):
+    # Even though the sshfs mount is denied, an explicitly opted-in sub-path
+    # (--ro-paths) is bound read-only on top of the shadow, so the user can still
+    # grant access to a specific directory.
+    mount = tmp_path / "sshfs_mount"
+    sub = mount / "allowed"
+    sub.mkdir(parents=True)
+    binds = _build_binds(tmp_path, ro_paths=[str(sub)], deny_mounts=[str(mount)])
+    shadow = [b for b in binds if b.endswith(":%s:ro" % mount)]
+    assert len(shadow) == 1 and "_denied" in shadow[0], binds
+    real = os.path.realpath(str(sub))
+    assert "%s:%s:ro" % (real, real) in binds, binds
+
+
+def test_build_binds_skips_wholesale_dir_symlinked_into_denied_mount(tmp_path):
+    # Real-world regression (this workstation): /work is a symlink whose target is
+    # UNDER an sshfs mount (/work -> /mnt/<sshfs>/.../work). Its literal path is not
+    # a mount, so binding it would resolve the symlink and expose the remote tree at
+    # /work. A wholesale bind dir whose realpath falls in a denied mount must be
+    # skipped entirely (never bound), while a sibling pointing outside it is bound.
+    mount = tmp_path / "sshfs_mount"
+    (mount / "work").mkdir(parents=True)
+    safe = tmp_path / "safe_target"
+    safe.mkdir()
+
+    into_mount = tmp_path / "link_into_mount"   # -> denied mount: must be skipped
+    into_mount.symlink_to(mount / "work")
+    into_safe = tmp_path / "link_safe"          # -> outside: must be bound
+    into_safe.symlink_to(safe)
+
+    binds = _build_binds(
+        tmp_path,
+        deny_mounts=[str(mount)],
+        wholesale_dirs=[str(into_mount), str(into_safe)],
+    )
+    assert not any(b.startswith("%s:" % into_mount) for b in binds), binds
+    assert "%s:%s:ro" % (into_safe, into_safe) in binds, binds
 
 
 # ---------------------------------------------------------------------------

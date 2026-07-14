@@ -38,6 +38,15 @@ missing. Do not add this test file to `.github/workflows/test.yml`.
 Key invariants the tests guard (keep them true):
 - Only the working directory plus mqyolo's `--rw-paths` are writable in the sandbox;
   everything else (including nested lustre mounts like `/mnt/hpccs01`) is read-only.
+- Remote sshfs (and similar remote FUSE) mounts are denied by default — not visible
+  at all, even read-only — so that running mqyolo on a workstation that sshfs-mounts
+  sensitive remote trees (e.g. `/work/projects`) does not expose them. They are
+  discovered from `/proc/mounts` (`sandbox_collect_remote_deny_mounts` →
+  `SANDBOX_DENY_MOUNTS`) and treated like the static deny-list; `--ro-paths`/
+  `--rw-paths` still opt a specific path back in. This also covers symlinked
+  top-level dirs whose target resolves into a denied mount: the wholesale bind loop
+  (`SANDBOX_WHOLESALE_BIND_DIRS`) skips a dir if its realpath is denied — e.g. on a
+  workstation where `/work` is a symlink onto the sshfs mount, `/work` is not bound.
 - mqyolo refuses to launch unless the working directory is within `/work/microbiome`,
   `$HOME`, `/scratch/microbiome/$USER`, or `/tmp` (anti-leakage; the CWD is bound
   read-write). Checked before the runtime/image checks.

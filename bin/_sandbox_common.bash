@@ -74,6 +74,12 @@ sandbox_make_home() {
 SANDBOX_DENY_PATHS=(/scratch /work/microbiome)
 SANDBOX_RO_ALLOW_PATHS=(/work/microbiome/sw /work/microbiome/db)
 
+# Common top-level HPC data mounts bound read-only (when present) so their
+# parent directories are visible inside the container. sandbox_build_binds skips
+# any entry that is deny-listed, or whose realpath resolves into a denied tree /
+# sshfs mount (e.g. a workstation /work symlinked onto an sshfs mount).
+SANDBOX_WHOLESALE_BIND_DIRS=(/home /mnt /pkg /external /scratch /nfs /data /storage /projects /work /project)
+
 # ---------------------------------------------------------------------------
 # The deny/allow lists above are written as the LOGICAL paths users see
 # (/scratch, /work/microbiome). On this HPC those are aliases onto canonical
@@ -107,16 +113,51 @@ sandbox_add_canonical_deny_paths() {
 sandbox_add_canonical_deny_paths
 
 # ---------------------------------------------------------------------------
+# Remote FUSE filesystems (sshfs) — denied by default.
+#   mqyolo/mqsandbox may run on a workstation that sshfs-mounts remote trees
+#   (e.g. /work/projects from a fileserver, some of it sensitive). That remote
+#   data must NOT be exposed inside the sandbox at all — not even read-only —
+#   unless the user expressly opts a path back in with --ro-paths / --rw-paths.
+#   Unlike the static SANDBOX_DENY_PATHS these mountpoints are host-specific, so
+#   they are discovered from /proc/mounts (field 3 is the fstype). Once collected
+#   into SANDBOX_DENY_MOUNTS they are treated EXACTLY like the deny-list:
+#   sandbox_path_denied reports them denied (so the wholesale and per-mountpoint
+#   binds in sandbox_build_binds skip them) and the shadow loop there covers any
+#   nested one that would otherwise leak through a still-exposed parent's
+#   recursive bind. --ro-paths/--rw-paths are bound afterwards, so an explicit
+#   opt-in still re-exposes a chosen sub-path.
+#
+# The fstype is matched as /proc/mounts prints it; sshfs appears as "fuse.sshfs"
+# (and, more rarely, plain "sshfs"). Collected once at source time — the mount
+# table is stable for the life of a launch, mirroring sandbox_add_canonical_deny_paths.
+# ---------------------------------------------------------------------------
+SANDBOX_DENY_MOUNT_FSTYPE_REGEX='(^|\.)sshfs$'
+SANDBOX_DENY_MOUNTS=()
+sandbox_collect_remote_deny_mounts() {
+    local mounts="${1:-/proc/mounts}"
+    SANDBOX_DENY_MOUNTS=()
+    [[ -r "$mounts" ]] || return 0
+    local _ mountpoint fstype _rest
+    while read -r _ mountpoint fstype _rest; do
+        [[ "$fstype" =~ $SANDBOX_DENY_MOUNT_FSTYPE_REGEX ]] || continue
+        SANDBOX_DENY_MOUNTS+=("$mountpoint")
+    done < "$mounts"
+}
+sandbox_collect_remote_deny_mounts
+
+# ---------------------------------------------------------------------------
 # sandbox_path_denied PATH
-#   True (0) if PATH is inside a SANDBOX_DENY_PATHS prefix and NOT inside a
-#   SANDBOX_RO_ALLOW_PATHS exception; false (1) otherwise.
+#   True (0) if PATH is inside a SANDBOX_DENY_PATHS prefix or a discovered
+#   SANDBOX_DENY_MOUNTS (sshfs) mount, and NOT inside a SANDBOX_RO_ALLOW_PATHS
+#   exception; false (1) otherwise.
 # ---------------------------------------------------------------------------
 sandbox_path_denied() {
     local p="$1" d a
     for a in "${SANDBOX_RO_ALLOW_PATHS[@]+"${SANDBOX_RO_ALLOW_PATHS[@]}"}"; do
         [[ "$p" == "$a" || "$p" == "$a"/* ]] && return 1
     done
-    for d in "${SANDBOX_DENY_PATHS[@]+"${SANDBOX_DENY_PATHS[@]}"}"; do
+    for d in "${SANDBOX_DENY_PATHS[@]+"${SANDBOX_DENY_PATHS[@]}"}" \
+             "${SANDBOX_DENY_MOUNTS[@]+"${SANDBOX_DENY_MOUNTS[@]}"}"; do
         [[ "$p" == "$d" || "$p" == "$d"/* ]] && return 0
     done
     return 1
@@ -234,9 +275,17 @@ sandbox_build_binds() {
 
     # Common HPC data mounts — bind read-only so their (possibly non-mountpoint)
     # parent directories are visible inside the container.
-    local dir
-    for dir in /home /mnt /pkg /external /scratch /nfs /data /storage /projects /work /project; do
+    local dir _dir_real
+    for dir in "${SANDBOX_WHOLESALE_BIND_DIRS[@]}"; do
         sandbox_path_denied "$dir" && continue
+        # A symlinked top-level dir may resolve INTO a denied tree/mount even though
+        # its literal path is not denied — e.g. on a workstation /work is a symlink
+        # to an sshfs mount (/work -> /mnt/<sshfs>/.../work). Binding it would expose
+        # that remote data at /work. Deny by the resolved target too, so we never
+        # bind the sensitive tree in at the literal path. (Explicit --ro-paths /
+        # --rw-paths are handled separately below and are still allowed to opt in.)
+        _dir_real="$(realpath "$dir" 2>/dev/null || true)"
+        [[ -n "$_dir_real" ]] && sandbox_path_denied "$_dir_real" && continue
         [[ -d "$dir" ]] && BIND_ARGS+=(--bind "${dir}:${dir}:ro")
     done
 
@@ -270,13 +319,17 @@ sandbox_build_binds() {
 
     # --- Enforce the deny-list for paths nested under a still-exposed parent ---
     # A denied dir nested under an ro-bound parent (e.g. /work/microbiome under the
-    # wholesale ro-bound /work) would otherwise leak through that parent bind.
+    # wholesale ro-bound /work, or an sshfs /work/projects submount pulled in by
+    # /work's recursive bind) would otherwise leak through that parent bind.
     # Shadow it with an empty dir (with the allowed sub-paths pre-created as
     # mountpoints), so only the explicitly allowed sub-paths bound below remain
     # visible. Top-level denied dirs (e.g. /scratch) are simply never bound above,
-    # so under --contain they never appear and need no shadow.
+    # so under --contain they never appear and need no shadow. SANDBOX_DENY_MOUNTS
+    # (discovered sshfs mounts) are shadowed here too — any nested caller
+    # --ro-paths/--rw-paths under them are bound afterwards and re-appear on top.
     local _deny _shadow _allow
-    for _deny in "${SANDBOX_DENY_PATHS[@]+"${SANDBOX_DENY_PATHS[@]}"}"; do
+    for _deny in "${SANDBOX_DENY_PATHS[@]+"${SANDBOX_DENY_PATHS[@]}"}" \
+                 "${SANDBOX_DENY_MOUNTS[@]+"${SANDBOX_DENY_MOUNTS[@]}"}"; do
         [[ "$_deny" == /*/* ]] || continue
         _shadow="${CONTAINER_HOME}/_denied${_deny//\//_}"
         mkdir -p "$_shadow"

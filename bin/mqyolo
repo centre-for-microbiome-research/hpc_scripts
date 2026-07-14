@@ -10,6 +10,8 @@
 #   - Everything else:          read-only (Unix permissions still apply)
 #   - Non-sensitive /work folders + /scratch/microbiome/$USER/non_sensitive: read-only
 #   - --ro-paths PATH...:       read-only (extra paths granted at launch)
+#   - sshfs / remote FUSE mounts: NOT visible at all (denied by default; opt a
+#                                 path back in with --ro-paths/--rw-paths)
 #   - $HOME:                    isolated ephemeral directory, not your real home
 #
 # mqyolo refuses to launch unless the working directory is within an allowed root
@@ -384,6 +386,11 @@ FILESYSTEM INSIDE THE CONTAINER
                       /work/microbiome/db which are bound read-only (shared
                       tools and reference databases). Use --ro-paths to opt a
                       specific other subdirectory back in read-only.
+  Remote sshfs mounts NOT visible — sshfs (and similar remote FUSE) mounts are
+                      denied by default, even read-only, so sensitive data from
+                      another host is not exposed just because this workstation
+                      mounts it. Use --ro-paths/--rw-paths to opt a specific
+                      path back in.
   Everything else     not visible (--contain gives a clean slate)
   ~  (HOME)           isolated ephemeral directory, not your real home;
                       dotfiles are symlinked from your real home so tools
