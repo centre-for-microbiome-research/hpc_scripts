@@ -28,12 +28,19 @@
 #   GITHUB_TOKEN        Required for copilot
 #   AI_TOOL_SIF         Override path to .sif file (default: same dir as this script)
 #
-# Each session also starts a host-side mqsub broker (see the "mqsub broker"
-# section below) so the in-container AI can drive mqsub/mqstat/qstat/qdel even
-# though qsub and python3.9 do not exist in the container; jobs it submits are
-# forced into this same sandbox. The filesystem-sandbox construction is shared
-# with mqsandbox via _sandbox_common.bash so those submitted jobs run under the
-# same constraints, and guidance on what to offload is injected into the AI tool.
+# When the host has the PBS batch queue (i.e. `qsub` exists — the aqua login/head
+# nodes and compute nodes), each session also starts a host-side mqsub broker (see
+# the "mqsub broker" section below) so the in-container AI can drive
+# mqsub/mqstat/qstat/qdel even though qsub and python3.9 do not exist in the
+# container; jobs it submits are forced into this same sandbox. The
+# filesystem-sandbox construction is shared with mqsandbox via _sandbox_common.bash
+# so those submitted jobs run under the same constraints, and guidance on what to
+# offload is injected into the AI tool.
+#
+# When mqyolo is run OFF the batch queue (no `qsub` on the host — e.g. a
+# workstation that only sshfs-mounts aqua), the broker is not started and the AI
+# is instead told there is no queue and to run all work directly on the local
+# machine.
 
 set -euo pipefail
 
@@ -103,6 +110,25 @@ _mqyolo_allowed_cwd() {
     return 1
 }
 
+# True (0) if this host has the PBS batch-queue machinery the broker drives: the
+# real `qsub` submitter (the broker runs `mqsub`, a python3.9 wrapper around
+# qsub). When false — e.g. mqyolo launched on a workstation that only sshfs-mounts
+# aqua, or any host without PBS — the broker cannot submit anything, so it is not
+# started and the AI is told there is no queue and heavy work must run locally.
+# Runs on the host, before the container, where the real PBS binaries live.
+_mqyolo_broker_available() {
+    command -v qsub &>/dev/null
+}
+
+# Total physical RAM of this host in whole GB, or "" if it can't be read. Used to
+# describe the local budget when mqyolo runs off the batch queue.
+_mqyolo_host_mem_gb() {
+    local kb
+    kb="$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)"
+    [[ -n "$kb" ]] || { echo ""; return; }
+    echo $(( kb / 1024 / 1024 ))
+}
+
 # Convert a PBS mem string (e.g. 96gb, 98304mb, 2tb) to whole GB, or "" if unknown.
 _mqyolo_mem_to_gb() {
     local v="${1,,}" num
@@ -118,15 +144,27 @@ _mqyolo_mem_to_gb() {
 }
 
 # Detect where mqyolo is running so the guidance can adapt: a shared login/head
-# node (offload heavy work to the queue) vs inside a PBS job, where CPU/RAM are
-# already allocated and heavy work should run directly. Sets MQYOLO_ENV (login|
-# pbs), MQYOLO_NCPUS, MQYOLO_MEM_GB. Runs on the host before the container, so it
-# can read PBS_* and query qstat for the authoritative allocation.
+# node (offload heavy work to the queue), inside a PBS job (CPU/RAM already
+# allocated, run heavy work directly), or off the batch queue entirely (no mqsub;
+# run everything on the local machine). Sets MQYOLO_ENV (login|pbs|local),
+# MQYOLO_NCPUS, MQYOLO_MEM_GB. Runs on the host before the container, so it can
+# read PBS_* and query qstat for the authoritative allocation.
 _mqyolo_detect_resources() {
     MQYOLO_ENV="login"
     MQYOLO_NCPUS=""
     MQYOLO_MEM_GB=""
-    [[ -n "${PBS_JOBID:-}" ]] || return 0
+    if [[ -z "${PBS_JOBID:-}" ]]; then
+        # Not inside a PBS job. On aqua this is a login/head node with the batch
+        # queue reachable; where the queue is NOT reachable (e.g. a workstation
+        # that only sshfs-mounts aqua) there is no mqsub, so heavy work must run
+        # locally — report this host's own CPU/RAM as the budget for that case.
+        if ! _mqyolo_broker_available; then
+            MQYOLO_ENV="local"
+            MQYOLO_NCPUS="$(nproc 2>/dev/null || true)"
+            MQYOLO_MEM_GB="$(_mqyolo_host_mem_gb)"
+        fi
+        return 0
+    fi
     MQYOLO_ENV="pbs"
     MQYOLO_NCPUS="${NCPUS:-}"
     if command -v qstat &>/dev/null; then
@@ -187,6 +225,30 @@ _mqyolo_scratch_guidance() {
 # detected environment.
 _mqyolo_guidance_text() {
     _mqyolo_detect_resources
+    if [[ "$MQYOLO_ENV" == "local" ]]; then
+        local ncpus="${MQYOLO_NCPUS:-(unknown)}" memphrase="" membudget=""
+        if [[ -n "$MQYOLO_MEM_GB" ]]; then
+            memphrase=", ${MQYOLO_MEM_GB} GB RAM"
+            membudget=" and memory under ${MQYOLO_MEM_GB} GB"
+        fi
+        printf '# Running commands in this mqyolo sandbox (no batch queue)\n\n'
+        printf 'You are in an `mqyolo` sandbox, but NOT on the QUT *aqua* HPC: this host has\n'
+        printf 'no PBS batch queue, so `mqsub`/`qsub` are unavailable and work CANNOT be\n'
+        printf 'offloaded to a queue. Run everything directly here.\n\n'
+        printf -- '- There is no `mqsub` here and no batch queue. Never tell the user to submit\n'
+        printf -- '  a job to a queue, and do not reach for `mqsub` — run the command directly.\n'
+        printf -- '- This machine has %s CPUs%s. Treat that as a finite budget: size work to it\n' "$ncpus" "$memphrase"
+        printf -- '  (e.g. `--threads %s`%s) and avoid oversubscribing the machine.\n' "$ncpus" "$membudget"
+        cat <<'GUIDE'
+- Only the working directory (plus any paths granted to mqyolo at launch with
+  --rw-paths) is writable; everything else is read-only. Write outputs under the
+  working directory or /tmp.
+
+**Snakemake:** run `snakemake --cores <N>` directly — there is no cluster to
+submit rules to, so do not use a cluster profile.
+GUIDE
+        return 0
+    fi
     if [[ "$MQYOLO_ENV" != "login" ]]; then
         local ncpus="${MQYOLO_NCPUS:-(unknown)}" membudget="" memphrase=""
         if [[ -n "$MQYOLO_MEM_GB" ]]; then
@@ -397,6 +459,12 @@ FILESYSTEM INSIDE THE CONTAINER
                       like git, ssh etc. pick up your config
 
 MQSUB FROM INSIDE THE CONTAINER
+  Only when the host actually has the PBS batch queue (`qsub` is present, as on
+  the aqua login and compute nodes). If mqyolo is run somewhere without a queue
+  (no `qsub` — e.g. a workstation that merely sshfs-mounts aqua), the broker is
+  NOT started, mqsub is unavailable inside the container, and the AI is told to
+  run all work directly on the local machine instead of submitting to a queue.
+
   qsub and the python3.9 mqsub depends on do not exist inside the container, so
   mqsub cannot run there directly. Instead, mqyolo starts a lightweight broker
   on the host for the duration of the session (one broker per mqyolo session).
@@ -584,7 +652,8 @@ _PATH_PREFIX_DIRS+=("/container_home/.mqyolo/tools")
 # Codex installed in the container image.
 _PATH_PREFIX_DIRS+=("${SANDBOX_CONTAINER_TOOL_DIRS[@]}")
 
-if [[ "$NO_BROKER" -eq 0 && -x "${SCRIPT_DIR}/mqsub-broker" && -x "${SCRIPT_DIR}/mqbroker-stub" ]]; then
+if [[ "$NO_BROKER" -eq 0 && -x "${SCRIPT_DIR}/mqsub-broker" && -x "${SCRIPT_DIR}/mqbroker-stub" ]] \
+   && _mqyolo_broker_available; then
     BROKER_SPOOL="${CONTAINER_HOME}/.mqyolo/broker"
     SHIM_DIR="${CONTAINER_HOME}/.mqyolo/shims"
     mkdir -p "$BROKER_SPOOL" "$SHIM_DIR"
@@ -639,6 +708,16 @@ if [[ "$NO_BROKER" -eq 0 && -x "${SCRIPT_DIR}/mqsub-broker" && -x "${SCRIPT_DIR}
     # node. Delivered to claude via --append-system-prompt-file and to codex via
     # its global ~/.codex/AGENTS.md (see the tool case below). Same text as
     # `mqyolo --print-guidance`.
+    _mqyolo_guidance_text > "${CONTAINER_HOME}/.mqyolo/guidance.md"
+    MQYOLO_GUIDANCE_FILE="/container_home/.mqyolo/guidance.md"
+fi
+
+# If no broker started because the batch queue is not reachable (mqyolo running
+# off aqua, e.g. on a workstation), still inject guidance — the "no queue, run
+# locally" variant — so the in-container AI is not left telling the user to submit
+# work to an mqsub queue that does not exist here. (.mqyolo already exists from
+# sandbox_stage_repo_tools above.)
+if [[ -z "$MQYOLO_GUIDANCE_FILE" ]] && ! _mqyolo_broker_available; then
     _mqyolo_guidance_text > "${CONTAINER_HOME}/.mqyolo/guidance.md"
     MQYOLO_GUIDANCE_FILE="/container_home/.mqyolo/guidance.md"
 fi

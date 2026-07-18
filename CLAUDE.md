@@ -67,12 +67,22 @@ Key invariants the tests guard (keep them true):
   the host via the broker alongside mqsub/mqstat/mqwait/mqdel.
 - The broker is tied to the mqyolo session and self-terminates when the mqyolo PID
   disappears.
+- The broker only starts when the host actually has the PBS batch queue, i.e.
+  `qsub` is on PATH (`_mqyolo_broker_available`). Run off aqua (no `qsub` — e.g. a
+  workstation that only sshfs-mounts aqua) the broker is skipped entirely, so the
+  container never gets non-working mqsub/qstat stubs, and the AI is instead given
+  the "no queue, run locally" guidance (see below). This gate also applies to the
+  broker-start condition, not just the guidance.
 - The in-container AI tool is told where heavy/long/high-RAM commands should run —
   injected for Claude with `--append-system-prompt-file` and for Codex via its
   global `~/.codex/AGENTS.md` via a read-only file bind over the real read-write
-  `~/.codex` mount. Only when the broker is running. The guidance adapts to the boot environment
-  (`_mqyolo_detect_resources`): on a login node it says offload to `mqsub`; inside
-  a PBS job it reports the actual allocated CPUs/RAM (from NCPUS + qstat) and frames
-  them as a finite budget — run work that fits directly, but still send larger jobs
-  to the queue via `mqsub` / `snakemake --profile aqua`.
-  `mqyolo --print-guidance` dumps the exact text for the current environment.
+  `~/.codex` mount. The guidance adapts to the boot environment
+  (`_mqyolo_detect_resources` → `MQYOLO_ENV` = `login`|`pbs`|`local`): on a login
+  node it says offload to `mqsub`; inside a PBS job it reports the actual allocated
+  CPUs/RAM (from NCPUS + qstat) and frames them as a finite budget — run work that
+  fits directly, but still send larger jobs to the queue via `mqsub` /
+  `snakemake --profile aqua`; off the batch queue (`local`) it reports the host's
+  own CPUs/RAM and tells the AI there is no queue and to run everything directly
+  (never mention `mqsub`). Injected whenever the broker is running (login/pbs) OR
+  the queue is unreachable (local); `mqyolo --print-guidance` dumps the exact text
+  for the current environment.

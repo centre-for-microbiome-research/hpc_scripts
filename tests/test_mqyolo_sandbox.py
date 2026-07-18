@@ -134,9 +134,22 @@ def _print_guidance(extra_env=None):
     return p.returncode, p.stdout, p.stderr
 
 
-def test_mqyolo_print_guidance_login_node():
-    # On a login node (no PBS_JOBID): offload heavy work to the queue.
-    rc, out, err = _print_guidance()
+def _fake_qsub_path(tmp_path):
+    """A PATH string with a stub `qsub` first, so mqyolo detects a reachable batch
+    queue (login/pbs) regardless of where the test itself runs (e.g. inside an
+    mqyolo container, where the real qsub is absent)."""
+    fakebin = tmp_path / "qsubbin"
+    fakebin.mkdir()
+    qsub = fakebin / "qsub"
+    qsub.write_text("#!/bin/sh\nexit 0\n")
+    qsub.chmod(0o755)
+    return f"{fakebin}:/usr/bin:/bin"
+
+
+def test_mqyolo_print_guidance_login_node(tmp_path):
+    # On a login node (no PBS_JOBID, batch queue reachable via qsub): offload heavy
+    # work to the queue.
+    rc, out, err = _print_guidance({"PATH": _fake_qsub_path(tmp_path)})
     assert rc == 0, err
     assert "login node" in out
     assert "Offload heavy work" in out
@@ -156,6 +169,21 @@ def test_mqyolo_print_guidance_pbs_job():
     # Larger jobs should still go to the queue even inside an interactive session.
     assert "submit it to the batch queue" in out
     assert "snakemake --profile aqua" in out
+
+
+def test_mqyolo_print_guidance_local_no_queue():
+    # Off the batch queue (no `qsub` reachable, e.g. a workstation that only
+    # sshfs-mounts aqua): the AI must be told there is no queue and to run work
+    # locally, NOT to offload to mqsub. Simulate by restricting PATH to the base
+    # system dirs so the PBS `qsub` (installed elsewhere) is not found.
+    rc, out, err = _print_guidance({"PATH": "/usr/bin:/bin"})
+    assert rc == 0, err
+    assert "no batch queue" in out
+    assert "run everything directly" in out.lower()
+    # It must not fall through to the queue-oriented login/PBS guidance.
+    assert "login node" not in out
+    assert "Offload heavy work" not in out
+    assert "profile aqua" not in out
 
 
 def test_mqyolo_codex_uses_current_auto_mode_flag(tmp_path):
