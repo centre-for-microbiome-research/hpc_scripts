@@ -392,14 +392,27 @@ sandbox_build_binds() {
     [[ -d "$_pixi_dirs" ]] && BIND_ARGS+=(--bind "${_pixi_dirs}:${_pixi_dirs}:rw")
 
     # --- Writable pixi/rattler cache dir ---
-    # PIXI_CACHE_DIR / RATTLER_CACHE_DIR commonly point into shared storage on
-    # /pkg/cmr or /mnt/weka (see mqlint), which is bound READ-ONLY above, so pixi
-    # can't populate its cache. Bind the cache rw at its canonical path so
-    # `pixi install` / env regeneration works. The env var is forwarded as the
-    # original logical path (sandbox_build_env); inside the container it resolves
-    # through the ro-bound parent symlink onto this rw bind.
+    # The pixi cache commonly points into shared storage on /pkg/cmr or /mnt/weka
+    # (see mqlint), which is bound READ-ONLY above, so pixi can't populate its
+    # cache. Bind the cache rw at its canonical path so `pixi install` / env
+    # regeneration works. The path is forwarded as the original logical path
+    # (sandbox_build_env); inside the container it resolves through the ro-bound
+    # parent symlink onto this rw bind.
+    #
+    # The effective cache dir may come from PIXI_CACHE_DIR / RATTLER_CACHE_DIR OR
+    # from the `cache.root` config key (which mqlint may steer users towards), so
+    # ask pixi for the resolved value in addition to the env vars. Without this,
+    # a config-only cache.root under /pkg/cmr would stay read-only in the sandbox.
     local _pixi_cache _pixi_cache_real
-    for _pixi_cache in "${PIXI_CACHE_DIR:-}" "${RATTLER_CACHE_DIR:-}"; do
+    local -a _pixi_cache_candidates=("${PIXI_CACHE_DIR:-}" "${RATTLER_CACHE_DIR:-}")
+    if command -v pixi &>/dev/null; then
+        local _pixi_effective_cache
+        _pixi_effective_cache="$(pixi info --json 2>/dev/null \
+            | sed -n 's/.*"cache_dir"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+            | head -n1)"
+        [[ -n "$_pixi_effective_cache" ]] && _pixi_cache_candidates+=("$_pixi_effective_cache")
+    fi
+    for _pixi_cache in "${_pixi_cache_candidates[@]}"; do
         [[ -n "$_pixi_cache" ]] || continue
         _pixi_cache_real="$(realpath "$_pixi_cache" 2>/dev/null || echo "$_pixi_cache")"
         mkdir -p "$_pixi_cache_real" 2>/dev/null || true
