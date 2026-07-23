@@ -63,7 +63,6 @@ class TestCmrLint(unittest.TestCase):
         self.assertIn('Check conda configuration', result.stdout)
         self.assertIn('--verbose', result.stdout)
         self.assertIn('--condarc', result.stdout)
-        self.assertIn('--pixi', result.stdout)
     
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     def test_is_within_weka_direct_path(self):
@@ -277,21 +276,55 @@ class TestCmrLint(unittest.TestCase):
         self.assertIn('detached pixi environments', suggestion_text)
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
-    @patch.dict(os.environ, {'PIXI_CACHE_DIR': '/mnt/weka/pkg/cmr/testuser/pixi/cache'}, clear=False)
-    def test_check_pixi_cache_dir_valid(self):
+    @patch('cmr_lint.get_pixi_cache_dir',
+           return_value=('/mnt/weka/pkg/cmr/testuser/pixi/cache', 'pixi info'))
+    def test_check_pixi_cache_dir_valid(self, _mock_get):
         """Test pixi cache directory validation for a valid cache path."""
-        is_ok, message = cmr_lint.check_pixi_cache_dir()
+        is_ok, cache_dir, message = cmr_lint.check_pixi_cache_dir()
         self.assertTrue(is_ok)
-        self.assertIn('PIXI_CACHE_DIR', message)
+        self.assertEqual(cache_dir, '/mnt/weka/pkg/cmr/testuser/pixi/cache')
+        self.assertIn('/pkg/cmr or /mnt/weka', message)
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
-    @patch.dict(os.environ, {'PIXI_CACHE_DIR': '/tmp/pixi-cache'}, clear=False)
+    @patch('cmr_lint.get_pixi_cache_dir',
+           return_value=('/tmp/pixi-cache', 'PIXI_CACHE_DIR'))
     @patch('cmr_lint.resolve_path', return_value='/tmp/pixi-cache')
-    def test_check_pixi_cache_dir_invalid(self, _mock_resolve):
+    def test_check_pixi_cache_dir_invalid(self, _mock_resolve, _mock_get):
         """Test pixi cache directory validation for an invalid cache path."""
-        is_ok, message = cmr_lint.check_pixi_cache_dir()
+        is_ok, cache_dir, message = cmr_lint.check_pixi_cache_dir()
         self.assertFalse(is_ok)
+        self.assertEqual(cache_dir, '/tmp/pixi-cache')
         self.assertIn('not within /pkg/cmr or /mnt/weka', message)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    def test_get_pixi_cache_dir_prefers_pixi_info(self):
+        """get_pixi_cache_dir uses the cache_dir reported by `pixi info --json`."""
+        with patch('cmr_lint.run_command',
+                   return_value='{"cache_dir": "/mnt/weka/pkg/cmr/testuser/pixi/cache"}'):
+            cache_dir, source = cmr_lint.get_pixi_cache_dir()
+        self.assertEqual(cache_dir, '/mnt/weka/pkg/cmr/testuser/pixi/cache')
+        self.assertEqual(source, 'pixi info')
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch.dict(os.environ, {'PIXI_CACHE_DIR': '/mnt/weka/pkg/cmr/testuser/pixi/cache'}, clear=False)
+    def test_get_pixi_cache_dir_falls_back_to_env(self):
+        """get_pixi_cache_dir falls back to env vars when pixi can't be run."""
+        os.environ.pop('RATTLER_CACHE_DIR', None)
+        with patch('cmr_lint.run_command', return_value=None):
+            cache_dir, source = cmr_lint.get_pixi_cache_dir()
+        self.assertEqual(cache_dir, '/mnt/weka/pkg/cmr/testuser/pixi/cache')
+        self.assertEqual(source, 'PIXI_CACHE_DIR')
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    def test_generate_fix_suggestions_pixi_cache_deletion(self):
+        """A misplaced cache dir yields a cache.root config fix and a deletion hint."""
+        with patch('cmr_lint.getpass.getuser', return_value='testuser'):
+            suggestions = cmr_lint.generate_fix_suggestions(
+                True, True, True, True, False, True,
+                pixi_cache_dir='/tmp/pixi-cache')
+        text = '\n'.join(suggestions)
+        self.assertIn('pixi config set --global cache.root', text)
+        self.assertIn('rm -rf /tmp/pixi-cache', text)
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     @patch('cmr_lint.subprocess.run')
@@ -343,7 +376,7 @@ class TestCmrLint(unittest.TestCase):
                 env={**os.environ, 'PYTHONPATH': str(Path(__file__).parent.parent / 'bin')}
             )
             
-            self.assertIn('conda configuration', result.stdout.lower())
+            self.assertIn('configuration', result.stdout.lower())
             
         finally:
             os.unlink(condarc_path)
@@ -356,12 +389,14 @@ class TestCmrLint(unittest.TestCase):
     @patch('cmr_lint.check_pkg_dirs')
     @patch('cmr_lint.check_env_dirs')
     def test_main_function_success(self, mock_env_dirs, mock_pkg_dirs, mock_symlink, mock_qsub_logs, mock_pixi_cache, mock_pixi_detached):
-        """Test main function when conda checks pass without pixi enabled."""
+        """Test main function when all checks (including pixi) pass."""
         mock_env_dirs.return_value = (True, "Environment directories OK")
-        mock_pkg_dirs.return_value = (True, "Package directories OK") 
+        mock_pkg_dirs.return_value = (True, "Package directories OK")
         mock_symlink.return_value = (True, "Symlink OK")
         mock_qsub_logs.return_value = (True, "No old qsub log folders found")
-        
+        mock_pixi_cache.return_value = (True, "/mnt/weka/pkg/cmr/testuser/pixi/cache", "pixi cache OK")
+        mock_pixi_detached.return_value = (True, "pixi config has detached-environments = true")
+
         # Create a valid config file
         with tempfile.NamedTemporaryFile(mode='w', suffix='.condarc', delete=False) as f:
             config = {
@@ -370,44 +405,11 @@ class TestCmrLint(unittest.TestCase):
             }
             write_condarc_format(config, f)
             condarc_path = f.name
-        
+
         try:
-            # Test that main exits with 0 when all checks pass
+            # Test that main exits with 0 when all checks pass. pixi checks are
+            # always run.
             with patch('sys.argv', ['cmr_lint.py', '--condarc', condarc_path]):
-                with self.assertRaises(SystemExit) as cm:
-                    cmr_lint.main()
-                self.assertEqual(cm.exception.code, 0)
-                mock_pixi_cache.assert_not_called()
-                mock_pixi_detached.assert_not_called()
-        finally:
-            os.unlink(condarc_path)
-
-    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
-    @patch('cmr_lint.check_pixi_detached_environments')
-    @patch('cmr_lint.check_pixi_cache_dir')
-    @patch('cmr_lint.check_old_qsub_logs')
-    @patch('cmr_lint.check_conda_symlink')
-    @patch('cmr_lint.check_pkg_dirs')
-    @patch('cmr_lint.check_env_dirs')
-    def test_main_function_success_with_pixi(self, mock_env_dirs, mock_pkg_dirs, mock_symlink, mock_qsub_logs, mock_pixi_cache, mock_pixi_detached):
-        """Test main function when pixi checks are explicitly enabled."""
-        mock_env_dirs.return_value = (True, "Environment directories OK")
-        mock_pkg_dirs.return_value = (True, "Package directories OK")
-        mock_symlink.return_value = (True, "Symlink OK")
-        mock_qsub_logs.return_value = (True, "No old qsub log folders found")
-        mock_pixi_cache.return_value = (True, "PIXI_CACHE_DIR is correctly within /pkg/cmr or /mnt/weka")
-        mock_pixi_detached.return_value = (True, "pixi config has detached-environments = true")
-
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.condarc', delete=False) as f:
-            config = {
-                'envs_dirs': ['/pkg/cmr/testuser/conda/envs'],
-                'pkgs_dirs': ['/pkg/cmr/testuser/conda/pkgs']
-            }
-            write_condarc_format(config, f)
-            condarc_path = f.name
-
-        try:
-            with patch('sys.argv', ['cmr_lint.py', '--pixi', '--condarc', condarc_path]):
                 with self.assertRaises(SystemExit) as cm:
                     cmr_lint.main()
                 self.assertEqual(cm.exception.code, 0)

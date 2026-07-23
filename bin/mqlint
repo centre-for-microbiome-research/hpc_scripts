@@ -7,8 +7,11 @@ This script checks a user's ~/.condarc file to ensure:
 2. The first element of pkg_dirs is within /pkg/cmr or /mnt/weka
 3. ~/.conda is symlinked to /pkg/cmr/[username]/.conda or /mnt/weka/pkg/cmr/[username]/.conda
 
-If `--pixi` is supplied, it also checks:
-4. PIXI_CACHE_DIR or RATTLER_CACHE_DIR points within /pkg/cmr or /mnt/weka
+It also checks pixi:
+4. The effective pixi cache dir (from `pixi info --json`, which accounts for
+   PIXI_CACHE_DIR/RATTLER_CACHE_DIR and the `cache.root` config key) is within
+   /pkg/cmr or /mnt/weka. If not, it suggests a `pixi config set` update and how
+   to delete the current (misplaced) cache dir.
 5. `pixi config list --json` reports `detached-environments = true`
 
 It also checks:
@@ -199,20 +202,60 @@ def check_conda_symlink():
         return False, f"~/.conda symlinked to wrong location: {actual_target}"
 
 
-def check_pixi_cache_dir():
-    """Check that the active pixi cache env var points within /pkg/cmr or /mnt/weka."""
+def get_pixi_cache_dir():
+    """Determine the effective pixi cache directory.
+
+    Prefers `pixi info --json`, whose ``cache_dir`` is the value pixi actually
+    uses (it already accounts for both the PIXI_CACHE_DIR/RATTLER_CACHE_DIR env
+    vars and the ``cache.root`` config key). Falls back to reading those env
+    vars directly if pixi cannot be run.
+
+    Returns a (cache_dir, source) tuple; both are None if it cannot be
+    determined.
+    """
+    output = run_command('pixi info --json')
+    if output:
+        try:
+            info = json.loads(output)
+        except json.JSONDecodeError:
+            info = None
+        if isinstance(info, dict) and info.get('cache_dir'):
+            return info['cache_dir'], 'pixi info'
+
     for var_name in ('PIXI_CACHE_DIR', 'RATTLER_CACHE_DIR'):
         value = os.environ.get(var_name)
-        if not value:
-            continue
+        if value:
+            return value, var_name
 
-        if is_within_weka(value):
-            return True, f"{var_name} is correctly within /pkg/cmr or /mnt/weka: {value}"
+    return None, None
 
-        resolved = resolve_path(value)
-        return False, f"{var_name}='{value}' (resolves to '{resolved}') is not within /pkg/cmr or /mnt/weka"
 
-    return False, "Neither PIXI_CACHE_DIR nor RATTLER_CACHE_DIR is set"
+def check_pixi_cache_dir():
+    """Check that the effective pixi cache dir is within /pkg/cmr or /mnt/weka.
+
+    Returns (ok, cache_dir, message). ``cache_dir`` is the effective path (or
+    None if it could not be determined) so callers can suggest deleting it.
+    """
+    cache_dir, source = get_pixi_cache_dir()
+
+    if not cache_dir:
+        return False, None, (
+            "Could not determine the pixi cache dir "
+            "(pixi could not be run and neither PIXI_CACHE_DIR nor "
+            "RATTLER_CACHE_DIR is set)"
+        )
+
+    if is_within_weka(cache_dir):
+        return True, cache_dir, (
+            f"pixi cache dir is correctly within /pkg/cmr or /mnt/weka: "
+            f"{cache_dir} (via {source})"
+        )
+
+    resolved = resolve_path(cache_dir)
+    return False, cache_dir, (
+        f"pixi cache dir '{cache_dir}' (resolves to '{resolved}', via {source}) "
+        f"is not within /pkg/cmr or /mnt/weka"
+    )
 
 
 def load_pixi_config():
@@ -282,7 +325,7 @@ solver: libmamba
     return template
 
 
-def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_logs_ok, pixi_cache_ok, pixi_detached_ok, ps1_ok=True):
+def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_logs_ok, pixi_cache_ok, pixi_detached_ok, ps1_ok=True, pixi_cache_dir=None):
     """Generate suggestions for fixing conda and optional pixi configuration issues."""
     username = getpass.getuser()
     suggestions = []
@@ -328,9 +371,13 @@ def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_lo
         step_num += 1
 
     if not pixi_cache_ok:
-        suggestions.append(f"{step_num}. Set PIXI_CACHE_DIR or RATTLER_CACHE_DIR to a path on /mnt/weka or /pkg/cmr by e.g. adding it to your ~/.bashrc (~/.bash_profile should also work):")
-        suggestions.append(f"   echo 'export PIXI_CACHE_DIR=/mnt/weka/pkg/cmr/{username}/pixi/cache' >> ~/.bashrc")
-        suggestions.append(f"   # Or set RATTLER_CACHE_DIR to a similar location")
+        suggested_cache_dir = f"/mnt/weka/pkg/cmr/{username}/pixi/cache"
+        suggestions.append(f"{step_num}. Point the pixi cache at /mnt/weka or /pkg/cmr via pixi config:")
+        suggestions.append(f"   pixi config set --global cache.root {suggested_cache_dir}")
+        suggestions.append(f"   # (equivalently, export PIXI_CACHE_DIR={suggested_cache_dir} from your ~/.bashrc)")
+        if pixi_cache_dir and not is_within_weka(pixi_cache_dir):
+            suggestions.append(f"   # Then delete the misplaced cache dir to reclaim its space:")
+            suggestions.append(f"   rm -rf {pixi_cache_dir}")
         step_num += 1
 
     if not pixi_detached_ok:
@@ -459,7 +506,7 @@ def main():
     # Check old qsub log folders
     qsub_logs_ok, qsub_logs_msg = check_old_qsub_logs()
 
-    pixi_cache_ok, pixi_cache_msg = check_pixi_cache_dir()
+    pixi_cache_ok, pixi_cache_dir, pixi_cache_msg = check_pixi_cache_dir()
     pixi_detached_ok, pixi_detached_msg = check_pixi_detached_environments()
 
     ps1_ok, ps1_msg = check_ps1()
@@ -531,6 +578,7 @@ def main():
             pixi_cache_ok,
             pixi_detached_ok,
             ps1_ok,
+            pixi_cache_dir,
         )
         if suggestions:
             print("")
