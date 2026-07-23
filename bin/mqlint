@@ -276,23 +276,42 @@ def get_pixi_config_locations():
 def find_local_pixi_config():
     """Return a project-local pixi config path if one is in effect, else None.
 
-    A config location is "local" (workspace-scoped, and higher priority than the
-    global config) when it is not under the user's global pixi config dirs. When
-    such a file is present, cache fixes must target it (`pixi config set --local`
-    / editing the file) because a `--global` change would be overridden by it.
+    Only a workspace/project config (``<project>/.pixi/config.toml``, or the
+    project manifest ``pixi.toml``/``pyproject.toml``) counts as "local": those
+    override the global config and require ``pixi config set --local``. System
+    and user locations reported by pixi (``/etc/pixi/config.toml``,
+    ``$XDG_CONFIG_HOME/pixi/config.toml``, ``~/.config/pixi``, ``~/.pixi``,
+    ``$PIXI_HOME``, ``$PIXI_CONFIG_FILE``) are matched positively and excluded,
+    so we never emit ``--local`` for a global/system config.
     """
-    home = os.path.expanduser('~')
-    global_roots = [
-        os.path.realpath(os.path.join(home, '.pixi')),
-        os.path.realpath(os.path.join(home, '.config', 'pixi')),
-    ]
+    # Known non-project (global/system/user) config locations to exclude.
+    excluded = set()
+
+    def _add(path):
+        if path:
+            excluded.add(os.path.realpath(os.path.expanduser(path)))
+
+    _add('/etc/pixi/config.toml')
+    _add(os.path.join('~', '.pixi', 'config.toml'))
+    _add(os.path.join('~', '.config', 'pixi', 'config.toml'))
+    xdg = os.environ.get('XDG_CONFIG_HOME')
+    if xdg:
+        _add(os.path.join(xdg, 'pixi', 'config.toml'))
     pixi_home = os.environ.get('PIXI_HOME')
     if pixi_home:
-        global_roots.append(os.path.realpath(pixi_home))
+        _add(os.path.join(pixi_home, 'config.toml'))
+    _add(os.environ.get('PIXI_CONFIG_FILE'))
 
     for loc in get_pixi_config_locations():
         real = os.path.realpath(os.path.expanduser(str(loc)))
-        if not any(real.startswith(root) for root in global_roots):
+        if real in excluded:
+            continue
+        # A project-local config is `<project>/.pixi/config.toml` or the project
+        # manifest itself (config can live in pixi.toml/pyproject.toml).
+        parent = os.path.basename(os.path.dirname(real))
+        name = os.path.basename(real)
+        if (name == 'config.toml' and parent == '.pixi') \
+                or name in ('pixi.toml', 'pyproject.toml'):
             return loc
     return None
 

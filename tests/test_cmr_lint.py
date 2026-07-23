@@ -375,6 +375,23 @@ class TestCmrLint(unittest.TestCase):
                    return_value=[os.path.join(home, '.pixi', 'config.toml'),
                                  '/proj/.pixi/config.toml']):
             self.assertEqual(cmr_lint.find_local_pixi_config(), '/proj/.pixi/config.toml')
+        # System/user locations must NOT be classified as local (comment #296).
+        with patch('cmr_lint.get_pixi_config_locations',
+                   return_value=['/etc/pixi/config.toml',
+                                 os.path.join(home, '.config', 'pixi', 'config.toml')]):
+            self.assertIsNone(cmr_lint.find_local_pixi_config())
+        # A project manifest carrying config counts as local.
+        with patch('cmr_lint.get_pixi_config_locations',
+                   return_value=['/proj/pixi.toml']):
+            self.assertEqual(cmr_lint.find_local_pixi_config(), '/proj/pixi.toml')
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch.dict(os.environ, {'PIXI_CONFIG_FILE': '/custom/pixi.toml'}, clear=False)
+    def test_find_local_pixi_config_excludes_pixi_config_file_env(self):
+        """A PIXI_CONFIG_FILE user location is not treated as project-local."""
+        with patch('cmr_lint.get_pixi_config_locations',
+                   return_value=['/custom/pixi.toml']):
+            self.assertIsNone(cmr_lint.find_local_pixi_config())
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     def test_get_pixi_cache_dir_prefers_pixi_info(self):
