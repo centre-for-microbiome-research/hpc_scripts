@@ -361,6 +361,22 @@ class TestCmrLint(unittest.TestCase):
             self.assertTrue(cmr_lint.is_within_weka('~/conda/envs'))
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch.dict(os.environ, {}, clear=False)
+    def test_find_local_pixi_config(self):
+        """A config file outside the global pixi dirs is reported as local."""
+        os.environ.pop('PIXI_HOME', None)
+        home = os.path.expanduser('~')
+        # Only a global config -> no local config.
+        with patch('cmr_lint.get_pixi_config_locations',
+                   return_value=[os.path.join(home, '.pixi', 'config.toml')]):
+            self.assertIsNone(cmr_lint.find_local_pixi_config())
+        # A workspace-local config present -> returned.
+        with patch('cmr_lint.get_pixi_config_locations',
+                   return_value=[os.path.join(home, '.pixi', 'config.toml'),
+                                 '/proj/.pixi/config.toml']):
+            self.assertEqual(cmr_lint.find_local_pixi_config(), '/proj/.pixi/config.toml')
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     def test_get_pixi_cache_dir_prefers_pixi_info(self):
         """get_pixi_cache_dir uses the cache_dir reported by `pixi info --json`."""
         with patch('cmr_lint.run_command',
@@ -404,6 +420,7 @@ class TestCmrLint(unittest.TestCase):
         os.environ.pop('RATTLER_CACHE_DIR', None)
         overrides = [('config cache.conda-packages', '/home/testuser/cpkgs')]
         with patch('cmr_lint.getpass.getuser', return_value='testuser'), \
+                patch('cmr_lint.find_local_pixi_config', return_value=None), \
                 patch('cmr_lint.find_misplaced_pixi_cache_overrides', return_value=overrides):
             suggestions = cmr_lint.generate_fix_suggestions(
                 True, True, True, True, False, True,
@@ -413,6 +430,28 @@ class TestCmrLint(unittest.TestCase):
         self.assertNotIn('ln -s', text)
         self.assertNotIn('cache.root', text)
         self.assertIn('pixi config unset --global cache.conda-packages', text)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch.dict(os.environ, {}, clear=False)
+    def test_generate_fix_suggestions_pixi_cache_local_config_scope(self):
+        """A workspace-local pixi config makes cache fixes target --local, not --global."""
+        os.environ.pop('PIXI_CACHE_DIR', None)
+        os.environ.pop('RATTLER_CACHE_DIR', None)
+        local = '/proj/.pixi/config.toml'
+        overrides = [('config cache.conda-packages', '/home/testuser/cpkgs')]
+        with patch('cmr_lint.getpass.getuser', return_value='testuser'), \
+                patch('cmr_lint.find_local_pixi_config', return_value=local), \
+                patch('cmr_lint.find_misplaced_pixi_cache_overrides', return_value=overrides):
+            # Bad cache.root (config-derived) plus a per-kind override; both should
+            # use --local because the effective config is workspace-local.
+            suggestions = cmr_lint.generate_fix_suggestions(
+                True, True, True, True, False, True,
+                pixi_cache_dir='/tmp/localbad')
+        text = '\n'.join(suggestions)
+        self.assertIn('pixi config set --local cache.root', text)
+        self.assertIn('pixi config unset --local cache.conda-packages', text)
+        self.assertIn(local, text)
+        self.assertNotIn('--global cache.root', text)
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     @patch.dict(os.environ, {}, clear=False)
@@ -436,7 +475,8 @@ class TestCmrLint(unittest.TestCase):
         """A bad cache.root (not the default location) yields a cache.root fix, not a symlink."""
         os.environ.pop('PIXI_CACHE_DIR', None)
         os.environ.pop('RATTLER_CACHE_DIR', None)
-        with patch('cmr_lint.getpass.getuser', return_value='testuser'):
+        with patch('cmr_lint.getpass.getuser', return_value='testuser'), \
+                patch('cmr_lint.find_local_pixi_config', return_value=None):
             suggestions = cmr_lint.generate_fix_suggestions(
                 True, True, True, True, False, True,
                 pixi_cache_dir='/tmp/pixi-cache')
