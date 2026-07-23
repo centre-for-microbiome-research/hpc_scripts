@@ -10,8 +10,9 @@ This script checks a user's ~/.condarc file to ensure:
 It also checks pixi:
 4. The effective pixi cache dir (from `pixi info --json`, which accounts for
    PIXI_CACHE_DIR/RATTLER_CACHE_DIR and the `cache.root` config key) is within
-   /pkg/cmr or /mnt/weka. If not, it suggests a `pixi config set` update and how
-   to delete the current (misplaced) cache dir.
+   /pkg/cmr or /mnt/weka. If not, it suggests symlinking ~/.cache/rattler onto
+   /pkg/cmr (and flags any PIXI_CACHE_DIR/RATTLER_CACHE_DIR that would override
+   the default cache location).
 5. `pixi config list --json` reports `detached-environments = true`
 
 It also checks:
@@ -372,29 +373,29 @@ def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_lo
         step_num += 1
 
     if not pixi_cache_ok:
-        suggested_cache_dir = f"/mnt/weka/pkg/cmr/{username}/pixi/cache"
-        # pixi resolves the cache root from PIXI_CACHE_DIR, then RATTLER_CACHE_DIR,
-        # before the cache.root config key. If a bad path comes from one of those
-        # env vars, setting cache.root will not change the effective cache, so
-        # tell the user to fix the overriding env var instead.
+        suggested_cache_dir = f"/pkg/cmr/{username}/pixi/cache"
+        # pixi's default cache lives at ~/.cache/rattler; symlinking that dir onto
+        # /pkg/cmr keeps the cache off the home filesystem without any pixi config.
+        suggestions.append(f"{step_num}. Redirect the pixi/rattler cache onto /pkg/cmr by symlinking ~/.cache/rattler:")
+        suggestions.append(f"   mkdir -p {suggested_cache_dir}")
+        suggestions.append(f"   rm -rf ~/.cache/rattler")
+        suggestions.append(f"   ln -s {suggested_cache_dir} ~/.cache/rattler")
+        # The symlink only takes effect if pixi is using its default cache location.
+        # PIXI_CACHE_DIR / RATTLER_CACHE_DIR override it, so flag any that is set.
         overriding_env = next(
             (v for v in ('PIXI_CACHE_DIR', 'RATTLER_CACHE_DIR')
              if os.environ.get(v) and not is_within_weka(os.environ[v])),
             None,
         )
         if overriding_env:
-            suggestions.append(f"{step_num}. Point the pixi cache at /mnt/weka or /pkg/cmr. "
-                               f"${overriding_env} currently overrides pixi's cache.root, so update it "
-                               f"(e.g. in your ~/.bashrc) rather than the config:")
-            suggestions.append(f"   export {overriding_env}={suggested_cache_dir}")
-            suggestions.append(f"   # (or unset {overriding_env} and set the config: "
-                               f"pixi config set --global cache.root {suggested_cache_dir})")
-        else:
-            suggestions.append(f"{step_num}. Point the pixi cache at /mnt/weka or /pkg/cmr via pixi config:")
-            suggestions.append(f"   pixi config set --global cache.root {suggested_cache_dir}")
-            suggestions.append(f"   # (equivalently, export PIXI_CACHE_DIR={suggested_cache_dir} from your ~/.bashrc)")
-        if pixi_cache_dir and not is_within_weka(pixi_cache_dir):
-            suggestions.append(f"   # Then delete the misplaced cache dir to reclaim its space:")
+            suggestions.append(f"   # NOTE: ${overriding_env}={os.environ[overriding_env]} overrides the default "
+                               f"cache location, so the symlink above has no effect until you unset it "
+                               f"(e.g. remove the export from your ~/.bashrc).")
+        elif pixi_cache_dir and not is_within_weka(pixi_cache_dir) \
+                and resolve_path(pixi_cache_dir) != resolve_path(os.path.expanduser('~/.cache/rattler/cache')):
+            # The misplaced cache is somewhere other than the default ~/.cache/rattler
+            # that the rm above already removes; point it out so it can be reclaimed.
+            suggestions.append(f"   # Also delete the current misplaced cache dir to reclaim its space:")
             suggestions.append(f"   rm -rf {shlex.quote(pixi_cache_dir)}")
         step_num += 1
 

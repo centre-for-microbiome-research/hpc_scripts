@@ -262,17 +262,20 @@ class TestCmrLint(unittest.TestCase):
         self.assertIn('conda-forge', template)
     
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch.dict(os.environ, {}, clear=False)
     def test_generate_fix_suggestions(self):
         """Test generating fix suggestions for various issues."""
+        os.environ.pop('PIXI_CACHE_DIR', None)
+        os.environ.pop('RATTLER_CACHE_DIR', None)
         with patch('cmr_lint.getpass.getuser', return_value='testuser'):
             # Test when all checks fail
             suggestions = cmr_lint.generate_fix_suggestions(False, False, False, False, False, False)
-        
+
         self.assertTrue(len(suggestions) > 0)
         suggestion_text = ' '.join(suggestions)
         self.assertIn('condarc', suggestion_text)
         self.assertIn('symlink', suggestion_text)
-        self.assertIn('PIXI_CACHE_DIR', suggestion_text)
+        self.assertIn('~/.cache/rattler', suggestion_text)
         self.assertIn('detached pixi environments', suggestion_text)
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
@@ -317,8 +320,8 @@ class TestCmrLint(unittest.TestCase):
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     @patch.dict(os.environ, {}, clear=False)
-    def test_generate_fix_suggestions_pixi_cache_deletion(self):
-        """A misplaced cache dir (via config) yields a cache.root fix and a deletion hint."""
+    def test_generate_fix_suggestions_pixi_cache_symlink(self):
+        """A misplaced cache dir yields a ~/.cache/rattler symlink suggestion."""
         os.environ.pop('PIXI_CACHE_DIR', None)
         os.environ.pop('RATTLER_CACHE_DIR', None)
         with patch('cmr_lint.getpass.getuser', return_value='testuser'):
@@ -326,28 +329,30 @@ class TestCmrLint(unittest.TestCase):
                 True, True, True, True, False, True,
                 pixi_cache_dir='/tmp/pixi-cache')
         text = '\n'.join(suggestions)
-        self.assertIn('pixi config set --global cache.root', text)
+        self.assertIn('ln -s /pkg/cmr/testuser/pixi/cache ~/.cache/rattler', text)
+        self.assertIn('rm -rf ~/.cache/rattler', text)
+        # The misplaced dir is not the default cache, so it is also flagged for removal.
         self.assertIn('rm -rf /tmp/pixi-cache', text)
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     @patch.dict(os.environ, {'PIXI_CACHE_DIR': '/tmp/pixi-cache'}, clear=False)
     def test_generate_fix_suggestions_pixi_cache_env_override(self):
-        """When a bad env var overrides cache.root, tell the user to fix the env var."""
+        """A bad env var overrides the default cache, so the symlink alone won't help."""
         os.environ.pop('RATTLER_CACHE_DIR', None)
         with patch('cmr_lint.getpass.getuser', return_value='testuser'):
             suggestions = cmr_lint.generate_fix_suggestions(
                 True, True, True, True, False, True,
                 pixi_cache_dir='/tmp/pixi-cache')
         text = '\n'.join(suggestions)
-        # It must point at the overriding env var, not just cache.root, because
-        # cache.root would be ineffective while the env var is set.
-        self.assertIn('PIXI_CACHE_DIR currently overrides', text)
-        self.assertIn('export PIXI_CACHE_DIR=', text)
+        # The symlink is still suggested, but the overriding env var must be flagged.
+        self.assertIn('ln -s /pkg/cmr/testuser/pixi/cache ~/.cache/rattler', text)
+        self.assertIn('PIXI_CACHE_DIR', text)
+        self.assertIn('overrides the default', text)
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     @patch.dict(os.environ, {}, clear=False)
     def test_generate_fix_suggestions_pixi_cache_quoted_rm(self):
-        """A cache path with whitespace is shell-quoted in the rm suggestion."""
+        """A misplaced cache path with whitespace is shell-quoted in the rm suggestion."""
         os.environ.pop('PIXI_CACHE_DIR', None)
         os.environ.pop('RATTLER_CACHE_DIR', None)
         with patch('cmr_lint.getpass.getuser', return_value='testuser'):
