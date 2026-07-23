@@ -316,8 +316,11 @@ class TestCmrLint(unittest.TestCase):
         self.assertEqual(source, 'PIXI_CACHE_DIR')
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch.dict(os.environ, {}, clear=False)
     def test_generate_fix_suggestions_pixi_cache_deletion(self):
-        """A misplaced cache dir yields a cache.root config fix and a deletion hint."""
+        """A misplaced cache dir (via config) yields a cache.root fix and a deletion hint."""
+        os.environ.pop('PIXI_CACHE_DIR', None)
+        os.environ.pop('RATTLER_CACHE_DIR', None)
         with patch('cmr_lint.getpass.getuser', return_value='testuser'):
             suggestions = cmr_lint.generate_fix_suggestions(
                 True, True, True, True, False, True,
@@ -325,6 +328,34 @@ class TestCmrLint(unittest.TestCase):
         text = '\n'.join(suggestions)
         self.assertIn('pixi config set --global cache.root', text)
         self.assertIn('rm -rf /tmp/pixi-cache', text)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch.dict(os.environ, {'PIXI_CACHE_DIR': '/tmp/pixi-cache'}, clear=False)
+    def test_generate_fix_suggestions_pixi_cache_env_override(self):
+        """When a bad env var overrides cache.root, tell the user to fix the env var."""
+        os.environ.pop('RATTLER_CACHE_DIR', None)
+        with patch('cmr_lint.getpass.getuser', return_value='testuser'):
+            suggestions = cmr_lint.generate_fix_suggestions(
+                True, True, True, True, False, True,
+                pixi_cache_dir='/tmp/pixi-cache')
+        text = '\n'.join(suggestions)
+        # It must point at the overriding env var, not just cache.root, because
+        # cache.root would be ineffective while the env var is set.
+        self.assertIn('PIXI_CACHE_DIR currently overrides', text)
+        self.assertIn('export PIXI_CACHE_DIR=', text)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch.dict(os.environ, {}, clear=False)
+    def test_generate_fix_suggestions_pixi_cache_quoted_rm(self):
+        """A cache path with whitespace is shell-quoted in the rm suggestion."""
+        os.environ.pop('PIXI_CACHE_DIR', None)
+        os.environ.pop('RATTLER_CACHE_DIR', None)
+        with patch('cmr_lint.getpass.getuser', return_value='testuser'):
+            suggestions = cmr_lint.generate_fix_suggestions(
+                True, True, True, True, False, True,
+                pixi_cache_dir='/tmp/pixi cache')
+        text = '\n'.join(suggestions)
+        self.assertIn("rm -rf '/tmp/pixi cache'", text)
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     @patch('cmr_lint.subprocess.run')
