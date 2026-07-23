@@ -64,14 +64,16 @@ def resolve_path(path):
 
     Uses os.path.realpath rather than shelling out to `readlink -f`, so paths
     that originate from user-controlled sources (e.g. pixi's cache.root) cannot
-    inject shell commands.
+    inject shell commands. Expands a leading ~ and $VARs first, matching what
+    the old shell-based `readlink -f ~/...` did (realpath alone leaves ~ literal).
     """
     if not path:
         return str(path)
+    expanded = os.path.expanduser(os.path.expandvars(str(path)))
     try:
-        return os.path.realpath(str(path))
+        return os.path.realpath(expanded)
     except OSError:
-        return str(path)
+        return expanded
 
 
 def is_within_weka(path):
@@ -453,37 +455,54 @@ def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_lo
 
     if not pixi_cache_ok:
         suggested_cache_dir = f"/pkg/cmr/{username}/pixi/cache"
-        # pixi's default cache lives at ~/.cache/rattler; symlinking that dir onto
-        # /pkg/cmr keeps the cache off the home filesystem without any pixi config.
-        suggestions.append(f"{step_num}. Redirect the pixi/rattler cache onto /pkg/cmr by symlinking ~/.cache/rattler:")
-        suggestions.append(f"   mkdir -p {suggested_cache_dir}")
-        suggestions.append(f"   rm -rf ~/.cache/rattler")
-        suggestions.append(f"   ln -s {suggested_cache_dir} ~/.cache/rattler")
-        # The symlink only takes effect if pixi is using its default cache location.
-        # PIXI_CACHE_DIR / RATTLER_CACHE_DIR override it, so flag any that is set.
+        # pixi resolves the cache dir in order: PIXI_CACHE_DIR, RATTLER_CACHE_DIR,
+        # the `cache.root` config key, then the platform default (~/.cache/rattler).
+        # The right fix depends on which of these is placing the cache badly, since
+        # the earlier ones override a ~/.cache/rattler symlink.
         overriding_env = next(
             (v for v in ('PIXI_CACHE_DIR', 'RATTLER_CACHE_DIR')
              if os.environ.get(v) and not is_within_weka(os.environ[v])),
             None,
         )
+        default_cache = resolve_path('~/.cache/rattler/cache')
+        cache_from_config_root = (
+            not overriding_env
+            and pixi_cache_dir
+            and not is_within_weka(pixi_cache_dir)
+            and resolve_path(pixi_cache_dir) != default_cache
+        )
+
         if overriding_env:
-            suggestions.append(f"   # NOTE: ${overriding_env}={os.environ[overriding_env]} overrides the default "
-                               f"cache location, so the symlink above has no effect until you unset it "
-                               f"(e.g. remove the export from your ~/.bashrc).")
-        elif pixi_cache_dir and not is_within_weka(pixi_cache_dir) \
-                and resolve_path(pixi_cache_dir) != resolve_path(os.path.expanduser('~/.cache/rattler/cache')):
-            # The misplaced cache is somewhere other than the default ~/.cache/rattler
-            # that the rm above already removes; point it out so it can be reclaimed.
+            # A bad env var wins over both cache.root and the default location.
+            suggestions.append(f"{step_num}. Point the pixi cache at /pkg/cmr. "
+                               f"${overriding_env}={os.environ[overriding_env]} overrides pixi's cache "
+                               f"location, so update it (e.g. in your ~/.bashrc) rather than symlinking:")
+            suggestions.append(f"   export {overriding_env}={suggested_cache_dir}")
+            suggestions.append(f"   # (or unset {overriding_env} to fall back to cache.root / the default)")
+        elif cache_from_config_root:
+            # cache.root config wins over the default location, so the symlink is
+            # ignored; fix the config instead.
+            suggestions.append(f"{step_num}. Point the pixi cache at /pkg/cmr. Your pixi `cache.root` config "
+                               f"sets it to {pixi_cache_dir}, which overrides the default location, so update it:")
+            suggestions.append(f"   mkdir -p {suggested_cache_dir}")
+            suggestions.append(f"   pixi config set --global cache.root {suggested_cache_dir}")
+            suggestions.append(f"   # (or unset it: pixi config unset --global cache.root)")
             if looks_like_pixi_cache_dir(pixi_cache_dir):
-                suggestions.append(f"   # Also delete the current misplaced cache dir to reclaim its space:")
+                suggestions.append(f"   # Then delete the old cache dir to reclaim its space:")
                 suggestions.append(f"   rm -rf {shlex.quote(pixi_cache_dir)}")
             else:
                 # The path does not clearly look like a dedicated cache dir (e.g.
-                # PIXI_CACHE_DIR=$HOME or /tmp). Suggesting `rm -rf` on it could
-                # wipe unrelated files, so ask the user to clean it up by hand.
-                suggestions.append(f"   # The current cache dir ({pixi_cache_dir}) does not look like a")
-                suggestions.append(f"   # dedicated cache dir, so inspect and remove its contents manually")
-                suggestions.append(f"   # rather than running rm -rf on the whole path.")
+                # cache.root=$HOME). Wiping it could remove unrelated files, so
+                # ask the user to clean it up by hand rather than suggesting rm -rf.
+                suggestions.append(f"   # The old cache dir ({pixi_cache_dir}) does not look like a dedicated")
+                suggestions.append(f"   # cache dir, so inspect and remove its contents manually.")
+        else:
+            # The cache is at pixi's default ~/.cache/rattler location (just on the
+            # home fs); symlinking that dir onto /pkg/cmr fixes it with no config.
+            suggestions.append(f"{step_num}. Redirect the pixi/rattler cache onto /pkg/cmr by symlinking ~/.cache/rattler:")
+            suggestions.append(f"   mkdir -p {suggested_cache_dir}")
+            suggestions.append(f"   rm -rf ~/.cache/rattler")
+            suggestions.append(f"   ln -s {suggested_cache_dir} ~/.cache/rattler")
         step_num += 1
 
     if not pixi_detached_ok:

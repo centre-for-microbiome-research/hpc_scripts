@@ -346,6 +346,21 @@ class TestCmrLint(unittest.TestCase):
         self.assertTrue(resolved.startswith('/'))
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    def test_resolve_path_expands_home(self):
+        """resolve_path expands a leading ~ (matching the old readlink -f ~/...)."""
+        resolved = cmr_lint.resolve_path('~/some/dir')
+        self.assertTrue(resolved.startswith(os.path.expanduser('~')))
+        self.assertNotIn('~', resolved)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    def test_is_within_weka_home_relative_symlink(self):
+        """A ~-relative path whose expansion is under /pkg/cmr counts as within weka."""
+        # Simulate ~ expanding to a /pkg/cmr home so no real symlink is needed.
+        with patch('cmr_lint.os.path.expanduser',
+                   side_effect=lambda p: p.replace('~', '/pkg/cmr/testuser', 1)):
+            self.assertTrue(cmr_lint.is_within_weka('~/conda/envs'))
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     def test_get_pixi_cache_dir_prefers_pixi_info(self):
         """get_pixi_cache_dir uses the cache_dir reported by `pixi info --json`."""
         with patch('cmr_lint.run_command',
@@ -367,7 +382,24 @@ class TestCmrLint(unittest.TestCase):
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     @patch.dict(os.environ, {}, clear=False)
     def test_generate_fix_suggestions_pixi_cache_symlink(self):
-        """A misplaced cache dir yields a ~/.cache/rattler symlink suggestion."""
+        """Cache at the default ~/.cache/rattler location yields a symlink suggestion."""
+        os.environ.pop('PIXI_CACHE_DIR', None)
+        os.environ.pop('RATTLER_CACHE_DIR', None)
+        default_cache = os.path.expanduser('~/.cache/rattler/cache')
+        with patch('cmr_lint.getpass.getuser', return_value='testuser'):
+            suggestions = cmr_lint.generate_fix_suggestions(
+                True, True, True, True, False, True,
+                pixi_cache_dir=default_cache)
+        text = '\n'.join(suggestions)
+        self.assertIn('ln -s /pkg/cmr/testuser/pixi/cache ~/.cache/rattler', text)
+        self.assertIn('rm -rf ~/.cache/rattler', text)
+        # The default location is fixed by the symlink; no cache.root change needed.
+        self.assertNotIn('cache.root', text)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch.dict(os.environ, {}, clear=False)
+    def test_generate_fix_suggestions_pixi_cache_config_root(self):
+        """A bad cache.root (not the default location) yields a cache.root fix, not a symlink."""
         os.environ.pop('PIXI_CACHE_DIR', None)
         os.environ.pop('RATTLER_CACHE_DIR', None)
         with patch('cmr_lint.getpass.getuser', return_value='testuser'):
@@ -375,25 +407,27 @@ class TestCmrLint(unittest.TestCase):
                 True, True, True, True, False, True,
                 pixi_cache_dir='/tmp/pixi-cache')
         text = '\n'.join(suggestions)
-        self.assertIn('ln -s /pkg/cmr/testuser/pixi/cache ~/.cache/rattler', text)
-        self.assertIn('rm -rf ~/.cache/rattler', text)
-        # The misplaced dir is not the default cache, so it is also flagged for removal.
+        # cache.root overrides the default location, so the symlink would be ignored.
+        self.assertIn('pixi config set --global cache.root /pkg/cmr/testuser/pixi/cache', text)
+        self.assertNotIn('ln -s', text)
+        # The old cache dir looks like a cache, so its removal is offered.
         self.assertIn('rm -rf /tmp/pixi-cache', text)
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     @patch.dict(os.environ, {'PIXI_CACHE_DIR': '/tmp/pixi-cache'}, clear=False)
     def test_generate_fix_suggestions_pixi_cache_env_override(self):
-        """A bad env var overrides the default cache, so the symlink alone won't help."""
+        """A bad env var overrides cache.root and the default, so fix the env var."""
         os.environ.pop('RATTLER_CACHE_DIR', None)
         with patch('cmr_lint.getpass.getuser', return_value='testuser'):
             suggestions = cmr_lint.generate_fix_suggestions(
                 True, True, True, True, False, True,
                 pixi_cache_dir='/tmp/pixi-cache')
         text = '\n'.join(suggestions)
-        # The symlink is still suggested, but the overriding env var must be flagged.
-        self.assertIn('ln -s /pkg/cmr/testuser/pixi/cache ~/.cache/rattler', text)
+        # The env var wins over both cache.root and the default; point at it.
         self.assertIn('PIXI_CACHE_DIR', text)
-        self.assertIn('overrides the default', text)
+        self.assertIn('overrides', text)
+        self.assertIn('export PIXI_CACHE_DIR=/pkg/cmr/testuser/pixi/cache', text)
+        self.assertNotIn('ln -s', text)
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     @patch.dict(os.environ, {}, clear=False)
