@@ -279,9 +279,10 @@ class TestCmrLint(unittest.TestCase):
         self.assertIn('detached pixi environments', suggestion_text)
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch('cmr_lint.find_misplaced_pixi_cache_overrides', return_value=[])
     @patch('cmr_lint.get_pixi_cache_dir',
            return_value=('/mnt/weka/pkg/cmr/testuser/pixi/cache', 'pixi info'))
-    def test_check_pixi_cache_dir_valid(self, _mock_get):
+    def test_check_pixi_cache_dir_valid(self, _mock_get, _mock_overrides):
         """Test pixi cache directory validation for a valid cache path."""
         is_ok, cache_dir, message = cmr_lint.check_pixi_cache_dir()
         self.assertTrue(is_ok)
@@ -298,6 +299,51 @@ class TestCmrLint(unittest.TestCase):
         self.assertFalse(is_ok)
         self.assertEqual(cache_dir, '/tmp/pixi-cache')
         self.assertIn('not within /pkg/cmr or /mnt/weka', message)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch('cmr_lint.find_misplaced_pixi_cache_overrides',
+           return_value=[('config cache.conda-packages', '/home/testuser/cpkgs')])
+    @patch('cmr_lint.get_pixi_cache_dir',
+           return_value=('/mnt/weka/pkg/cmr/testuser/pixi/cache', 'pixi info'))
+    def test_check_pixi_cache_dir_good_root_bad_per_kind(self, _mock_get, _mock_overrides):
+        """A good root but a misplaced per-kind override should fail."""
+        is_ok, cache_dir, message = cmr_lint.check_pixi_cache_dir()
+        self.assertFalse(is_ok)
+        self.assertIn('per-kind cache override', message)
+        self.assertIn('cache.conda-packages', message)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch.dict(os.environ, {'PIXI_CACHE_CONDA_PACKAGES_DIR': '/home/testuser/cpkgs'}, clear=False)
+    def test_find_misplaced_pixi_cache_overrides_env(self):
+        """A per-kind cache env var pointing off /pkg/cmr is reported."""
+        with patch('cmr_lint.load_pixi_config', return_value=({}, None)):
+            misplaced = cmr_lint.find_misplaced_pixi_cache_overrides()
+        self.assertIn(('$PIXI_CACHE_CONDA_PACKAGES_DIR', '/home/testuser/cpkgs'), misplaced)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch.dict(os.environ, {}, clear=False)
+    def test_find_misplaced_pixi_cache_overrides_config(self):
+        """A per-kind cache config key pointing off /pkg/cmr is reported; root is ignored."""
+        for var in list(os.environ):
+            if var.startswith(('PIXI_CACHE_', 'RATTLER_CACHE_')):
+                os.environ.pop(var, None)
+        config = {'cache': {
+            'root': '/mnt/weka/pkg/cmr/testuser/pixi/cache',
+            'conda-packages': '/home/testuser/cpkgs',
+            'repodata': '/pkg/cmr/testuser/repodata',
+        }}
+        with patch('cmr_lint.load_pixi_config', return_value=(config, None)):
+            misplaced = cmr_lint.find_misplaced_pixi_cache_overrides()
+        self.assertEqual(misplaced, [('config cache.conda-packages', '/home/testuser/cpkgs')])
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    def test_resolve_path_does_not_invoke_shell(self):
+        """resolve_path must not shell out (guards against command injection)."""
+        with patch('cmr_lint.run_command') as mock_run:
+            resolved = cmr_lint.resolve_path('/tmp/x; touch /tmp/pwned')
+        mock_run.assert_not_called()
+        # os.path.realpath treats the whole string as a path, never executing it.
+        self.assertTrue(resolved.startswith('/'))
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     def test_get_pixi_cache_dir_prefers_pixi_info(self):
@@ -361,6 +407,31 @@ class TestCmrLint(unittest.TestCase):
                 pixi_cache_dir='/tmp/pixi cache')
         text = '\n'.join(suggestions)
         self.assertIn("rm -rf '/tmp/pixi cache'", text)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch.dict(os.environ, {}, clear=False)
+    def test_generate_fix_suggestions_pixi_cache_unsafe_path_no_rm(self):
+        """A cache dir that isn't clearly a cache (e.g. $HOME) is not rm -rf'd."""
+        os.environ.pop('PIXI_CACHE_DIR', None)
+        os.environ.pop('RATTLER_CACHE_DIR', None)
+        with patch('cmr_lint.getpass.getuser', return_value='testuser'):
+            suggestions = cmr_lint.generate_fix_suggestions(
+                True, True, True, True, False, True,
+                pixi_cache_dir='/home/testuser')
+        text = '\n'.join(suggestions)
+        self.assertNotIn('rm -rf /home/testuser', text)
+        self.assertNotIn("rm -rf '/home/testuser'", text)
+        self.assertIn('manually', text)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    def test_looks_like_pixi_cache_dir(self):
+        """The rm-guard recognizes cache dirs but not broad roots."""
+        self.assertTrue(cmr_lint.looks_like_pixi_cache_dir('/tmp/pixi-cache'))
+        self.assertTrue(cmr_lint.looks_like_pixi_cache_dir('/home/u/.cache/rattler'))
+        self.assertTrue(cmr_lint.looks_like_pixi_cache_dir('/some/where/pixi'))
+        self.assertFalse(cmr_lint.looks_like_pixi_cache_dir('/home/testuser'))
+        self.assertFalse(cmr_lint.looks_like_pixi_cache_dir('/tmp'))
+        self.assertFalse(cmr_lint.looks_like_pixi_cache_dir(''))
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     @patch('cmr_lint.subprocess.run')

@@ -10,7 +10,9 @@ This script checks a user's ~/.condarc file to ensure:
 It also checks pixi:
 4. The effective pixi cache dir (from `pixi info --json`, which accounts for
    PIXI_CACHE_DIR/RATTLER_CACHE_DIR and the `cache.root` config key) is within
-   /pkg/cmr or /mnt/weka. If not, it suggests symlinking ~/.cache/rattler onto
+   /pkg/cmr or /mnt/weka, and that no per-kind cache override (config
+   `cache.<kind>` or a PIXI_CACHE_*_DIR/RATTLER_CACHE_*_DIR env var) escapes to
+   the home filesystem. If not, it suggests symlinking ~/.cache/rattler onto
    /pkg/cmr (and flags any PIXI_CACHE_DIR/RATTLER_CACHE_DIR that would override
    the default cache location).
 5. `pixi config list --json` reports `detached-environments = true`
@@ -58,9 +60,18 @@ def run_command(cmd, capture_output=True):
 
 
 def resolve_path(path):
-    """Resolve a path using readlink -f to handle symlinks."""
-    resolved = run_command(f"readlink -f {path}")
-    return resolved if resolved else str(path)
+    """Resolve a path (following symlinks) without invoking a shell.
+
+    Uses os.path.realpath rather than shelling out to `readlink -f`, so paths
+    that originate from user-controlled sources (e.g. pixi's cache.root) cannot
+    inject shell commands.
+    """
+    if not path:
+        return str(path)
+    try:
+        return os.path.realpath(str(path))
+    except OSError:
+        return str(path)
 
 
 def is_within_weka(path):
@@ -79,6 +90,21 @@ def is_within_weka(path):
         return True
     
     return False
+
+
+def looks_like_pixi_cache_dir(path):
+    """Heuristically decide whether `path` is a dedicated pixi/rattler cache dir.
+
+    Used to gate the destructive `rm -rf` deletion hint: we only suggest wiping
+    the whole path when its final component is a recognizable cache directory
+    name (so we never propose `rm -rf $HOME` or `rm -rf /tmp`).
+    """
+    if not path:
+        return False
+    basename = os.path.basename(str(path).rstrip('/')).lower()
+    # The final path component must itself name a cache dir, so we never propose
+    # rm -rf on a broad root like $HOME (basename = username) or /tmp.
+    return any(token in basename for token in ('cache', 'rattler', 'pixi'))
 
 
 def parse_condarc_line(line):
@@ -232,8 +258,52 @@ def get_pixi_cache_dir():
     return None, None
 
 
+def find_misplaced_pixi_cache_overrides():
+    """Find per-kind pixi cache overrides that point outside /pkg/cmr or /mnt/weka.
+
+    Pixi lets individual cache kinds be redirected independently of the root,
+    both via config (``cache.conda-packages``, ``cache.repodata`` …) and via
+    per-kind env vars (``PIXI_CACHE_CONDA_PACKAGES_DIR`` etc.). These override
+    the root cache dir, so a good root does not guarantee everything lands on
+    the shared filesystem. Returns a list of (source, path) tuples for any
+    misplaced override, ignoring ones already within /pkg/cmr or /mnt/weka.
+    """
+    misplaced = []
+
+    # Config: any string path under the `cache` table other than `root`.
+    config, _ = load_pixi_config()
+    cache_cfg = config.get('cache') if isinstance(config, dict) else None
+    if isinstance(cache_cfg, dict):
+        for kind, value in cache_cfg.items():
+            if kind == 'root' or not isinstance(value, str):
+                continue
+            # Only treat absolute-ish paths as cache-dir overrides (some kinds,
+            # e.g. netfs-redirect, take non-path values).
+            if not (value.startswith('/') or value.startswith('~')):
+                continue
+            if not is_within_weka(os.path.expanduser(value)):
+                misplaced.append((f"config cache.{kind}", value))
+
+    # Env vars: PIXI_CACHE_*_DIR / RATTLER_CACHE_*_DIR beyond the root ones,
+    # which get_pixi_cache_dir()/the root check already handle.
+    root_vars = {'PIXI_CACHE_DIR', 'RATTLER_CACHE_DIR'}
+    for var_name, value in os.environ.items():
+        if var_name in root_vars or not value:
+            continue
+        if (var_name.startswith('PIXI_CACHE_') or var_name.startswith('RATTLER_CACHE_')) \
+                and var_name.endswith('_DIR'):
+            if not is_within_weka(os.path.expanduser(value)):
+                misplaced.append((f"${var_name}", value))
+
+    return misplaced
+
+
 def check_pixi_cache_dir():
     """Check that the effective pixi cache dir is within /pkg/cmr or /mnt/weka.
+
+    Also checks per-kind cache overrides (config and env vars), since a good
+    root cache dir does not stop pixi writing an individual cache kind onto the
+    home filesystem.
 
     Returns (ok, cache_dir, message). ``cache_dir`` is the effective path (or
     None if it could not be determined) so callers can suggest deleting it.
@@ -247,16 +317,25 @@ def check_pixi_cache_dir():
             "RATTLER_CACHE_DIR is set)"
         )
 
-    if is_within_weka(cache_dir):
-        return True, cache_dir, (
-            f"pixi cache dir is correctly within /pkg/cmr or /mnt/weka: "
-            f"{cache_dir} (via {source})"
+    if not is_within_weka(cache_dir):
+        resolved = resolve_path(cache_dir)
+        return False, cache_dir, (
+            f"pixi cache dir '{cache_dir}' (resolves to '{resolved}', via {source}) "
+            f"is not within /pkg/cmr or /mnt/weka"
         )
 
-    resolved = resolve_path(cache_dir)
-    return False, cache_dir, (
-        f"pixi cache dir '{cache_dir}' (resolves to '{resolved}', via {source}) "
-        f"is not within /pkg/cmr or /mnt/weka"
+    # Root is fine; make sure no per-kind override escapes to the home fs.
+    misplaced = find_misplaced_pixi_cache_overrides()
+    if misplaced:
+        detail = "; ".join(f"{src} -> {path}" for src, path in misplaced)
+        return False, cache_dir, (
+            f"pixi cache root is within /pkg/cmr or /mnt/weka ({cache_dir}), but "
+            f"per-kind cache override(s) point elsewhere: {detail}"
+        )
+
+    return True, cache_dir, (
+        f"pixi cache dir is correctly within /pkg/cmr or /mnt/weka: "
+        f"{cache_dir} (via {source})"
     )
 
 
@@ -395,8 +474,16 @@ def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_lo
                 and resolve_path(pixi_cache_dir) != resolve_path(os.path.expanduser('~/.cache/rattler/cache')):
             # The misplaced cache is somewhere other than the default ~/.cache/rattler
             # that the rm above already removes; point it out so it can be reclaimed.
-            suggestions.append(f"   # Also delete the current misplaced cache dir to reclaim its space:")
-            suggestions.append(f"   rm -rf {shlex.quote(pixi_cache_dir)}")
+            if looks_like_pixi_cache_dir(pixi_cache_dir):
+                suggestions.append(f"   # Also delete the current misplaced cache dir to reclaim its space:")
+                suggestions.append(f"   rm -rf {shlex.quote(pixi_cache_dir)}")
+            else:
+                # The path does not clearly look like a dedicated cache dir (e.g.
+                # PIXI_CACHE_DIR=$HOME or /tmp). Suggesting `rm -rf` on it could
+                # wipe unrelated files, so ask the user to clean it up by hand.
+                suggestions.append(f"   # The current cache dir ({pixi_cache_dir}) does not look like a")
+                suggestions.append(f"   # dedicated cache dir, so inspect and remove its contents manually")
+                suggestions.append(f"   # rather than running rm -rf on the whole path.")
         step_num += 1
 
     if not pixi_detached_ok:
