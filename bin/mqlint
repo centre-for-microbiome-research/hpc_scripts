@@ -465,6 +465,11 @@ def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_lo
             None,
         )
         default_cache = resolve_path('~/.cache/rattler/cache')
+        # The root cache dir is "fine" only when we could determine it AND it is
+        # within weka; in that case the check failed purely on a per-kind override
+        # (handled below) so no root-level fix is needed. An unknown root
+        # (pixi_cache_dir is None) still gets the default symlink guidance.
+        root_ok = bool(pixi_cache_dir) and is_within_weka(pixi_cache_dir)
         cache_from_config_root = (
             not overriding_env
             and pixi_cache_dir
@@ -472,13 +477,18 @@ def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_lo
             and resolve_path(pixi_cache_dir) != default_cache
         )
 
-        if overriding_env:
+        if root_ok:
+            # The root is fine; the failure is purely per-kind overrides handled
+            # in the dedicated block below. Emit no root-level fix here.
+            pass
+        elif overriding_env:
             # A bad env var wins over both cache.root and the default location.
             suggestions.append(f"{step_num}. Point the pixi cache at /pkg/cmr. "
                                f"${overriding_env}={os.environ[overriding_env]} overrides pixi's cache "
                                f"location, so update it (e.g. in your ~/.bashrc) rather than symlinking:")
             suggestions.append(f"   export {overriding_env}={suggested_cache_dir}")
             suggestions.append(f"   # (or unset {overriding_env} to fall back to cache.root / the default)")
+            step_num += 1
         elif cache_from_config_root:
             # cache.root config wins over the default location, so the symlink is
             # ignored; fix the config instead.
@@ -496,6 +506,7 @@ def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_lo
                 # ask the user to clean it up by hand rather than suggesting rm -rf.
                 suggestions.append(f"   # The old cache dir ({pixi_cache_dir}) does not look like a dedicated")
                 suggestions.append(f"   # cache dir, so inspect and remove its contents manually.")
+            step_num += 1
         else:
             # The cache is at pixi's default ~/.cache/rattler location (just on the
             # home fs); symlinking that dir onto /pkg/cmr fixes it with no config.
@@ -503,7 +514,24 @@ def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_lo
             suggestions.append(f"   mkdir -p {suggested_cache_dir}")
             suggestions.append(f"   rm -rf ~/.cache/rattler")
             suggestions.append(f"   ln -s {suggested_cache_dir} ~/.cache/rattler")
-        step_num += 1
+            step_num += 1
+
+        # Per-kind cache overrides (config cache.<kind> / PIXI_CACHE_*_DIR) are
+        # applied before the root/default, so no root-level fix above can move
+        # them; each must be updated/unset on its own.
+        for src, path in find_misplaced_pixi_cache_overrides():
+            if src.startswith('$'):
+                var = src[1:]
+                suggestions.append(f"{step_num}. The per-kind cache override {src}={path} points off /pkg/cmr and "
+                                   f"overrides the cache root, so update or unset it (e.g. in your ~/.bashrc):")
+                suggestions.append(f"   unset {var}   # (or point it under /pkg/cmr)")
+            else:
+                # src is like "config cache.<kind>"
+                key = src.split(' ', 1)[1] if ' ' in src else src
+                suggestions.append(f"{step_num}. The per-kind pixi cache config `{key}` = {path} points off /pkg/cmr "
+                                   f"and overrides the cache root, so update or unset it:")
+                suggestions.append(f"   pixi config unset --global {key}   # (or set it under /pkg/cmr)")
+            step_num += 1
 
     if not pixi_detached_ok:
         suggestions.append(f"{step_num}. Enable detached pixi environments:")

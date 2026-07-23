@@ -398,6 +398,40 @@ class TestCmrLint(unittest.TestCase):
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     @patch.dict(os.environ, {}, clear=False)
+    def test_generate_fix_suggestions_pixi_cache_per_kind_config(self):
+        """Good root but a bad per-kind config override => targeted unset, no symlink."""
+        os.environ.pop('PIXI_CACHE_DIR', None)
+        os.environ.pop('RATTLER_CACHE_DIR', None)
+        overrides = [('config cache.conda-packages', '/home/testuser/cpkgs')]
+        with patch('cmr_lint.getpass.getuser', return_value='testuser'), \
+                patch('cmr_lint.find_misplaced_pixi_cache_overrides', return_value=overrides):
+            suggestions = cmr_lint.generate_fix_suggestions(
+                True, True, True, True, False, True,
+                pixi_cache_dir='/pkg/cmr/testuser/pixi/cache')
+        text = '\n'.join(suggestions)
+        # Root is fine, so no symlink/config.root fix, just the per-kind unset.
+        self.assertNotIn('ln -s', text)
+        self.assertNotIn('cache.root', text)
+        self.assertIn('pixi config unset --global cache.conda-packages', text)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch.dict(os.environ, {}, clear=False)
+    def test_generate_fix_suggestions_pixi_cache_per_kind_env(self):
+        """Good root but a bad per-kind env override => suggest unsetting that var."""
+        os.environ.pop('PIXI_CACHE_DIR', None)
+        os.environ.pop('RATTLER_CACHE_DIR', None)
+        overrides = [('$PIXI_CACHE_CONDA_PACKAGES_DIR', '/home/testuser/cpkgs')]
+        with patch('cmr_lint.getpass.getuser', return_value='testuser'), \
+                patch('cmr_lint.find_misplaced_pixi_cache_overrides', return_value=overrides):
+            suggestions = cmr_lint.generate_fix_suggestions(
+                True, True, True, True, False, True,
+                pixi_cache_dir='/pkg/cmr/testuser/pixi/cache')
+        text = '\n'.join(suggestions)
+        self.assertNotIn('ln -s', text)
+        self.assertIn('unset PIXI_CACHE_CONDA_PACKAGES_DIR', text)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch.dict(os.environ, {}, clear=False)
     def test_generate_fix_suggestions_pixi_cache_config_root(self):
         """A bad cache.root (not the default location) yields a cache.root fix, not a symlink."""
         os.environ.pop('PIXI_CACHE_DIR', None)
