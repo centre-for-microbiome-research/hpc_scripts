@@ -429,15 +429,18 @@ sandbox_build_binds() {
                 | jq -r '.cache_dir // empty' 2>/dev/null || true)"
             [[ -n "$_pixi_effective_cache" ]] && _pixi_cache_candidates+=("$_pixi_effective_cache")
         fi
-        # Per-kind cache config values (any string under the `cache` table other
-        # than `root`, which is already covered by the effective cache above).
+        # Per-kind cache config path values (string values under the `cache` table
+        # other than `root`, which is already covered by the effective cache
+        # above). Restrict to actual paths (leading / or ~): the cache table also
+        # holds non-path settings such as `netfs-redirect = "auto"` which must not
+        # be turned into a bind target (mqlint applies the same filter).
         _pixi_config_json="$(pixi config list --json 2>/dev/null || true)"
         if [[ -n "$_pixi_config_json" ]]; then
             local _kind_path
             while IFS= read -r _kind_path; do
                 [[ -n "$_kind_path" ]] && _pixi_cache_candidates+=("$_kind_path")
             done < <(printf '%s' "$_pixi_config_json" \
-                | jq -r '(.cache // {}) | to_entries[] | select(.key != "root" and (.value | type == "string")) | .value' 2>/dev/null || true)
+                | jq -r '(.cache // {}) | to_entries[] | select(.key != "root" and (.value | type == "string") and (.value | test("^(/|~)"))) | .value' 2>/dev/null || true)
         fi
     fi
 
