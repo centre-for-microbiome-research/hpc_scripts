@@ -316,6 +316,63 @@ def find_local_pixi_config():
     return None
 
 
+def _is_project_local_config(path):
+    """True if `path` looks like a project-local pixi config (not global/system)."""
+    real = os.path.realpath(os.path.expanduser(str(path)))
+    parent = os.path.basename(os.path.dirname(real))
+    name = os.path.basename(real)
+    return (name == 'config.toml' and parent == '.pixi') \
+        or name in ('pixi.toml', 'pyproject.toml')
+
+
+def _config_defines_cache_key(config_path, cache_key):
+    """Whether a pixi config file defines cache.<cache_key> (best-effort).
+
+    `cache_key` is like ``root`` or ``conda-packages``. Parses TOML if a parser
+    is available (tomllib on 3.11+, else tomli); on any failure returns None so
+    the caller can fall back to a conservative default.
+    """
+    try:
+        import tomllib as _toml
+    except ImportError:
+        try:
+            import tomli as _toml
+        except ImportError:
+            return None
+    try:
+        with open(os.path.expanduser(str(config_path)), 'rb') as f:
+            data = _toml.load(f)
+    except (OSError, ValueError):
+        return None
+    # In pixi.toml/pyproject.toml, config lives under the tool namespace; in a
+    # standalone config.toml it is at the top level. Check both.
+    for root in (data, data.get('tool', {}).get('pixi', {}) if isinstance(data, dict) else {}):
+        cache = root.get('cache') if isinstance(root, dict) else None
+        if isinstance(cache, dict) and cache_key in cache:
+            return True
+    return False
+
+
+def pixi_config_scope_for_cache_key(cache_key):
+    """Pick the (scope_flag, note) to fix a bad cache.<cache_key> config value.
+
+    Returns ('--local', ' (in <path>)') only when the key is actually defined in
+    a project-local config that is in effect; otherwise ('--global', ''). This
+    avoids suggesting `--local` for a value that really comes from the global
+    config (which `--local` would not change).
+    """
+    for loc in get_pixi_config_locations():
+        if not _is_project_local_config(loc):
+            continue
+        defines = _config_defines_cache_key(loc, cache_key)
+        # True -> the key really is set here. None -> could not parse; be
+        # conservative and still prefer --local, since a local config is the
+        # highest-priority scope pixi is loading and may well own the key.
+        if defines or defines is None:
+            return '--local', f" (in {loc})"
+    return '--global', ''
+
+
 def find_misplaced_pixi_cache_overrides():
     """Find per-kind pixi cache overrides that point outside /pkg/cmr or /mnt/weka.
 
@@ -521,13 +578,11 @@ def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_lo
             None,
         )
         default_cache = resolve_path('~/.cache/rattler/cache')
-        # A workspace-local .pixi/config.toml overrides the global config and is
-        # already reflected by `pixi info`, so config-derived cache fixes must
-        # target that scope (a `--global` change would be overridden by it).
-        local_config = find_local_pixi_config()
-        config_scope = '--local' if local_config else '--global'
-        scope_note = (f" (in {local_config})" if local_config
-                      else "")
+        # The right pixi config scope for a config-derived fix depends on which
+        # config file actually defines the offending key: a project-local
+        # .pixi/config.toml overrides the global one, but a bad value may equally
+        # come from the global config even when a local config is present. Choose
+        # the scope per key (see pixi_config_scope_for_cache_key).
         # The root cache dir is "fine" only when we could determine it AND it is
         # within weka; in that case the check failed purely on a per-kind override
         # (handled below) so no root-level fix is needed. An unknown root
@@ -554,12 +609,13 @@ def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_lo
             step_num += 1
         elif cache_from_config_root:
             # cache.root config wins over the default location, so the symlink is
-            # ignored; fix the config instead.
+            # ignored; fix the config instead, in whichever scope defines it.
+            root_scope, root_note = pixi_config_scope_for_cache_key('root')
             suggestions.append(f"{step_num}. Point the pixi cache at /pkg/cmr. Your pixi `cache.root` config "
-                               f"sets it to {pixi_cache_dir}, which overrides the default location, so update it{scope_note}:")
+                               f"sets it to {pixi_cache_dir}, which overrides the default location, so update it{root_note}:")
             suggestions.append(f"   mkdir -p {suggested_cache_dir}")
-            suggestions.append(f"   pixi config set {config_scope} cache.root {suggested_cache_dir}")
-            suggestions.append(f"   # (or unset it: pixi config unset {config_scope} cache.root)")
+            suggestions.append(f"   pixi config set {root_scope} cache.root {suggested_cache_dir}")
+            suggestions.append(f"   # (or unset it: pixi config unset {root_scope} cache.root)")
             if looks_like_pixi_cache_dir(pixi_cache_dir):
                 suggestions.append(f"   # Then delete the old cache dir to reclaim its space:")
                 suggestions.append(f"   rm -rf {shlex.quote(pixi_cache_dir)}")
@@ -591,9 +647,13 @@ def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_lo
             else:
                 # src is like "config cache.<kind>"
                 key = src.split(' ', 1)[1] if ' ' in src else src
+                # `key` includes the `cache.` prefix; the cache table entry name
+                # is the part after it.
+                cache_kind = key.split('.', 1)[1] if '.' in key else key
+                kind_scope, kind_note = pixi_config_scope_for_cache_key(cache_kind)
                 suggestions.append(f"{step_num}. The per-kind pixi cache config `{key}` = {path} points off /pkg/cmr "
-                                   f"and overrides the cache root, so update or unset it{scope_note}:")
-                suggestions.append(f"   pixi config unset {config_scope} {key}   # (or set it under /pkg/cmr)")
+                                   f"and overrides the cache root, so update or unset it{kind_note}:")
+                suggestions.append(f"   pixi config unset {kind_scope} {key}   # (or set it under /pkg/cmr)")
             step_num += 1
 
     if not pixi_detached_ok:

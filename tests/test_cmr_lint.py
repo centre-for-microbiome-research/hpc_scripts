@@ -337,6 +337,30 @@ class TestCmrLint(unittest.TestCase):
         self.assertEqual(misplaced, [('config cache.conda-packages', '/home/testuser/cpkgs')])
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    def test_pixi_config_scope_for_cache_key(self):
+        """Scope is --local only when the offending key is defined in a local config."""
+        local = str(Path(self.test_dir) / '.pixi' / 'config.toml')
+        os.makedirs(os.path.dirname(local), exist_ok=True)
+        with open(local, 'w') as f:
+            f.write('[cache]\nconda-packages = "/home/u/cpkgs"\n')
+
+        with patch('cmr_lint.get_pixi_config_locations', return_value=[local]):
+            # Key IS defined locally -> --local, naming the file.
+            scope, note = cmr_lint.pixi_config_scope_for_cache_key('conda-packages')
+            self.assertEqual(scope, '--local')
+            self.assertIn(local, note)
+            # A different key not defined locally -> --global (comes from global).
+            scope, note = cmr_lint.pixi_config_scope_for_cache_key('root')
+            self.assertEqual(scope, '--global')
+            self.assertEqual(note, '')
+
+        # No local config at all -> always --global.
+        with patch('cmr_lint.get_pixi_config_locations',
+                   return_value=['/etc/pixi/config.toml']):
+            self.assertEqual(cmr_lint.pixi_config_scope_for_cache_key('root'),
+                             ('--global', ''))
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     def test_resolve_path_does_not_invoke_shell(self):
         """resolve_path must not shell out (guards against command injection)."""
         with patch('cmr_lint.run_command') as mock_run:
@@ -437,7 +461,7 @@ class TestCmrLint(unittest.TestCase):
         os.environ.pop('RATTLER_CACHE_DIR', None)
         overrides = [('config cache.conda-packages', '/home/testuser/cpkgs')]
         with patch('cmr_lint.getpass.getuser', return_value='testuser'), \
-                patch('cmr_lint.find_local_pixi_config', return_value=None), \
+                patch('cmr_lint.pixi_config_scope_for_cache_key', return_value=('--global', '')), \
                 patch('cmr_lint.find_misplaced_pixi_cache_overrides', return_value=overrides):
             suggestions = cmr_lint.generate_fix_suggestions(
                 True, True, True, True, False, True,
@@ -451,16 +475,17 @@ class TestCmrLint(unittest.TestCase):
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     @patch.dict(os.environ, {}, clear=False)
     def test_generate_fix_suggestions_pixi_cache_local_config_scope(self):
-        """A workspace-local pixi config makes cache fixes target --local, not --global."""
+        """When the offending key is defined locally, fixes target --local, naming the file."""
         os.environ.pop('PIXI_CACHE_DIR', None)
         os.environ.pop('RATTLER_CACHE_DIR', None)
         local = '/proj/.pixi/config.toml'
         overrides = [('config cache.conda-packages', '/home/testuser/cpkgs')]
         with patch('cmr_lint.getpass.getuser', return_value='testuser'), \
-                patch('cmr_lint.find_local_pixi_config', return_value=local), \
+                patch('cmr_lint.pixi_config_scope_for_cache_key',
+                      return_value=('--local', f' (in {local})')), \
                 patch('cmr_lint.find_misplaced_pixi_cache_overrides', return_value=overrides):
             # Bad cache.root (config-derived) plus a per-kind override; both should
-            # use --local because the effective config is workspace-local.
+            # use --local because the offending key is defined in the local config.
             suggestions = cmr_lint.generate_fix_suggestions(
                 True, True, True, True, False, True,
                 pixi_cache_dir='/tmp/localbad')
@@ -493,7 +518,7 @@ class TestCmrLint(unittest.TestCase):
         os.environ.pop('PIXI_CACHE_DIR', None)
         os.environ.pop('RATTLER_CACHE_DIR', None)
         with patch('cmr_lint.getpass.getuser', return_value='testuser'), \
-                patch('cmr_lint.find_local_pixi_config', return_value=None):
+                patch('cmr_lint.pixi_config_scope_for_cache_key', return_value=('--global', '')):
             suggestions = cmr_lint.generate_fix_suggestions(
                 True, True, True, True, False, True,
                 pixi_cache_dir='/tmp/pixi-cache')
