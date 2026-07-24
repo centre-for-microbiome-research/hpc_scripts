@@ -418,30 +418,59 @@ sandbox_build_binds() {
         esac
     done
 
-    if command -v pixi &>/dev/null; then
-        # Effective root cache dir. `|| true` keeps a nonzero `pixi info` (broken
-        # config) from tripping pipefail and aborting the launch.
-        local _pixi_info_json _pixi_config_json
+    # Ask pixi for the effective root cache dir and any per-kind cache config
+    # paths. We parse the JSON with python3 (always present alongside pixi/conda
+    # here; jq may not be) inside a single helper that also filters to real path
+    # values — the `cache` table also holds non-path settings such as
+    # `netfs-redirect = "auto"` which must not become bind targets — and expands
+    # a leading ~ / env vars so `realpath` below never treats a stored "~" as a
+    # relative path. Every probe is non-fatal (`|| true`, guarded from pipefail)
+    # so a broken pixi config never aborts the sandbox launch under the caller's
+    # `set -euo pipefail`.
+    if command -v pixi &>/dev/null && command -v python3 &>/dev/null; then
+        local _pixi_info_json _pixi_config_json _kind_path
         _pixi_info_json="$(pixi info --json 2>/dev/null || true)"
-        if [[ -n "$_pixi_info_json" ]]; then
-            local _pixi_effective_cache
-            _pixi_effective_cache="$(printf '%s' "$_pixi_info_json" \
-                | jq -r '.cache_dir // empty' 2>/dev/null || true)"
-            [[ -n "$_pixi_effective_cache" ]] && _pixi_cache_candidates+=("$_pixi_effective_cache")
-        fi
-        # Per-kind cache config path values (string values under the `cache` table
-        # other than `root`, which is already covered by the effective cache
-        # above). Restrict to actual paths (leading / or ~): the cache table also
-        # holds non-path settings such as `netfs-redirect = "auto"` which must not
-        # be turned into a bind target (mqlint applies the same filter).
         _pixi_config_json="$(pixi config list --json 2>/dev/null || true)"
-        if [[ -n "$_pixi_config_json" ]]; then
-            local _kind_path
-            while IFS= read -r _kind_path; do
-                [[ -n "$_kind_path" ]] && _pixi_cache_candidates+=("$_kind_path")
-            done < <(printf '%s' "$_pixi_config_json" \
-                | jq -r '(.cache // {}) | to_entries[] | select(.key != "root" and (.value | type == "string") and (.value | test("^(/|~)"))) | .value' 2>/dev/null || true)
-        fi
+        while IFS= read -r _kind_path; do
+            [[ -n "$_kind_path" ]] && _pixi_cache_candidates+=("$_kind_path")
+        done < <(
+            PIXI_INFO_JSON="$_pixi_info_json" PIXI_CONFIG_JSON="$_pixi_config_json" \
+            python3 - <<'PY' 2>/dev/null || true
+import json, os
+
+def expand(p):
+    return os.path.expanduser(os.path.expandvars(p))
+
+out = []
+info = os.environ.get("PIXI_INFO_JSON") or ""
+cfg = os.environ.get("PIXI_CONFIG_JSON") or ""
+
+try:
+    d = json.loads(info) if info.strip() else {}
+    root = d.get("cache_dir")
+    if isinstance(root, str) and root:
+        out.append(expand(root))
+except Exception:
+    pass
+
+try:
+    c = json.loads(cfg) if cfg.strip() else {}
+    cache = c.get("cache") if isinstance(c, dict) else None
+    if isinstance(cache, dict):
+        for key, val in cache.items():
+            if key == "root" or not isinstance(val, str):
+                continue
+            # Only real path values (leading / or ~), not settings like
+            # netfs-redirect = "auto".
+            if val.startswith("/") or val.startswith("~"):
+                out.append(expand(val))
+except Exception:
+    pass
+
+for p in out:
+    print(p)
+PY
+        )
     fi
 
     for _pixi_cache in "${_pixi_cache_candidates[@]}"; do
