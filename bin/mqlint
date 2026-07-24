@@ -427,14 +427,15 @@ def find_misplaced_pixi_cache_overrides():
             if not is_within_weka(os.path.expanduser(value)):
                 misplaced.append((f"config cache.{kind}", value))
 
-    # Env vars: PIXI_CACHE_*_DIR / RATTLER_CACHE_*_DIR beyond the root ones,
-    # which get_pixi_cache_dir()/the root check already handle.
-    root_vars = {'PIXI_CACHE_DIR', 'RATTLER_CACHE_DIR'}
+    # Per-kind cache env vars: only PIXI_CACHE_<KIND>_DIR is a documented per-kind
+    # override (there is no RATTLER_ per-kind alias; RATTLER_CACHE_DIR is only the
+    # root alias, handled by get_pixi_cache_dir()/the root check). Flagging a
+    # RATTLER_CACHE_<KIND>_DIR pixi would ignore is a false positive, so scan only
+    # PIXI_CACHE_*_DIR beyond the root var.
     for var_name, value in os.environ.items():
-        if var_name in root_vars or not value:
+        if var_name == 'PIXI_CACHE_DIR' or not value:
             continue
-        if (var_name.startswith('PIXI_CACHE_') or var_name.startswith('RATTLER_CACHE_')) \
-                and var_name.endswith('_DIR'):
+        if var_name.startswith('PIXI_CACHE_') and var_name.endswith('_DIR'):
             if not is_within_weka(os.path.expanduser(value)):
                 misplaced.append((f"${var_name}", value))
 
