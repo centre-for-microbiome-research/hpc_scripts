@@ -441,8 +441,13 @@ sandbox_build_binds() {
 
     if [[ -n "$_pixi_bin" ]] && command -v python3 &>/dev/null; then
         local _pixi_info_json _pixi_config_json _kind_path
-        _pixi_info_json="$("$_pixi_bin" info --json 2>/dev/null || true)"
-        _pixi_config_json="$("$_pixi_bin" config list --json 2>/dev/null || true)"
+        # Probe from the sandbox's target CWD, not the launcher's process cwd:
+        # mqsandbox --cwd (and the container's --pwd) may point elsewhere, and a
+        # project-local <CWD>/.pixi/config.toml only takes effect from that dir.
+        # Run in a subshell so the function's own cwd is unchanged; if the cd
+        # fails, fall back to probing in place.
+        _pixi_info_json="$( { cd "$cwd" 2>/dev/null; "$_pixi_bin" info --json; } 2>/dev/null || true)"
+        _pixi_config_json="$( { cd "$cwd" 2>/dev/null; "$_pixi_bin" config list --json; } 2>/dev/null || true)"
         while IFS= read -r _kind_path; do
             [[ -n "$_kind_path" ]] && _pixi_cache_candidates+=("$_kind_path")
         done < <(
