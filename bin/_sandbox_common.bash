@@ -427,10 +427,22 @@ sandbox_build_binds() {
     # relative path. Every probe is non-fatal (`|| true`, guarded from pipefail)
     # so a broken pixi config never aborts the sandbox launch under the caller's
     # `set -euo pipefail`.
-    if command -v pixi &>/dev/null && command -v python3 &>/dev/null; then
+    # Resolve pixi even when the deployed bin/ is not on the host PATH: mqyolo/
+    # mqsandbox run by absolute path (or in a batch job) still ship pixi next to
+    # the sandbox scripts (SCRIPT_DIR/pixi, staged by sandbox_stage_repo_tools).
+    # Prefer that, then fall back to PATH.
+    local _pixi_bin=""
+    local _script_dir="${SANDBOX_SCRIPT_DIR:-${SCRIPT_DIR:-}}"
+    if [[ -n "$_script_dir" && -x "${_script_dir}/pixi" ]]; then
+        _pixi_bin="${_script_dir}/pixi"
+    elif command -v pixi &>/dev/null; then
+        _pixi_bin="pixi"
+    fi
+
+    if [[ -n "$_pixi_bin" ]] && command -v python3 &>/dev/null; then
         local _pixi_info_json _pixi_config_json _kind_path
-        _pixi_info_json="$(pixi info --json 2>/dev/null || true)"
-        _pixi_config_json="$(pixi config list --json 2>/dev/null || true)"
+        _pixi_info_json="$("$_pixi_bin" info --json 2>/dev/null || true)"
+        _pixi_config_json="$("$_pixi_bin" config list --json 2>/dev/null || true)"
         while IFS= read -r _kind_path; do
             [[ -n "$_kind_path" ]] && _pixi_cache_candidates+=("$_kind_path")
         done < <(
