@@ -392,6 +392,14 @@ class TestCmrLint(unittest.TestCase):
             self.assertEqual(cmr_lint.pixi_config_scope_for_cache_key('root'),
                              ('--global', ''))
 
+        # Local config present but unparseable (no TOML parser): must NOT assume
+        # local ownership -> fall back to --global but name the local file.
+        with patch('cmr_lint.get_pixi_config_locations', return_value=[local]), \
+                patch('cmr_lint._config_defines_cache_key', return_value=None):
+            scope, note = cmr_lint.pixi_config_scope_for_cache_key('conda-packages')
+            self.assertEqual(scope, '--global')
+            self.assertIn(local, note)
+
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     def test_resolve_path_does_not_invoke_shell(self):
         """resolve_path must not shell out (guards against command injection)."""

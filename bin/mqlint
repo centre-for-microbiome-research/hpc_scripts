@@ -366,20 +366,29 @@ def _config_defines_cache_key(config_path, cache_key):
 def pixi_config_scope_for_cache_key(cache_key):
     """Pick the (scope_flag, note) to fix a bad cache.<cache_key> config value.
 
-    Returns ('--local', ' (in <path>)') only when the key is actually defined in
-    a project-local config that is in effect; otherwise ('--global', ''). This
-    avoids suggesting `--local` for a value that really comes from the global
-    config (which `--local` would not change).
+    Returns ('--local', ' (in <path>)') only when we can CONFIRM the key is
+    defined in a project-local config in effect; otherwise ('--global', ...).
+
+    We only trust a confirmed local definition. If a local config exists but no
+    TOML parser is available to inspect it (`defines is None`), we do NOT assume
+    local ownership: guessing `--local` for a value that actually comes from the
+    global config would leave the global setting (and the failure) in place.
+    Instead we fall back to `--global` — which fixes the common case and works
+    outside a workspace — and, when a local config is present, name it so the
+    user can also check/override it there.
     """
+    unparsed_local = None
     for loc in get_pixi_config_locations():
         if not _is_project_local_config(loc):
             continue
         defines = _config_defines_cache_key(loc, cache_key)
-        # True -> the key really is set here. None -> could not parse; be
-        # conservative and still prefer --local, since a local config is the
-        # highest-priority scope pixi is loading and may well own the key.
-        if defines or defines is None:
+        if defines:
             return '--local', f" (in {loc})"
+        if defines is None and unparsed_local is None:
+            unparsed_local = loc
+    if unparsed_local is not None:
+        return '--global', (f" (globally; if it persists, also check/override "
+                            f"cache.{cache_key} in {unparsed_local})")
     return '--global', ''
 
 
