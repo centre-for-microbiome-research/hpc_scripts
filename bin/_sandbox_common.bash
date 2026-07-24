@@ -409,11 +409,15 @@ sandbox_build_binds() {
     local _pixi_cache _pixi_cache_real
     local -a _pixi_cache_candidates=("${PIXI_CACHE_DIR:-}" "${RATTLER_CACHE_DIR:-}")
 
-    # Per-kind cache env vars (e.g. PIXI_CACHE_CONDA_PACKAGES_DIR).
+    # Per-kind cache env vars (e.g. PIXI_CACHE_CONDA_PACKAGES_DIR). Only the
+    # PIXI_CACHE_<KIND>_DIR form is a documented per-kind override; there is no
+    # RATTLER_ per-kind alias (RATTLER_CACHE_DIR is only the root alias, already
+    # a candidate above), so scanning RATTLER_CACHE_*_DIR would bind dirs pixi
+    # never uses.
     local _v
-    for _v in "${!PIXI_CACHE_@}" "${!RATTLER_CACHE_@}"; do
+    for _v in "${!PIXI_CACHE_@}"; do
         case "$_v" in
-            PIXI_CACHE_DIR|RATTLER_CACHE_DIR) continue ;;  # roots, already added
+            PIXI_CACHE_DIR) continue ;;   # root, already added
             *_DIR) _pixi_cache_candidates+=("${!_v}") ;;
         esac
     done
