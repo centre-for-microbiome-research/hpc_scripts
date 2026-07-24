@@ -473,9 +473,18 @@ PY
         )
     fi
 
+    # Only rw-bind caches that actually land on the read-only shared trees
+    # (/pkg/cmr, /mnt/weka). A cache elsewhere (e.g. pixi's default
+    # ~/.cache/rattler when nothing is configured) is already writable, so
+    # binding it is pointless — and worse, mkdir'ing/binding the default would
+    # *create* the off-filesystem home cache that mqlint tells users to avoid.
     for _pixi_cache in "${_pixi_cache_candidates[@]}"; do
         [[ -n "$_pixi_cache" ]] || continue
         _pixi_cache_real="$(realpath "$_pixi_cache" 2>/dev/null || echo "$_pixi_cache")"
+        case "$_pixi_cache_real" in
+            /pkg/cmr/*|/mnt/weka/*) ;;   # on a read-only shared tree: bind it rw
+            *) continue ;;               # already writable / off-tree: leave alone
+        esac
         mkdir -p "$_pixi_cache_real" 2>/dev/null || true
         [[ -d "$_pixi_cache_real" ]] && BIND_ARGS+=(--bind "${_pixi_cache_real}:${_pixi_cache_real}:rw")
     done
