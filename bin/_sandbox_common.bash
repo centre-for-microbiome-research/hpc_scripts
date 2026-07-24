@@ -450,8 +450,11 @@ sandbox_build_binds() {
             python3 - <<'PY' 2>/dev/null || true
 import json, os
 
+# pixi's path syntax expands a leading ~ but treats environment-variable strings
+# ($VAR/${VAR}) LITERALLY, so we must only expanduser — never expandvars — or we
+# would bind a different directory than pixi actually writes to.
 def expand(p):
-    return os.path.expanduser(os.path.expandvars(p))
+    return os.path.expanduser(p)
 
 out = []
 info = os.environ.get("PIXI_INFO_JSON") or ""
@@ -460,8 +463,9 @@ cfg = os.environ.get("PIXI_CONFIG_JSON") or ""
 try:
     d = json.loads(info) if info.strip() else {}
     root = d.get("cache_dir")
+    # `cache_dir` from `pixi info` is already fully resolved by pixi.
     if isinstance(root, str) and root:
-        out.append(expand(root))
+        out.append(root)
 except Exception:
     pass
 

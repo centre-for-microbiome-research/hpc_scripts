@@ -348,6 +348,18 @@ class TestCmrLint(unittest.TestCase):
         self.assertEqual(misplaced, [])
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch.dict(os.environ, {'RATTLER_CACHE_CONDA_PACKAGES_DIR': '/pkg/cmr/testuser/cpkgs'}, clear=False)
+    def test_find_misplaced_pixi_cache_overrides_rattler_per_kind_not_shadowing(self):
+        """A RATTLER_ per-kind var does NOT shadow config (pixi honors PIXI_ only)."""
+        os.environ.pop('PIXI_CACHE_CONDA_PACKAGES_DIR', None)
+        # Bad config value must STILL be reported: pixi has no RATTLER_ per-kind
+        # override, so the config path is what pixi actually uses.
+        config = {'cache': {'conda-packages': '/home/testuser/cpkgs'}}
+        with patch('cmr_lint.load_pixi_config', return_value=(config, None)):
+            misplaced = cmr_lint.find_misplaced_pixi_cache_overrides()
+        self.assertIn(('config cache.conda-packages', '/home/testuser/cpkgs'), misplaced)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     def test_pixi_config_scope_for_cache_key(self):
         """Scope is --local only when the offending key is defined in a local config."""
         local = str(Path(self.test_dir) / '.pixi' / 'config.toml')
