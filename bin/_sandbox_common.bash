@@ -399,19 +399,48 @@ sandbox_build_binds() {
     # (sandbox_build_env); inside the container it resolves through the ro-bound
     # parent symlink onto this rw bind.
     #
-    # The effective cache dir may come from PIXI_CACHE_DIR / RATTLER_CACHE_DIR OR
-    # from the `cache.root` config key (which mqlint may steer users towards), so
-    # ask pixi for the resolved value in addition to the env vars. Without this,
-    # a config-only cache.root under /pkg/cmr would stay read-only in the sandbox.
+    # The effective cache dir may come from PIXI_CACHE_DIR / RATTLER_CACHE_DIR, the
+    # `cache.root` config key (which mqlint may steer users towards), or a per-kind
+    # override (cache.<kind> config / PIXI_CACHE_*_DIR env vars). Any of these can
+    # land under /pkg/cmr, which is bound READ-ONLY above, so collect them all and
+    # rw-bind each. Every pixi probe is made non-fatal (|| true, and guarded from
+    # pipefail) so a broken pixi config never aborts the sandbox launch under the
+    # caller's `set -euo pipefail`.
     local _pixi_cache _pixi_cache_real
     local -a _pixi_cache_candidates=("${PIXI_CACHE_DIR:-}" "${RATTLER_CACHE_DIR:-}")
+
+    # Per-kind cache env vars (e.g. PIXI_CACHE_CONDA_PACKAGES_DIR).
+    local _v
+    for _v in "${!PIXI_CACHE_@}" "${!RATTLER_CACHE_@}"; do
+        case "$_v" in
+            PIXI_CACHE_DIR|RATTLER_CACHE_DIR) continue ;;  # roots, already added
+            *_DIR) _pixi_cache_candidates+=("${!_v}") ;;
+        esac
+    done
+
     if command -v pixi &>/dev/null; then
-        local _pixi_effective_cache
-        _pixi_effective_cache="$(pixi info --json 2>/dev/null \
-            | sed -n 's/.*"cache_dir"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-            | head -n1)"
-        [[ -n "$_pixi_effective_cache" ]] && _pixi_cache_candidates+=("$_pixi_effective_cache")
+        # Effective root cache dir. `|| true` keeps a nonzero `pixi info` (broken
+        # config) from tripping pipefail and aborting the launch.
+        local _pixi_info_json _pixi_config_json
+        _pixi_info_json="$(pixi info --json 2>/dev/null || true)"
+        if [[ -n "$_pixi_info_json" ]]; then
+            local _pixi_effective_cache
+            _pixi_effective_cache="$(printf '%s' "$_pixi_info_json" \
+                | jq -r '.cache_dir // empty' 2>/dev/null || true)"
+            [[ -n "$_pixi_effective_cache" ]] && _pixi_cache_candidates+=("$_pixi_effective_cache")
+        fi
+        # Per-kind cache config values (any string under the `cache` table other
+        # than `root`, which is already covered by the effective cache above).
+        _pixi_config_json="$(pixi config list --json 2>/dev/null || true)"
+        if [[ -n "$_pixi_config_json" ]]; then
+            local _kind_path
+            while IFS= read -r _kind_path; do
+                [[ -n "$_kind_path" ]] && _pixi_cache_candidates+=("$_kind_path")
+            done < <(printf '%s' "$_pixi_config_json" \
+                | jq -r '(.cache // {}) | to_entries[] | select(.key != "root" and (.value | type == "string")) | .value' 2>/dev/null || true)
+        fi
     fi
+
     for _pixi_cache in "${_pixi_cache_candidates[@]}"; do
         [[ -n "$_pixi_cache" ]] || continue
         _pixi_cache_real="$(realpath "$_pixi_cache" 2>/dev/null || echo "$_pixi_cache")"
