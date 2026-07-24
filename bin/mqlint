@@ -385,6 +385,15 @@ def find_misplaced_pixi_cache_overrides():
     """
     misplaced = []
 
+    def _kind_env_vars(kind):
+        """Per-kind cache env var names for a `cache.<kind>` key.
+
+        pixi maps e.g. cache.conda-packages -> PIXI_CACHE_CONDA_PACKAGES_DIR
+        (uppercase, '-' -> '_'); the RATTLER_ prefix is the equivalent alias.
+        """
+        token = kind.upper().replace('-', '_')
+        return (f"PIXI_CACHE_{token}_DIR", f"RATTLER_CACHE_{token}_DIR")
+
     # Config: any string path under the `cache` table other than `root`.
     config, _ = load_pixi_config()
     cache_cfg = config.get('cache') if isinstance(config, dict) else None
@@ -395,6 +404,12 @@ def find_misplaced_pixi_cache_overrides():
             # Only treat absolute-ish paths as cache-dir overrides (some kinds,
             # e.g. netfs-redirect, take non-path values).
             if not (value.startswith('/') or value.startswith('~')):
+                continue
+            # A matching per-kind env var takes precedence over the config value
+            # (pixi resolution order: env var before [cache.<kind>]). If such an
+            # env var is set, the config value is shadowed — skip it here and let
+            # the env-var loop below judge the effective value.
+            if any(os.environ.get(v) for v in _kind_env_vars(kind)):
                 continue
             if not is_within_weka(os.path.expanduser(value)):
                 misplaced.append((f"config cache.{kind}", value))

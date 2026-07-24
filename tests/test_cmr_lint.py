@@ -337,6 +337,17 @@ class TestCmrLint(unittest.TestCase):
         self.assertEqual(misplaced, [('config cache.conda-packages', '/home/testuser/cpkgs')])
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch.dict(os.environ, {'PIXI_CACHE_CONDA_PACKAGES_DIR': '/pkg/cmr/testuser/cpkgs'}, clear=False)
+    def test_find_misplaced_pixi_cache_overrides_env_shadows_config(self):
+        """A compliant per-kind env var shadows a bad config value (env wins)."""
+        # Bad cache.conda-packages config, but the matching env var is compliant
+        # and takes precedence, so nothing should be flagged.
+        config = {'cache': {'conda-packages': '/home/testuser/cpkgs'}}
+        with patch('cmr_lint.load_pixi_config', return_value=(config, None)):
+            misplaced = cmr_lint.find_misplaced_pixi_cache_overrides()
+        self.assertEqual(misplaced, [])
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     def test_pixi_config_scope_for_cache_key(self):
         """Scope is --local only when the offending key is defined in a local config."""
         local = str(Path(self.test_dir) / '.pixi' / 'config.toml')
