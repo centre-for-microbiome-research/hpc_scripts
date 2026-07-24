@@ -458,6 +458,21 @@ class TestCmrLint(unittest.TestCase):
             self.assertIsNone(cmr_lint.find_local_pixi_config())
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch.dict(os.environ, {'PIXI_CONFIG_FILE': '/custom/pixi.toml'}, clear=False)
+    def test_is_project_local_config_excludes_global_locations(self):
+        """The scope picker's classifier also excludes global/system locations."""
+        # PIXI_CONFIG_FILE is pixi's global layer even when named pixi.toml.
+        self.assertFalse(cmr_lint._is_project_local_config('/custom/pixi.toml'))
+        self.assertFalse(cmr_lint._is_project_local_config('/etc/pixi/config.toml'))
+        # A genuine project-local config is still local.
+        self.assertTrue(cmr_lint._is_project_local_config('/proj/.pixi/config.toml'))
+        # ...and via the scope picker, a PIXI_CONFIG_FILE-defined key is --global.
+        with patch('cmr_lint.get_pixi_config_locations',
+                   return_value=['/custom/pixi.toml']):
+            scope, _ = cmr_lint.pixi_config_scope_for_cache_key('root')
+            self.assertEqual(scope, '--global')
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     def test_get_pixi_cache_dir_prefers_pixi_info(self):
         """get_pixi_cache_dir uses the cache_dir reported by `pixi info --json`."""
         with patch('cmr_lint.run_command',

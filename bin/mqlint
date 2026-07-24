@@ -283,18 +283,13 @@ def get_pixi_config_locations():
     return locations if isinstance(locations, list) else []
 
 
-def find_local_pixi_config():
-    """Return a project-local pixi config path if one is in effect, else None.
+def _excluded_pixi_config_paths():
+    """Realpaths of pixi's known global/system/user config locations.
 
-    Only a workspace/project config (``<project>/.pixi/config.toml``, or the
-    project manifest ``pixi.toml``/``pyproject.toml``) counts as "local": those
-    override the global config and require ``pixi config set --local``. System
-    and user locations reported by pixi (``/etc/pixi/config.toml``,
-    ``$XDG_CONFIG_HOME/pixi/config.toml``, ``~/.config/pixi``, ``~/.pixi``,
-    ``$PIXI_HOME``, ``$PIXI_CONFIG_FILE``) are matched positively and excluded,
-    so we never emit ``--local`` for a global/system config.
+    These are NEVER project-local: /etc/pixi/config.toml,
+    $XDG_CONFIG_HOME/pixi/config.toml, ~/.config/pixi, ~/.pixi, $PIXI_HOME, and
+    $PIXI_CONFIG_FILE (which pixi treats as the global config layer).
     """
-    # Known non-project (global/system/user) config locations to exclude.
     excluded = set()
 
     def _add(path):
@@ -311,28 +306,32 @@ def find_local_pixi_config():
     if pixi_home:
         _add(os.path.join(pixi_home, 'config.toml'))
     _add(os.environ.get('PIXI_CONFIG_FILE'))
-
-    for loc in get_pixi_config_locations():
-        real = os.path.realpath(os.path.expanduser(str(loc)))
-        if real in excluded:
-            continue
-        # A project-local config is `<project>/.pixi/config.toml` or the project
-        # manifest itself (config can live in pixi.toml/pyproject.toml).
-        parent = os.path.basename(os.path.dirname(real))
-        name = os.path.basename(real)
-        if (name == 'config.toml' and parent == '.pixi') \
-                or name in ('pixi.toml', 'pyproject.toml'):
-            return loc
-    return None
+    return excluded
 
 
 def _is_project_local_config(path):
-    """True if `path` looks like a project-local pixi config (not global/system)."""
+    """True if `path` is a project-local pixi config (not a global/system one).
+
+    A project-local config is ``<project>/.pixi/config.toml`` or the project
+    manifest (``pixi.toml``/``pyproject.toml``). Paths matching pixi's known
+    global/system/user locations are excluded even if their basename matches
+    (e.g. a $PIXI_CONFIG_FILE named pixi.toml is the global layer, not local).
+    """
     real = os.path.realpath(os.path.expanduser(str(path)))
+    if real in _excluded_pixi_config_paths():
+        return False
     parent = os.path.basename(os.path.dirname(real))
     name = os.path.basename(real)
     return (name == 'config.toml' and parent == '.pixi') \
         or name in ('pixi.toml', 'pyproject.toml')
+
+
+def find_local_pixi_config():
+    """Return a project-local pixi config path if one is in effect, else None."""
+    for loc in get_pixi_config_locations():
+        if _is_project_local_config(loc):
+            return loc
+    return None
 
 
 def _config_defines_cache_key(config_path, cache_key):
