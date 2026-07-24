@@ -95,18 +95,28 @@ def is_within_weka(path):
 
 
 def looks_like_pixi_cache_dir(path):
-    """Heuristically decide whether `path` is a dedicated pixi/rattler cache dir.
+    """Heuristically decide whether `path` is a DEDICATED pixi/rattler cache dir.
 
-    Used to gate the destructive `rm -rf` deletion hint: we only suggest wiping
-    the whole path when its final component is a recognizable cache directory
-    name (so we never propose `rm -rf $HOME` or `rm -rf /tmp`).
+    Used to gate the destructive `rm -rf` deletion hint. We only accept a path
+    that clearly belongs to pixi/rattler, so we never propose `rm -rf` on a
+    broad root like $HOME, /tmp, or a shared cache root such as ~/.cache or
+    /var/cache (which hold unrelated application caches).
     """
     if not path:
         return False
-    basename = os.path.basename(str(path).rstrip('/')).lower()
-    # The final path component must itself name a cache dir, so we never propose
-    # rm -rf on a broad root like $HOME (basename = username) or /tmp.
-    return any(token in basename for token in ('cache', 'rattler', 'pixi'))
+    normalized = str(path).rstrip('/')
+    basename = os.path.basename(normalized).lower()
+    parent = os.path.basename(os.path.dirname(normalized)).lower()
+    # A leaf that names pixi/rattler is dedicated (e.g. …/pixi/cache's parent, or
+    # a dir literally called `rattler`).
+    if 'pixi' in basename or 'rattler' in basename:
+        return True
+    # pixi's default cache leaf is `cache`, but only treat it as dedicated when it
+    # sits under a rattler/pixi parent (…/rattler/cache). A bare `cache`/`.cache`
+    # root (e.g. ~/.cache, /var/cache) holds other tools' caches — never rm -rf.
+    if basename == 'cache':
+        return parent in ('rattler', 'pixi')
+    return False
 
 
 def parse_condarc_line(line):

@@ -541,6 +541,24 @@ class TestCmrLint(unittest.TestCase):
         self.assertIn('rm -rf /tmp/pixi-cache', text)
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    @patch.dict(os.environ, {}, clear=False)
+    def test_generate_fix_suggestions_pixi_cache_broad_root_no_rm(self):
+        """A broad cache.root like ~/.cache must not get a literal rm -rf."""
+        os.environ.pop('PIXI_CACHE_DIR', None)
+        os.environ.pop('RATTLER_CACHE_DIR', None)
+        broad = os.path.expanduser('~/.cache')
+        with patch('cmr_lint.getpass.getuser', return_value='testuser'), \
+                patch('cmr_lint.pixi_config_scope_for_cache_key', return_value=('--global', '')):
+            suggestions = cmr_lint.generate_fix_suggestions(
+                True, True, True, True, False, True,
+                pixi_cache_dir=broad)
+        text = '\n'.join(suggestions)
+        # Fix the config, but do NOT propose wiping the shared ~/.cache dir.
+        self.assertIn('pixi config set --global cache.root', text)
+        self.assertNotIn(f'rm -rf {broad}', text)
+        self.assertIn('manually', text)
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     @patch.dict(os.environ, {'PIXI_CACHE_DIR': '/tmp/pixi-cache'}, clear=False)
     def test_generate_fix_suggestions_pixi_cache_env_override(self):
         """A bad env var overrides cache.root and the default, so fix the env var."""
@@ -586,12 +604,19 @@ class TestCmrLint(unittest.TestCase):
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     def test_looks_like_pixi_cache_dir(self):
-        """The rm-guard recognizes cache dirs but not broad roots."""
+        """The rm-guard recognizes dedicated pixi/rattler dirs but not broad roots."""
+        # Dedicated pixi/rattler leaf dirs.
         self.assertTrue(cmr_lint.looks_like_pixi_cache_dir('/tmp/pixi-cache'))
         self.assertTrue(cmr_lint.looks_like_pixi_cache_dir('/home/u/.cache/rattler'))
         self.assertTrue(cmr_lint.looks_like_pixi_cache_dir('/some/where/pixi'))
+        # pixi's default cache: `cache` leaf under a rattler/pixi parent.
+        self.assertTrue(cmr_lint.looks_like_pixi_cache_dir('/home/u/.cache/rattler/cache'))
+        self.assertTrue(cmr_lint.looks_like_pixi_cache_dir('/x/pixi/cache'))
+        # Broad roots / shared cache dirs must NOT be accepted (would rm -rf too much).
         self.assertFalse(cmr_lint.looks_like_pixi_cache_dir('/home/testuser'))
         self.assertFalse(cmr_lint.looks_like_pixi_cache_dir('/tmp'))
+        self.assertFalse(cmr_lint.looks_like_pixi_cache_dir('/home/u/.cache'))
+        self.assertFalse(cmr_lint.looks_like_pixi_cache_dir('/var/cache'))
         self.assertFalse(cmr_lint.looks_like_pixi_cache_dir(''))
 
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
