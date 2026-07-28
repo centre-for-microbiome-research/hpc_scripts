@@ -194,6 +194,25 @@ sandbox_add_default_scratch_paths() {
     return 0
 }
 
+# sandbox_looks_like_pixi_cache_dir PATH
+#   Heuristically decide whether PATH is a dedicated pixi/rattler cache dir,
+#   mirroring mqlint's looks_like_pixi_cache_dir(). Used to gate the pixi
+#   cache rw-bind below so we bind (and mkdir into existence) real pixi cache
+#   dirs wherever they are, without blindly creating/binding an unrelated
+#   directory that a misparsed config value happened to name.
+sandbox_looks_like_pixi_cache_dir() {
+    local _p="${1%/}"
+    [[ -n "$_p" ]] || return 1
+    local _base="${_p##*/}" _parent="${_p%/*}"
+    _parent="${_parent##*/}"
+    _base="${_base,,}"
+    _parent="${_parent,,}"
+    case "$_base" in
+        *pixi*|*rattler*) return 0 ;;
+    esac
+    [[ "$_base" == "cache" && ( "$_parent" == "rattler" || "$_parent" == "pixi" ) ]]
+}
+
 # ---------------------------------------------------------------------------
 # sandbox_build_binds CWD [RW_PATH...] [-- RO_PATH...]
 #   Populates BIND_ARGS with the read-only system/HPC binds, the anti-exfiltration
@@ -498,18 +517,17 @@ PY
         )
     fi
 
-    # Only rw-bind caches that actually land on the read-only shared trees
-    # (/pkg/cmr, /mnt/weka). A cache elsewhere (e.g. pixi's default
-    # ~/.cache/rattler when nothing is configured) is already writable, so
-    # binding it is pointless — and worse, mkdir'ing/binding the default would
-    # *create* the off-filesystem home cache that mqlint tells users to avoid.
+    # rw-bind any candidate that looks like a dedicated pixi/rattler cache dir
+    # (sandbox_looks_like_pixi_cache_dir), regardless of which tree it's on —
+    # a cache dir configured off /pkg/cmr or /mnt/weka (e.g. under /tmp or
+    # /scratch) still needs to be writable for `pixi install`/env regeneration
+    # to work, same as one on a read-only shared tree. Skipping non-cache-shaped
+    # paths avoids mkdir'ing/binding an unrelated directory into existence just
+    # because a config value happened to resolve there.
     for _pixi_cache in "${_pixi_cache_candidates[@]}"; do
         [[ -n "$_pixi_cache" ]] || continue
         _pixi_cache_real="$(realpath "$_pixi_cache" 2>/dev/null || echo "$_pixi_cache")"
-        case "$_pixi_cache_real" in
-            /pkg/cmr/*|/mnt/weka/*) ;;   # on a read-only shared tree: bind it rw
-            *) continue ;;               # already writable / off-tree: leave alone
-        esac
+        sandbox_looks_like_pixi_cache_dir "$_pixi_cache_real" || continue
         mkdir -p "$_pixi_cache_real" 2>/dev/null || true
         [[ -d "$_pixi_cache_real" ]] && BIND_ARGS+=(--bind "${_pixi_cache_real}:${_pixi_cache_real}:rw")
     done
