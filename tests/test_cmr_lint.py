@@ -113,7 +113,63 @@ class TestCmrLint(unittest.TestCase):
         
         result = cmr_lint.load_condarc(condarc_path)
         self.assertEqual(result, test_config)
-    
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    def test_load_condarc_strips_inline_comments(self):
+        """Inline YAML comments must not become part of the path.
+
+        The template mqlint itself prints annotates entries with comments, e.g.
+        `- /pkg/cmr/user/conda/envs # personal environments`.
+        """
+        condarc_path = Path(self.test_dir) / '.condarc'
+        with open(condarc_path, 'w') as f:
+            f.write(
+                "channels:\n"
+                "  - conda-forge\n"
+                "envs_dirs:\n"
+                "  - /home/testuser/e # personal environments\n"
+                "  - /work/microbiome/sw/conda/envs # central conda environments\n"
+                "pkgs_dirs:\n"
+                "  - /home/testuser/e/conda-pkgs\n"
+                "solver: libmamba # fast solver\n"
+            )
+
+        result = cmr_lint.load_condarc(condarc_path)
+        self.assertEqual(
+            result['envs_dirs'],
+            ['/home/testuser/e', '/work/microbiome/sw/conda/envs'],
+        )
+        self.assertEqual(result['pkgs_dirs'], ['/home/testuser/e/conda-pkgs'])
+        self.assertEqual(result['solver'], 'libmamba')
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    def test_strip_inline_comment(self):
+        """Only whitespace-preceded '#' outside quotes starts a comment."""
+        self.assertEqual(
+            cmr_lint.strip_inline_comment('/home/u/e # personal envs'),
+            '/home/u/e',
+        )
+        # No preceding whitespace: '#' is part of the value (YAML rule).
+        self.assertEqual(cmr_lint.strip_inline_comment('/home/u/e#1'), '/home/u/e#1')
+        # A '#' inside a quoted scalar is literal.
+        self.assertEqual(
+            cmr_lint.strip_inline_comment('"/home/u/e #1"'),
+            '"/home/u/e #1"',
+        )
+        # Value that is only a comment collapses to empty.
+        self.assertEqual(cmr_lint.strip_inline_comment('# just a comment'), '')
+        # Values without comments (and falsy inputs) pass through.
+        self.assertEqual(cmr_lint.strip_inline_comment('/home/u/e'), '/home/u/e')
+        self.assertEqual(cmr_lint.strip_inline_comment(''), '')
+        self.assertIsNone(cmr_lint.strip_inline_comment(None))
+
+    @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
+    def test_check_env_dirs_with_inline_comment(self):
+        """A commented entry that resolves into weka should pass."""
+        config = {'envs_dirs': ['/mnt/weka/pkg/cmr/testuser/conda/envs']}
+        ok, message = cmr_lint.check_env_dirs(config)
+        self.assertTrue(ok, message)
+
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
     def test_load_condarc_invalid_format(self):
         """Test loading a .condarc file that can't be read."""

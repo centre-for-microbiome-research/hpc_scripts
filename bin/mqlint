@@ -119,17 +119,46 @@ def looks_like_pixi_cache_dir(path):
     return False
 
 
+def strip_inline_comment(value):
+    """Drop a trailing YAML comment from a scalar value.
+
+    .condarc entries commonly carry an explanatory comment, e.g.
+    `- /pkg/cmr/user/conda/envs # personal environments` (the template this
+    script itself prints does exactly that). Without stripping it, the path
+    becomes the literal string `… # personal environments`, which resolves to
+    nothing and makes the env/pkgs dir checks report a false failure.
+
+    Follows YAML's rule: a `#` only starts a comment when it is at the start of
+    the value or preceded by whitespace (so `/path/a#b` stays intact), and never
+    inside a quoted scalar.
+    """
+    if not value:
+        return value
+
+    text = str(value)
+    quote = None
+    for i, char in enumerate(text):
+        if quote:
+            if char == quote:
+                quote = None
+        elif char in ('"', "'"):
+            quote = char
+        elif char == '#' and (i == 0 or text[i - 1].isspace()):
+            return text[:i].strip()
+    return text.strip()
+
+
 def parse_condarc_line(line):
     """Parse a single line from .condarc file."""
     line = line.strip()
     if not line or line.startswith('#'):
         return None, None
-    
+
     if ':' in line and not line.startswith(' ') and not line.startswith('-'):
         # This is a key line
         key, value = line.split(':', 1)
         key = key.strip()
-        value = value.strip()
+        value = strip_inline_comment(value.strip())
         if value:
             # Single value on same line
             return key, [value] if key.endswith('_dirs') else value
@@ -138,8 +167,8 @@ def parse_condarc_line(line):
             return key, []
     elif line.startswith('- '):
         # This is a list item
-        return 'list_item', line[2:].strip()
-    
+        return 'list_item', strip_inline_comment(line[2:].strip())
+
     return None, None
 
 
