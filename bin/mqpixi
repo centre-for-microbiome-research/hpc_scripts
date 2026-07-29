@@ -13,13 +13,32 @@ set -euo pipefail
 
 CMR_PIXI_TOML="${CMR_PIXI_TOML:-/pkg/cmr/mqpixi/pixi.toml}"
 
-if [[ $# -lt 1 ]]; then
+print_usage() {
     echo "Usage: mqpixi <environment-name>"
     echo "e.g.:  mqpixi checkm2-v1.0.2"
     echo
+    echo "Drops into a pixi shell for one of the centrally maintained CMR tool"
+    echo "environments defined in $CMR_PIXI_TOML."
+    echo
+    echo "<environment-name> may be an exact environment name, or a bare program"
+    echo "name (e.g. singlem), in which case the most recent versioned"
+    echo "environment for that program is selected automatically."
+    echo
+    echo "Any extra arguments after <environment-name> are passed through to"
+    echo "'pixi shell' as the command to run instead of an interactive shell."
+    echo
     echo "Available environments:"
     awk '/^\[environments\]/ { found=1; next } /^\[/ { found=0 } found && /^[a-z0-9-]+ = / { print "  " $1 }' "$CMR_PIXI_TOML"
+}
+
+if [[ $# -lt 1 ]]; then
+    print_usage
     exit 1
+fi
+
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    print_usage
+    exit 0
 fi
 
 env_name="$1"
