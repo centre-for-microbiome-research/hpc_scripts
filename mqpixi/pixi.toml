@@ -101,16 +101,16 @@ bedtools = "==2.31.1"
 [feature.bedtools-v2-31-1.activation]
 env = { PYTHONNOUSERSITE = "1" }
 
-# ---------- binchicken-v0-13-5 ----------
-[feature.binchicken-v0-13-5.dependencies]
-binchicken = "==0.13.5"
+# ---------- binchicken-v0-14-0 ----------
+[feature.binchicken-v0-14-0.dependencies]
+binchicken = "==0.14.0"
 snakemake-executor-plugin-cluster-generic = ">=1"
 
-[feature.binchicken-v0-13-5.tasks]
+[feature.binchicken-v0-14-0.tasks]
 binchicken-build-no-aviary = { cmd = ["binchicken", "build", "--skip-aviary-envs"], depends-on = [{ task = "postinstall-binchicken-config", environment = "default" }] }
 postinstall-base = { cmd = ["binchicken", "build", "--build-gpu"], depends-on = [{ task = "postinstall-binchicken-aviary-config", environment = "default" }] }
 
-[feature.binchicken-v0-13-5.activation]
+[feature.binchicken-v0-14-0.activation]
 env = { PYTHONNOUSERSITE = "1", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S4.3.0.GTDB_r220.metapackage_20240523.smpkg.zb", GTDBTK_DATA_PATH = "/work/microbiome/conda/envs/gtdbtk-v2.4.0/share/gtdbtk-2.4.0/db", CHECKM2DB = "/work/microbiome/db/CheckM2_database" }
 
 # ---------- biolib-v0-1-9 ----------
@@ -807,7 +807,7 @@ bakta-v1-11-0 = { features = ["bakta-v1-11-0"], no-default-feature = true }
 bbmap-v39-18 = { features = ["bbmap-v39-18"], no-default-feature = true }
 bedops-v2-4-41 = { features = ["bedops-v2-4-41"], no-default-feature = true }
 bedtools-v2-31-1 = { features = ["bedtools-v2-31-1"], no-default-feature = true }
-binchicken-v0-13-5 = { features = ["binchicken-v0-13-5"], no-default-feature = true }
+binchicken-v0-14-0 = { features = ["binchicken-v0-14-0"], no-default-feature = true }
 biolib-v0-1-9 = { features = ["biolib-v0-1-9"], no-default-feature = true }
 bmge-v1-12 = { features = ["bmge-v1-12"], no-default-feature = true }
 busco-v5-8-3 = { features = ["busco-v5-8-3"], no-default-feature = true }
@@ -915,17 +915,17 @@ cmd = ["python", "write_pixi_configs.py", "aviary-v0-13-0", "aviary"]
 
 [tasks.postinstall-binchicken-config]
 # Write binchicken's embedded .pixi/config.toml (detached-environments = false)
-cmd = ["python", "write_pixi_configs.py", "binchicken-v0-13-5", "binchicken"]
+cmd = ["python", "write_pixi_configs.py", "binchicken-v0-14-0", "binchicken"]
 
 [tasks.postinstall-binchicken-aviary-config]
 # Write aviary's .pixi/config.toml nested inside the binchicken env (detached-environments = false)
-cmd = ["python", "write_pixi_configs.py", "binchicken-v0-13-5", "aviary", "binchicken"]
-depends-on = [{ task = "binchicken-build-no-aviary", environment = "binchicken-v0-13-5" }]
+cmd = ["python", "write_pixi_configs.py", "binchicken-v0-14-0", "aviary", "binchicken"]
+depends-on = [{ task = "binchicken-build-no-aviary", environment = "binchicken-v0-14-0" }]
 
 [tasks.postinstall]
 # Build steps that aviary/binchicken need after their conda deps are installed
 depends-on = [
     "postinstall-activate-vars",
     { task = "postinstall-base", environment = "aviary-v0-13-0" },
-    { task = "postinstall-base", environment = "binchicken-v0-13-5" },
+    { task = "postinstall-base", environment = "binchicken-v0-14-0" },
 ]
