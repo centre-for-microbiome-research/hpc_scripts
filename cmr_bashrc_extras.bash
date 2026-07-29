@@ -3,9 +3,9 @@ export PATH="/mnt/hpccs01/work/microbiome/sw/hpc_scripts/bin:$PATH"
 # Add zellij
 export PATH="/work/microbiome/sw/zellij:$PATH"
 # Add general software from pixi
-export PATH="/pkg/cmr/sw/pixi_central/.pixi/envs/default/bin:$PATH"
+# export PATH="/pkg/cmr/sw/pixi_central/.pixi/envs/default/bin:$PATH"
 
-#function for command prompt and email notification of job completion
+# function for command prompt and email notification of job completion
 function notify { command "$@" && success || fail; }
 
 # Save all the history, see https://debian-administration.org/article/543/Bash_eternal_history
