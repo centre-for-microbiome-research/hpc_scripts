@@ -625,6 +625,8 @@ def parse_qusers_output():
     Parse the qusers output and return a dictionary:
     {
         username: {
+            'jobs_running': int,
+            'jobs_queued': int,
             'cpus_running': int,
             'cpus_queued': int,
             'gpus_running': int,
@@ -632,7 +634,7 @@ def parse_qusers_output():
         },
         ...
     }
-    Only use the #run/#queue pairs under CPUs and GPUs, not the jobs section.
+    Uses all three #run/#queue pairs: Jobs, CPUs and GPUs.
     """
     qusers_text = run_command("qusers")
 
@@ -659,9 +661,11 @@ def parse_qusers_output():
         return idxs
     run_ends = all_col_end_indices(header, '#run')
     queue_ends = all_col_end_indices(header, '#queue')
-    # Use the 2nd and 3rd pairs: CPUs and GPUs
+    # 1st pair is Jobs, 2nd is CPUs, 3rd is GPUs
     if len(run_ends) < 3 or len(queue_ends) < 3:
         return users  # not enough columns found
+    jobs_run_end = run_ends[0]
+    jobs_queue_end = queue_ends[0]
     cpu_run_end = run_ends[1]
     cpu_queue_end = queue_ends[1]
     gpu_run_end = run_ends[2]
@@ -679,11 +683,15 @@ def parse_qusers_output():
                 start -= 1
             val = line[start+1:end_idx+1].strip()
             return int(val) if val.isdigit() else 0
+        jobs_running = extract_int_backwards(line, jobs_run_end)
+        jobs_queued = extract_int_backwards(line, jobs_queue_end)
         cpus_running = extract_int_backwards(line, cpu_run_end)
         cpus_queued = extract_int_backwards(line, cpu_queue_end)
         gpus_running = extract_int_backwards(line, gpu_run_end)
         gpus_queued = extract_int_backwards(line, gpu_queue_end)
         users[username] = {
+            'jobs_running': jobs_running,
+            'jobs_queued': jobs_queued,
             'cpus_running': cpus_running,
             'cpus_queued': cpus_queued,
             'gpus_running': gpus_running,
@@ -1051,6 +1059,7 @@ def aggregate_member_scores(qusers_stats, members):
     agg = {}
     for member in members:
         stats = qusers_stats.get(member, {})
+        jobs_running = stats.get('jobs_running', 0)
         cpus_running = stats.get('cpus_running', 0)
         cpus_queued = stats.get('cpus_queued', 0)
         gpus_running = stats.get('gpus_running', 0)
@@ -1062,6 +1071,7 @@ def aggregate_member_scores(qusers_stats, members):
             'cpus_total': cpus_total,
             'gpus_running': gpus_running,
             'gpus_total': gpus_total,
+            'avg_cpu_per_job': cpus_running / jobs_running if jobs_running else 0,
             'running_score': member_resource_score(cpus_running, gpus_running),
             'total_score': member_resource_score(cpus_total, gpus_total),
         }
@@ -1110,11 +1120,16 @@ def rank_members(agg, top_running=7, top_total=3, list_all=False):
     return rows
 
 
-def print_member_table(rows):
+def print_member_table(rows, show_avg_cpu=False):
     """Print the CMR member ranking table for rows from rank_members()."""
     header = f"{'#':<3} {'Member':<20} {'CPU':>12} {'GPU':>10}"
+    if show_avg_cpu:
+        header += f" {'Avg CPU/job':>12}"
     print(header)
-    print(f"{'-'*3:<3} {'-'*20:<20} {'-'*12:>12} {'-'*10:>10}")
+    sep = f"{'-'*3:<3} {'-'*20:<20} {'-'*12:>12} {'-'*10:>10}"
+    if show_avg_cpu:
+        sep += f" {'-'*12:>12}"
+    print(sep)
 
     i = 0
     for row in rows:
@@ -1127,7 +1142,43 @@ def print_member_table(rows):
         cpu_display = f"{stats['cpus_running']:,}/{stats['cpus_total']:,}"
         total_gpus = stats['gpus_total']
         gpu_display = f"{stats['gpus_running']}/{total_gpus}" if total_gpus > 0 else ""
-        print(f"{i:<3} {real_name[:20]:<20} {cpu_display:>12} {gpu_display:>10}")
+        line = f"{i:<3} {real_name[:20]:<20} {cpu_display:>12} {gpu_display:>10}"
+        if show_avg_cpu:
+            avg_cpu_display = f"{stats['avg_cpu_per_job']:.1f}" if stats['avg_cpu_per_job'] else ""
+            line += f" {avg_cpu_display:>12}"
+        print(line)
+
+
+def print_leaderboard_section(title, members, qusers_stats, cluster_stats, list_all, no_jobs_message, show_avg_cpu=False):
+    """Print a "=== <title> ===" usage summary and ranked leaderboard for `members`."""
+    print(f"\n\n=== {title} ===")
+    used_cpu = 0
+    used_gpu = 0
+    requested_cpu = 0
+    for member, stats in qusers_stats.items():
+        if member in members:
+            used_cpu += stats['cpus_running']
+            used_gpu += stats['gpus_running']
+            requested_cpu += stats['cpus_running'] + stats['cpus_queued']
+
+    cpu_percent = used_cpu / cluster_stats['total_cpu_cores'] * 100
+    gpu_percent = used_gpu / cluster_stats['total_gpus'] * 100
+    requested_percent = used_cpu / requested_cpu * 100
+
+    print(f"CPU:   {create_ascii_bar(cpu_percent)}")
+    if cluster_stats['total_gpus'] > 0 and used_gpu > 0:
+        print(f"GPU:   {create_ascii_bar(gpu_percent)}")
+
+    print(f"Requested CPUs: {requested_cpu:,} ({requested_percent:.1f}% running)")
+    print()
+
+    member_scores = aggregate_member_scores(qusers_stats, members)
+    rows = rank_members(member_scores, list_all=list_all)
+
+    if any(row is not None for row in rows):
+        print_member_table(rows, show_avg_cpu=show_avg_cpu)
+    else:
+        print(no_jobs_message)
 
 
 def main():
@@ -1138,6 +1189,16 @@ def main():
         "--list-all-people",
         action="store_true",
         help="List every microbiome group member (ranked, no limit) instead of the top 10",
+    )
+    parser.add_argument(
+        "--all-users",
+        action="store_true",
+        help="Replace the CMR section with a leaderboard ranked across every cluster user (from qusers), not just microbiome group members",
+    )
+    parser.add_argument(
+        "--avg-cpu",
+        action="store_true",
+        help="Add an Avg CPU/job column to the leaderboard (running CPUs / running jobs per user)",
     )
     args = parser.parse_args()
 
@@ -1198,39 +1259,22 @@ def main():
     else:
         print(f"No batch jobs found.")
     
-    print("\n\n=== CMR ===")
-    # Calculate overall stats
-    microbiome_used_cpu = 0
-    microbiome_used_gpu = 0
-    microbiome_requested_cpu = 0
-    for member, stats in qusers_stats.items():
-        if member in microbiome_members:
-            microbiome_used_cpu += stats['cpus_running']
-            microbiome_used_gpu += stats['gpus_running']
-            microbiome_requested_cpu += stats['cpus_running'] + stats['cpus_queued']
-
-    microbiome_cpu_percent = microbiome_used_cpu / cluster_stats['total_cpu_cores'] * 100
-    microbiome_gpu_percent = microbiome_used_gpu / cluster_stats['total_gpus'] * 100
-    microbiome_cpu_requested_percent = microbiome_used_cpu / microbiome_requested_cpu * 100
-
-    print(f"CPU:   {create_ascii_bar(microbiome_cpu_percent)}")
-    if cluster_stats['total_gpus'] > 0 and microbiome_used_gpu > 0:
-        print(f"GPU:   {create_ascii_bar(microbiome_gpu_percent)}")
-
-    print(f"Requested CPUs: {microbiome_requested_cpu:,} ({microbiome_cpu_requested_percent:.1f}% running)")
-    print()
-
     # Rank members by the resource-weighted formula. By default show the top 7
     # by their running jobs, a separator, then the top 3 by their total set of
     # jobs (excluding anyone already shown). --list-all-people lists everyone.
-    member_scores = aggregate_member_scores(qusers_stats, microbiome_members)
-    rows = rank_members(member_scores, list_all=args.list_all_people)
-
-    if any(row is not None for row in rows):
-        print_member_table(rows)
+    # --all-users ranks across every cluster user instead of just the
+    # microbiome group.
+    if args.all_users:
+        print_leaderboard_section(
+            "ALL USERS", qusers_stats.keys(), qusers_stats, cluster_stats,
+            args.list_all_people, "No jobs found.", show_avg_cpu=args.avg_cpu,
+        )
     else:
-        print("No jobs for microbiome group members.")
-    
+        print_leaderboard_section(
+            "CMR", microbiome_members, qusers_stats, cluster_stats,
+            args.list_all_people, "No jobs for microbiome group members.", show_avg_cpu=args.avg_cpu,
+        )
+
     # Print the report
     print("\n\n=== CLUSTER ===")
     
