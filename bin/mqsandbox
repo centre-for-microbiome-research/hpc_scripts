@@ -77,7 +77,9 @@ trap 'rm -rf "$CONTAINER_HOME"' EXIT
 # read-write. Harmless if the broker already forwarded them (deduped below).
 sandbox_add_default_scratch_paths
 sandbox_build_binds "$CWD" "${RW_PATHS[@]+"${RW_PATHS[@]}"}" -- "${RO_PATHS[@]+"${RO_PATHS[@]}"}"
-sandbox_home_dotfiles
+# Pass the granted paths so a shadowed credential dir (~/.aws) the session opted
+# back in with --ro-paths stays visible in jobs too, matching the interactive run.
+sandbox_home_dotfiles "${RO_PATHS[@]+"${RO_PATHS[@]}"}" "${RW_PATHS[@]+"${RW_PATHS[@]}"}"
 # Forward terminal-rendering vars and the pixi/rattler cache location (so jobs
 # that run pixi reuse the rw-bound cache); jobs should not inherit API keys.
 sandbox_build_env PIXI_CACHE_DIR RATTLER_CACHE_DIR TERM COLORTERM NO_COLOR
