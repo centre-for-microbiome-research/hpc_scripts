@@ -772,20 +772,31 @@ sandbox_bind_opencode_home() {
 }
 
 # ---------------------------------------------------------------------------
-# sandbox_write_shim_bashrc DEST_BASHRC REAL_BASHRC SHIM_DIR
+# sandbox_write_shim_bashrc DEST_BASHRC REAL_BASHRC SHIM_DIR [VAR=VALUE...]
 #   Write DEST_BASHRC so a shell that sources it first runs the user's real
 #   bashrc (if given/existing) and THEN puts SHIM_DIR first on PATH. This is how
 #   the container-side mqsub stub keeps winning over the real hpc_scripts bin
 #   dir, which the user's ~/.bashrc (and Claude Code's shell snapshot) prepend.
 #   DEST is removed first because it is usually a symlink into the real home —
 #   we must NOT write through it onto the user's actual bashrc.
+#
+#   Any trailing VAR=VALUE arguments are exported after the real bashrc too, for
+#   variables that must survive it. An apptainer `--env` value is applied BEFORE
+#   the shim sources the real bashrc, so a bashrc that exports the same variable
+#   silently wins — re-asserting here is what makes the pin hold (see mqyolo's
+#   opencode case, which pins XDG_CONFIG_HOME/XDG_DATA_HOME at the container home
+#   so opencode cannot be redirected onto the read-only real home).
 # ---------------------------------------------------------------------------
 sandbox_write_shim_bashrc() {
-    local dest="$1" real="$2" shim="$3"
+    local dest="$1" real="$2" shim="$3"; shift 3
+    local _kv
     rm -f "$dest"
     {
         [[ -n "$real" && -f "$real" ]] && printf 'source %q\n' "$real"
         printf 'export PATH=%q:"$PATH"\n' "$shim"
+        for _kv in "$@"; do
+            printf 'export %s=%q\n' "${_kv%%=*}" "${_kv#*=}"
+        done
     } > "$dest"
 }
 

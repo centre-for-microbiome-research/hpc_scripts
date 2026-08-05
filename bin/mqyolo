@@ -518,14 +518,27 @@ ENVIRONMENT VARIABLES
   OPENAI_BASE_URL     Optional — override OpenAI endpoint
   ANTHROPIC_BASE_URL  Optional — override Anthropic endpoint
   CLAUDE_CODE_USE_BEDROCK  Optional — use AWS Bedrock for Claude
-  AWS_PROFILE, AWS_REGION, AWS_DEFAULT_REGION, AWS_ACCESS_KEY_ID,
-  AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, AWS_BEARER_TOKEN_BEDROCK
-                      Forwarded for Bedrock (Claude Code via
-                      CLAUDE_CODE_USE_BEDROCK, or opencode's amazon-bedrock
-                      provider). ~/.aws is visible READ-ONLY inside the
-                      container, so a static-credential profile works but
-                      `aws sso login` cannot refresh its token cache from
-                      inside — log in on the host before launching.
+  AWS_BEARER_TOKEN_BEDROCK  Optional — Bedrock API key for Bedrock-backed
+                      models (Claude Code via CLAUDE_CODE_USE_BEDROCK, or
+                      opencode's amazon-bedrock provider). Preferred over
+                      general AWS credentials: it is scoped to Bedrock, so the
+                      in-container AI cannot reach the rest of your AWS account.
+  AWS_REGION, AWS_DEFAULT_REGION  Optional — Bedrock region (not a credential)
+
+                      General AWS credentials (AWS_PROFILE, AWS_ACCESS_KEY_ID,
+                      AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN) are deliberately
+                      NOT forwarded: they carry your whole AWS identity, not just
+                      model access. To use a role instead of a Bedrock API key,
+                      mint a Bedrock-scoped short-lived session on the HOST and
+                      pass it in explicitly, e.g.
+                        aws sts assume-role --role-arn <role> \
+                            --role-session-name mqyolo --duration-seconds 3600 \
+                            --policy '{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+                              "Action":["bedrock:InvokeModel","bedrock:InvokeModelWithResponseStream"],
+                              "Resource":"*"}]}'
+                      then export the returned keys before launching mqyolo (the
+                      session policy caps them at model invocation, and they
+                      expire).
   AI_TOOL_SIF         Override path to the container image
   TERM, COLORTERM, NO_COLOR  Passed through for correct terminal rendering
 
@@ -756,17 +769,20 @@ fi
 # dirs, so they keep winning no matter how often .bashrc is sourced.
 # (.bash_profile/.profile both end by sourcing ~/.bashrc, covering login shells.)
 SANDBOX_PATH_PREFIX="$(IFS=:; printf '%s' "${_PATH_PREFIX_DIRS[*]}")"
-_real_bashrc="$(readlink -f "${HOME}/.bashrc" 2>/dev/null || true)"
-sandbox_write_shim_bashrc "${CONTAINER_HOME}/.bashrc" "$_real_bashrc" "$SANDBOX_PATH_PREFIX"
-unset _real_bashrc
+
+# Anything else that must survive the user's ~/.bashrc gets re-exported by the
+# shim too — same reason as PATH: an `--env` value is applied by apptainer BEFORE
+# the shim sources the real bashrc, so a bashrc that exports the same variable
+# wins. Tool cases append "VAR=value" entries here (see opencode's XDG pinning);
+# the shim itself is written after the tool case below, once this is populated.
+SANDBOX_SHIM_EXPORTS=()
 
 # ---------------------------------------------------------------------------
 # Environment variables (PATH honours SANDBOX_PATH_PREFIX set above)
 # ---------------------------------------------------------------------------
 sandbox_build_env ANTHROPIC_API_KEY OPENAI_API_KEY GITHUB_TOKEN OPENCODE_API_KEY \
                   OPENAI_BASE_URL ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK \
-                  AWS_PROFILE AWS_REGION AWS_DEFAULT_REGION AWS_BEARER_TOKEN_BEDROCK \
-                  AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
+                  AWS_REGION AWS_DEFAULT_REGION AWS_BEARER_TOKEN_BEDROCK \
                   PIXI_CACHE_DIR RATTLER_CACHE_DIR \
                   TERM COLORTERM NO_COLOR
 
@@ -823,9 +839,16 @@ case "$TOOL" in
         unset _oc_config _oc_data
         # Apptainer forwards the host environment, so a host XDG_CONFIG_HOME /
         # XDG_DATA_HOME would send opencode outside the binds above (onto the
-        # read-only real home). Pin both to the container home.
+        # read-only real home). Pin both to the container home — via --env AND
+        # via the shim ~/.bashrc, because the container sources the user's real
+        # bashrc after apptainer applies --env: a bashrc that exports XDG_*
+        # (common with XDG-aware dotfile setups) would otherwise win and send
+        # opencode's auth/sessions back to the read-only home, silently losing
+        # persistence and the AGENTS.md guidance bind. Same fix as PATH.
         ENV_ARGS+=(--env "XDG_CONFIG_HOME=/container_home/.config" \
                    --env "XDG_DATA_HOME=/container_home/.local/share")
+        SANDBOX_SHIM_EXPORTS+=("XDG_CONFIG_HOME=/container_home/.config" \
+                               "XDG_DATA_HOME=/container_home/.local/share")
         ;;
     *)
         # A repo executable (see arg parsing): run it as-is with no wrapper flags and
@@ -833,6 +856,17 @@ case "$TOOL" in
         YOLO_ARGS=()
         ;;
 esac
+
+# Give the container its OWN ~/.bashrc: it sources the user's real one and THEN
+# re-asserts our PATH prefix and any SANDBOX_SHIM_EXPORTS the tool case added, so
+# they keep winning no matter how often .bashrc is re-sourced (Claude Code's shell
+# snapshot re-sources it too). Written here, after the tool case, so tool-specific
+# pins are included. (.bash_profile/.profile both end by sourcing ~/.bashrc,
+# covering login shells.)
+_real_bashrc="$(readlink -f "${HOME}/.bashrc" 2>/dev/null || true)"
+sandbox_write_shim_bashrc "${CONTAINER_HOME}/.bashrc" "$_real_bashrc" \
+    "$SANDBOX_PATH_PREFIX" "${SANDBOX_SHIM_EXPORTS[@]+"${SANDBOX_SHIM_EXPORTS[@]}"}"
+unset _real_bashrc
 
 # Drop duplicate-destination binds (e.g. non-sensitive /work folders re-exposed
 # via --ro-paths over the ro-allow and /proc/mounts binds) so apptainer doesn't
