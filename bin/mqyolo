@@ -1,6 +1,6 @@
 #!/bin/bash
-# mqyolo - Run claude, codex, copilot, or any executable shipped in this bin/
-# directory inside a restricted Apptainer/Singularity container.
+# mqyolo - Run claude, codex, copilot, opencode, or any executable shipped in this
+# bin/ directory inside a restricted Apptainer/Singularity container.
 #
 # Permissions inside the container:
 #   - Current directory:        fully read/write
@@ -19,13 +19,15 @@
 # bound read-write — this limits accidental exposure of unrelated data.
 #
 # Usage:
-#   mqyolo [claude|codex|copilot|<bin-executable>] [--rw-paths PATH...] [--ro-paths PATH...] [args...]
+#   mqyolo [claude|codex|copilot|opencode|<bin-executable>] [--rw-paths PATH...] [--ro-paths PATH...] [args...]
 #   Run `mqyolo --help` for the full FILESYSTEM/option reference.
 #
 # Environment variables:
 #   ANTHROPIC_API_KEY   Required for claude
 #   OPENAI_API_KEY      Required for codex
 #   GITHUB_TOKEN        Required for copilot
+#   OPENCODE_API_KEY    opencode zen key (opencode also uses ANTHROPIC_API_KEY /
+#                       OPENAI_API_KEY, or the credentials it stored via `opencode auth login`)
 #   AI_TOOL_SIF         Override path to .sif file (default: same dir as this script)
 #
 # When the host has the PBS batch queue (i.e. `qsub` exists — the aqua login/head
@@ -361,20 +363,20 @@ _mqyolo_is_repo_tool() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        claude|codex|copilot) TOOL="$1"; TOOL_SET=1; shift ;;
+        claude|codex|copilot|opencode) TOOL="$1"; TOOL_SET=1; shift ;;
         --debug)      DEBUG=1;   shift ;;
         --no-broker)  NO_BROKER=1; shift ;;
         --print-guidance) _mqyolo_guidance_text; exit 0 ;;
         --rw-paths)
             shift
-            while [[ $# -gt 0 && "$1" != --* && "$1" != claude && "$1" != codex && "$1" != copilot ]]; do
+            while [[ $# -gt 0 && "$1" != --* && "$1" != claude && "$1" != codex && "$1" != copilot && "$1" != opencode ]]; do
                 { [[ "$TOOL_SET" -eq 0 ]] && _mqyolo_is_repo_tool "$1"; } && break
                 RW_PATHS+=("$1"); shift
             done
             ;;
         --ro-paths)
             shift
-            while [[ $# -gt 0 && "$1" != --* && "$1" != claude && "$1" != codex && "$1" != copilot ]]; do
+            while [[ $# -gt 0 && "$1" != --* && "$1" != claude && "$1" != codex && "$1" != copilot && "$1" != opencode ]]; do
                 { [[ "$TOOL_SET" -eq 0 ]] && _mqyolo_is_repo_tool "$1"; } && break
                 RO_PATHS+=("$1"); shift
             done
@@ -384,13 +386,14 @@ while [[ $# -gt 0 ]]; do
 mqyolo - run an AI coding tool inside a sandboxed Apptainer/Singularity container
 
 USAGE
-  mqyolo [claude|codex|copilot|<bin-executable>] [--debug] [--rw-paths PATH...] [--ro-paths PATH...] [--no-broker] [args...]
+  mqyolo [claude|codex|copilot|opencode|<bin-executable>] [--debug] [--rw-paths PATH...] [--ro-paths PATH...] [--no-broker] [args...]
 
 TOOLS
   claude   (default) Claude Code — passes --dangerously-skip-permissions
   codex              OpenAI Codex — bypasses Codex's own prompts/sandbox, enables search,
                      and disables update checks
   copilot            GitHub Copilot CLI — no auto-mode flag; use Shift+Tab inside session for Autopilot mode
+  opencode           opencode — passes --auto to auto-approve permission prompts
   <bin-executable>   Any executable file shipped in this script's own bin/ directory
                      (given as a bare name, e.g. `mqyolo claude_science`). It is run
                      by its canonical path inside the container, as-is — no wrapper
@@ -493,10 +496,25 @@ CODEX SETTINGS
                       mqyolo's generated guidance is mounted read-only over
                       ~/.codex/AGENTS.md inside the container.
 
+OPENCODE SETTINGS
+  ~/.config/opencode/       bound read-write so opencode config, agents and
+                            commands persist across mqyolo runs
+  ~/.local/share/opencode/  bound read-write so opencode auth (auth.json) and
+                            session storage persist
+                      Their parent directories (~/.config, ~/.local/share) are
+                      recreated inside the container as directories of symlinks
+                      to your real ones, so other tools still see their config.
+                      mqyolo's generated guidance is mounted read-only over
+                      ~/.config/opencode/AGENTS.md (opencode's global rules file)
+                      inside the container.
+
 ENVIRONMENT VARIABLES
   ANTHROPIC_API_KEY   Required for claude
   OPENAI_API_KEY      Required for codex
   GITHUB_TOKEN        Required for copilot
+  OPENCODE_API_KEY    opencode zen key for opencode (it also picks up
+                      ANTHROPIC_API_KEY / OPENAI_API_KEY, or whatever
+                      `opencode auth login` stored in ~/.local/share/opencode)
   OPENAI_BASE_URL     Optional — override OpenAI endpoint
   ANTHROPIC_BASE_URL  Optional — override Anthropic endpoint
   CLAUDE_CODE_USE_BEDROCK  Optional — use AWS Bedrock for Claude
@@ -737,7 +755,7 @@ unset _real_bashrc
 # ---------------------------------------------------------------------------
 # Environment variables (PATH honours SANDBOX_PATH_PREFIX set above)
 # ---------------------------------------------------------------------------
-sandbox_build_env ANTHROPIC_API_KEY OPENAI_API_KEY GITHUB_TOKEN \
+sandbox_build_env ANTHROPIC_API_KEY OPENAI_API_KEY GITHUB_TOKEN OPENCODE_API_KEY \
                   OPENAI_BASE_URL ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK \
                   PIXI_CACHE_DIR RATTLER_CACHE_DIR \
                   TERM COLORTERM NO_COLOR
@@ -777,6 +795,27 @@ case "$TOOL" in
         # No CLI flag for auto mode; use Shift+Tab inside the session for Autopilot mode
         # (Copilot CLI has no global-instructions hook we can inject mqsub guidance into.)
         YOLO_ARGS=()
+        ;;
+    opencode)
+        # Auto-approve permissions that are not explicitly denied — the container
+        # is the sandbox, so opencode's own prompts add nothing here.
+        YOLO_ARGS=("--auto")
+        # opencode keeps config + its global rules file (AGENTS.md) in
+        # ~/.config/opencode, and auth.json + session storage in
+        # ~/.local/share/opencode. Bind both real dirs read-write so logins and
+        # sessions persist across runs, and expose the mqyolo guidance as the
+        # global AGENTS.md without touching the user's real one.
+        mkdir -p "${HOME}/.config/opencode" "${HOME}/.local/share/opencode"
+        _oc_config="$(readlink -f "${HOME}/.config/opencode" 2>/dev/null || echo "${HOME}/.config/opencode")"
+        _oc_data="$(readlink -f "${HOME}/.local/share/opencode" 2>/dev/null || echo "${HOME}/.local/share/opencode")"
+        sandbox_bind_opencode_home "$_oc_config" "$_oc_data" \
+            "${CONTAINER_HOME}/.mqyolo/guidance.md"
+        unset _oc_config _oc_data
+        # Apptainer forwards the host environment, so a host XDG_CONFIG_HOME /
+        # XDG_DATA_HOME would send opencode outside the binds above (onto the
+        # read-only real home). Pin both to the container home.
+        ENV_ARGS+=(--env "XDG_CONFIG_HOME=/container_home/.config" \
+                   --env "XDG_DATA_HOME=/container_home/.local/share")
         ;;
     *)
         # A repo executable (see arg parsing): run it as-is with no wrapper flags and

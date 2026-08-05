@@ -1,7 +1,7 @@
 #!/bin/bash
 # Rebuild ai_tool.sif from ai_tool.def.
 # Intended to be submitted via mqsub for monthly automated rebuilds so that
-# the bundled AI CLI tools (claude, codex, copilot) stay up to date.
+# the bundled AI CLI tools (claude, codex, copilot, opencode) stay up to date.
 #
 # Submitted by cron via:
 #   mqsub --hours 1 --threads 1 --name mqyolo_singularity_rebuild --bg \

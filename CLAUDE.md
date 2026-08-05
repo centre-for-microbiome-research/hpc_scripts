@@ -74,9 +74,15 @@ Key invariants the tests guard (keep them true):
   the "no queue, run locally" guidance (see below). This gate also applies to the
   broker-start condition, not just the guidance.
 - The in-container AI tool is told where heavy/long/high-RAM commands should run —
-  injected for Claude with `--append-system-prompt-file` and for Codex via its
+  injected for Claude with `--append-system-prompt-file`, for Codex via its
   global `~/.codex/AGENTS.md` via a read-only file bind over the real read-write
-  `~/.codex` mount. The guidance adapts to the boot environment
+  `~/.codex` mount, and for opencode via the same trick on its global
+  `~/.config/opencode/AGENTS.md` (`sandbox_bind_opencode_home`, which also rw-binds
+  `~/.config/opencode` and `~/.local/share/opencode` so config/auth/sessions
+  persist; their XDG parents are mirrored into the ephemeral home as directories
+  of symlinks by `sandbox_mirror_home_subdir`, and `XDG_CONFIG_HOME`/`XDG_DATA_HOME`
+  are pinned to the container home so host values cannot redirect opencode).
+  The guidance adapts to the boot environment
   (`_mqyolo_detect_resources` → `MQYOLO_ENV` = `login`|`pbs`|`local`): on a login
   node it says offload to `mqsub`; inside a PBS job it reports the actual allocated
   CPUs/RAM (from NCPUS + qstat) and frames them as a finite budget — run work that

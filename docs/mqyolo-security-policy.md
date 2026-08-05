@@ -13,9 +13,10 @@ Scope: the coupled system listed in `CLAUDE.md` —
 
 ## 1. Purpose
 
-`mqyolo` runs an autonomous AI coding tool (Claude Code, Codex, or Copilot) on
-the QUT *aqua* HPC with all of its permission prompts disabled
-(`--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox`).
+`mqyolo` runs an autonomous AI coding tool (Claude Code, Codex, Copilot, or
+opencode) on the QUT *aqua* HPC with all of its permission prompts disabled
+(`--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox` /
+`--auto`).
 Because the tool can run arbitrary commands without asking, the **container is
 the sandbox**: it, rather than a human approving each action, is what bounds the
 blast radius of the AI and of any prompt-injection or model misbehaviour.
@@ -107,7 +108,7 @@ agent.
 | `/tmp`, `/var/tmp` | read-write | Scratch space. |
 | `--rw-paths` (operator-granted) | read-write | Extra writable paths chosen by the human at launch. |
 | Build/dep caches | read-write | `~/.cache/*`, `~/.cargo`, pixi/rattler cache, `/pkg/cmr/$USER/pixi_dirs`, CWD `target/` — resolved to canonical paths so writes don't fall through onto a read-only parent. |
-| `~/.claude` (claude), `~/.codex` (codex) | read-write | So the tool persists its own config/auth/history across sessions. |
+| `~/.claude` (claude), `~/.codex` (codex), `~/.config/opencode` + `~/.local/share/opencode` (opencode) | read-write | So the tool persists its own config/auth/history across sessions. For opencode the parent XDG directories are recreated inside the container as directories of symlinks, so only the two opencode dirs become writable. |
 | HPC data mounts (`/home`, `/mnt`, `/work`, `/data`, …), `/etc` selected files | **read-only** | The agent can read reference data and configs but not modify them. |
 | `--ro-paths` (operator-granted) + non-sensitive folders (§4.6) | read-only | Extra readable paths chosen at launch / from the sheet. |
 | **Deny-listed trees** (§4.4) | **not visible at all** | Anti-exfiltration. |

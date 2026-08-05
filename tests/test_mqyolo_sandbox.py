@@ -219,6 +219,45 @@ def test_mqyolo_codex_uses_current_auto_mode_flag(tmp_path):
     assert "PATH=/container_home/.mqyolo/tools:/usr/local/bin:/root/.local/bin:/usr/bin:/bin" in out
 
 
+def test_mqyolo_opencode_uses_auto_flag_and_binds_its_dirs(tmp_path):
+    # opencode is auto-approved with --auto, and both of the directories it keeps
+    # state in (config + global AGENTS.md, and auth/session storage) are bound
+    # read-write with XDG pinned to the container home so a host XDG_* cannot
+    # redirect it onto the read-only real home.
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    fake_apptainer = fakebin / "apptainer"
+    fake_apptainer.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+    fake_apptainer.chmod(0o755)
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    fake_sif = tmp_path / "ai_tool.sif"
+    fake_sif.write_text("")
+    env = {
+        **os.environ,
+        "PATH": f"{fakebin}:{os.environ['PATH']}",
+        "HOME": str(fake_home),
+        "AI_TOOL_SIF": str(fake_sif),
+        # A host XDG_CONFIG_HOME must not leak through to opencode.
+        "XDG_CONFIG_HOME": str(fake_home / "xdg_config"),
+    }
+
+    p = subprocess.run(
+        [str(MQYOLO), "--no-broker", "opencode"],
+        text=True,
+        capture_output=True,
+        env=env,
+        cwd=str(fake_home),
+    )
+    assert p.returncode == 0, p.stderr
+    out = p.stdout + p.stderr
+    assert "--auto" in out.splitlines()
+    assert f"{fake_home}/.config/opencode:/container_home/.config/opencode:rw" in out
+    assert f"{fake_home}/.local/share/opencode:/container_home/.local/share/opencode:rw" in out
+    assert "XDG_CONFIG_HOME=/container_home/.config" in out
+    assert "XDG_DATA_HOME=/container_home/.local/share" in out
+
+
 def test_mqyolo_rejects_disallowed_launch_dir(tmp_path):
     # The working directory is bound read-write into the sandbox, so mqyolo only
     # allows launching from /work/microbiome, $HOME, /scratch/microbiome/$USER or
@@ -654,6 +693,114 @@ def test_bind_codex_home_mounts_real_dir_rw_and_guidance_readonly(tmp_path):
     binds = p.stdout.splitlines()
     assert f"{real}:/container_home/.codex:rw" in binds
     assert f"{guidance}:/container_home/.codex/AGENTS.md:ro" in binds
+
+
+def test_mirror_home_subdir_replaces_symlink_with_dir_of_symlinks(tmp_path):
+    # sandbox_home_dotfiles leaves ~/.config as a symlink onto the (read-only)
+    # real home. Mirroring must replace the LINK — never write through it — with a
+    # real dir of symlinks, minus the skipped entry, so a bind can be mounted
+    # inside it.
+    home = tmp_path / "home"
+    (home / ".config" / "git").mkdir(parents=True)
+    (home / ".config" / "opencode").mkdir()
+    chome = tmp_path / "chome"
+    chome.mkdir()
+    (chome / ".config").symlink_to(home / ".config")
+
+    script = (
+        "set -euo pipefail\n"
+        "source %s; "
+        "HOME=%s CONTAINER_HOME=%s; "
+        "sandbox_mirror_home_subdir .config opencode"
+        % (SANDBOX_LIB, shlex.quote(str(home)), shlex.quote(str(chome)))
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+
+    mirrored = chome / ".config"
+    assert mirrored.is_dir() and not mirrored.is_symlink()
+    assert (mirrored / "git").is_symlink()
+    assert os.path.realpath(mirrored / "git") == os.path.realpath(home / ".config" / "git")
+    # The entry taken over by a bind must NOT be symlinked, or the bind
+    # destination would resolve back onto the read-only real home.
+    assert not (mirrored / "opencode").exists()
+    # The real home is untouched.
+    assert (home / ".config" / "git").is_dir()
+    assert (home / ".config" / "opencode").is_dir()
+
+
+def test_bind_opencode_home_mounts_real_dirs_rw_and_guidance_readonly(tmp_path):
+    home = tmp_path / "home"
+    (home / ".config").mkdir(parents=True)
+    (home / ".local" / "share").mkdir(parents=True)
+    chome = tmp_path / "chome"
+    chome.mkdir()
+    # As sandbox_home_dotfiles leaves them: symlinks onto the real home.
+    (chome / ".config").symlink_to(home / ".config")
+    (chome / ".local").symlink_to(home / ".local")
+    config = home / ".config" / "opencode"
+    data = home / ".local" / "share" / "opencode"
+    guidance = tmp_path / "guidance.md"
+    guidance.write_text("use mqsub\n")
+
+    script = (
+        "set -euo pipefail\n"
+        "source %s; "
+        "HOME=%s CONTAINER_HOME=%s; "
+        "BIND_ARGS=(); "
+        "sandbox_bind_opencode_home %s %s %s; "
+        'for a in "${BIND_ARGS[@]}"; do [[ "$a" == --bind ]] || printf "%%s\\n" "$a"; done'
+        % (
+            SANDBOX_LIB,
+            shlex.quote(str(home)),
+            shlex.quote(str(chome)),
+            shlex.quote(str(config)),
+            shlex.quote(str(data)),
+            shlex.quote(str(guidance)),
+        )
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    # Both state dirs are created in the real home so the binds have a source.
+    assert config.is_dir() and data.is_dir()
+    binds = p.stdout.splitlines()
+    assert f"{config}:/container_home/.config/opencode:rw" in binds
+    assert f"{data}:/container_home/.local/share/opencode:rw" in binds
+    assert f"{guidance}:/container_home/.config/opencode/AGENTS.md:ro" in binds
+    # The XDG parents are now real dirs inside the ephemeral home, with the
+    # opencode mountpoints present and NOT symlinked at the real home.
+    for rel in (".config", ".local", ".local/share"):
+        assert (chome / rel).is_dir() and not (chome / rel).is_symlink()
+    assert (chome / ".config" / "opencode").is_dir()
+    assert not (chome / ".config" / "opencode").is_symlink()
+    assert (chome / ".local" / "share" / "opencode").is_dir()
+    assert not (chome / ".local" / "share" / "opencode").is_symlink()
+
+
+def test_bind_opencode_home_without_guidance_omits_agents_bind(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    chome = tmp_path / "chome"
+    chome.mkdir()
+    script = (
+        "set -euo pipefail\n"
+        "source %s; "
+        "HOME=%s CONTAINER_HOME=%s; "
+        "BIND_ARGS=(); "
+        "sandbox_bind_opencode_home %s %s %s; "
+        'for a in "${BIND_ARGS[@]}"; do [[ "$a" == --bind ]] || printf "%%s\\n" "$a"; done'
+        % (
+            SANDBOX_LIB,
+            shlex.quote(str(home)),
+            shlex.quote(str(chome)),
+            shlex.quote(str(home / ".config" / "opencode")),
+            shlex.quote(str(home / ".local" / "share" / "opencode")),
+            shlex.quote(str(tmp_path / "missing_guidance.md")),
+        )
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    assert "AGENTS.md" not in p.stdout
 
 
 # ---------------------------------------------------------------------------

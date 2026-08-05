@@ -2,7 +2,7 @@ Bootstrap: docker
 From: node:24
 
 %labels
-    Description Claude Code / OpenAI Codex CLI / GitHub Copilot CLI in a restricted container
+    Description Claude Code / OpenAI Codex CLI / GitHub Copilot CLI / opencode in a restricted container
 
 %post
     # Handful of CLI tools missing from the base image.
@@ -25,8 +25,9 @@ From: node:24
     apt-get install -y --reinstall --no-install-recommends coreutils git less rsync
     rm -rf /var/lib/apt/lists/*
 
-    # Install Claude Code, OpenAI Codex CLI, and GitHub Copilot CLI
-    npm install -g @anthropic-ai/claude-code@latest @github/copilot@latest
+    # Install Claude Code, GitHub Copilot CLI, and opencode (OpenAI Codex CLI is
+    # installed separately below). opencode-ai ships the `opencode` binary.
+    npm install -g @anthropic-ai/claude-code@latest @github/copilot@latest opencode-ai@latest
 
     # Codex doesn't install the newest via npm, try the recommended way. Install
     # into shared image paths: during %post $HOME is /root, and the installer's
