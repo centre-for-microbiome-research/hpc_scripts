@@ -518,6 +518,14 @@ ENVIRONMENT VARIABLES
   OPENAI_BASE_URL     Optional — override OpenAI endpoint
   ANTHROPIC_BASE_URL  Optional — override Anthropic endpoint
   CLAUDE_CODE_USE_BEDROCK  Optional — use AWS Bedrock for Claude
+  AWS_PROFILE, AWS_REGION, AWS_DEFAULT_REGION, AWS_ACCESS_KEY_ID,
+  AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, AWS_BEARER_TOKEN_BEDROCK
+                      Forwarded for Bedrock (Claude Code via
+                      CLAUDE_CODE_USE_BEDROCK, or opencode's amazon-bedrock
+                      provider). ~/.aws is visible READ-ONLY inside the
+                      container, so a static-credential profile works but
+                      `aws sso login` cannot refresh its token cache from
+                      inside — log in on the host before launching.
   AI_TOOL_SIF         Override path to the container image
   TERM, COLORTERM, NO_COLOR  Passed through for correct terminal rendering
 
@@ -757,6 +765,8 @@ unset _real_bashrc
 # ---------------------------------------------------------------------------
 sandbox_build_env ANTHROPIC_API_KEY OPENAI_API_KEY GITHUB_TOKEN OPENCODE_API_KEY \
                   OPENAI_BASE_URL ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK \
+                  AWS_PROFILE AWS_REGION AWS_DEFAULT_REGION AWS_BEARER_TOKEN_BEDROCK \
+                  AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
                   PIXI_CACHE_DIR RATTLER_CACHE_DIR \
                   TERM COLORTERM NO_COLOR
 
