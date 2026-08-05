@@ -47,6 +47,17 @@ Key invariants the tests guard (keep them true):
   top-level dirs whose target resolves into a denied mount: the wholesale bind loop
   (`SANDBOX_WHOLESALE_BIND_DIRS`) skips a dir if its realpath is denied — e.g. on a
   workstation where `/work` is a symlink onto the sshfs mount, `/work` is not bound.
+- Credential directories in the real home are shadowed with an empty dir bound over
+  their realpath, so they are not readable through the read-only home bind
+  (`sandbox_home_shadow_dir`): `~/.ssh` unconditionally, and `~/.aws` unless the
+  caller passed it via `--ro-paths`/`--rw-paths` (those granted paths are forwarded
+  into `sandbox_home_dotfiles` for exactly this check — the shadow binds are appended
+  after the caller's binds and `sandbox_dedupe_binds` keeps the last per destination,
+  so a shadow would otherwise silently override an explicit opt-in). When `~/.aws` is
+  opted in its home symlink must be recreated, or the AWS SDKs cannot find the profile.
+  Bedrock access should instead use a credential scoped to model invocation
+  (`AWS_BEARER_TOKEN_BEDROCK`); mqyolo deliberately does not forward `AWS_PROFILE` or
+  the access-key/session-token trio, which carry the caller's whole AWS identity.
 - mqyolo refuses to launch unless the working directory is within `/work/microbiome`,
   `$HOME`, `/scratch/microbiome/$USER`, or `/tmp` (anti-leakage; the CWD is bound
   read-write). Checked before the runtime/image checks.

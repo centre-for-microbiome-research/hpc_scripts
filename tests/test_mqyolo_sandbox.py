@@ -762,6 +762,81 @@ def test_bind_codex_home_mounts_real_dir_rw_and_guidance_readonly(tmp_path):
     assert f"{guidance}:/container_home/.codex/AGENTS.md:ro" in binds
 
 
+def _home_dotfiles(home, opt_ins=()):
+    """Drive sandbox_home_dotfiles against a fake HOME. Returns
+    (bind specs, container-home entry names)."""
+    args = " ".join(shlex.quote(str(p)) for p in opt_ins)
+    script = (
+        "set -euo pipefail\n"
+        "source %s\n"
+        "HOME=%s\n"
+        "CONTAINER_HOME=$(mktemp -d)\n"
+        "BIND_ARGS=()\n"
+        "sandbox_home_dotfiles %s\n"
+        'for a in "${BIND_ARGS[@]}"; do [[ "$a" == --bind ]] || printf "bind %%s\\n" "$a"; done\n'
+        'for e in "$CONTAINER_HOME"/.*; do printf "entry %%s\\n" "${e##*/}"; done\n'
+        'rm -rf "$CONTAINER_HOME"\n'
+        % (SANDBOX_LIB, shlex.quote(str(home)), args)
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    binds = [l[5:] for l in p.stdout.splitlines() if l.startswith("bind ")]
+    entries = [l[6:] for l in p.stdout.splitlines() if l.startswith("entry ")]
+    return binds, entries
+
+
+def test_home_dotfiles_shadows_aws_credentials_by_default(tmp_path):
+    # ~/.aws/sso/cache holds an SSO access token exchangeable for role
+    # credentials across every account the user can reach — exposing it
+    # read-only still hands the untrusted in-container tool the caller's whole
+    # AWS identity. It must be shadowed like ~/.ssh, not symlinked through.
+    home = tmp_path / "home"
+    (home / ".aws" / "sso" / "cache").mkdir(parents=True)
+    (home / ".aws" / "sso" / "cache" / "tok.json").write_text('{"accessToken":"x"}')
+    (home / ".ssh").mkdir()
+    (home / ".gitconfig").write_text("[user]\n")
+
+    binds, entries = _home_dotfiles(home)
+
+    aws_real = os.path.realpath(home / ".aws")
+    shadow = [b for b in binds if b.endswith(f":{aws_real}:ro")]
+    assert len(shadow) == 1, binds
+    assert "_empty_aws" in shadow[0], shadow
+    # No symlink into the real ~/.aws, so it isn't reachable via the home bind.
+    assert ".aws" not in entries, entries
+    # Unrelated dotfiles are still linked through.
+    assert ".gitconfig" in entries, entries
+
+
+def test_home_dotfiles_aws_can_be_opted_back_in(tmp_path):
+    # An explicit --ro-paths ~/.aws is a deliberate choice — honour it. The
+    # shadow bind is appended after the caller's ro-path bind and dedupe keeps
+    # the last one, so the shadow must be skipped rather than layered on top.
+    home = tmp_path / "home"
+    (home / ".aws").mkdir(parents=True)
+
+    binds, entries = _home_dotfiles(home, opt_ins=[home / ".aws"])
+
+    aws_real = os.path.realpath(home / ".aws")
+    assert not any(b.endswith(f":{aws_real}:ro") for b in binds), binds
+    # The symlink must exist, or ~/.aws is unreachable at the container home.
+    assert ".aws" in entries, entries
+
+
+def test_home_dotfiles_ssh_shadow_is_not_opt_innable(tmp_path):
+    # Private keys have no legitimate in-sandbox use; unlike ~/.aws there is no
+    # escape hatch, so passing ~/.ssh as a granted path must not expose it.
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+
+    binds, entries = _home_dotfiles(home, opt_ins=[home / ".ssh"])
+
+    ssh_real = os.path.realpath(home / ".ssh")
+    shadow = [b for b in binds if b.endswith(f":{ssh_real}:ro")]
+    assert len(shadow) == 1 and "_empty_ssh" in shadow[0], binds
+    assert ".ssh" not in entries, entries
+
+
 def test_mirror_home_subdir_replaces_symlink_with_dir_of_symlinks(tmp_path):
     # sandbox_home_dotfiles leaves ~/.config as a symlink onto the (read-only)
     # real home. Mirroring must replace the LINK — never write through it — with a

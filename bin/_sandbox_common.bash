@@ -571,22 +571,70 @@ sandbox_dedupe_binds() {
 }
 
 # ---------------------------------------------------------------------------
-# sandbox_home_dotfiles
+# sandbox_home_shadow_dir REL [OPT_IN_PATH...]
+#   Shadow ${HOME}/REL with an empty directory bound over its REAL path, so the
+#   in-container tool cannot read it even through the read-only home bind. Used
+#   for credential directories, which are readable-but-fatal: the sandbox's whole
+#   premise is that the AI is untrusted, and a readable credential is a key to
+#   systems outside the sandbox that no filesystem constraint can contain.
+#
+#   Returns 0 if a shadow was added (the caller should NOT symlink REL into the
+#   container home), 1 if REL does not exist or the caller opted it back in.
+#   An OPT_IN_PATH at or under ${HOME}/REL (i.e. an explicit --ro-paths /
+#   --rw-paths) suppresses the shadow: the caller asked for it deliberately, and
+#   sandbox_build_binds has already bound it. That ordering matters — these binds
+#   are appended AFTER the caller's, and sandbox_dedupe_binds keeps the last bind
+#   per destination, so a shadow added here would otherwise silently override an
+#   explicit opt-in.
+# ---------------------------------------------------------------------------
+sandbox_home_shadow_dir() {
+    local rel="$1"; shift
+    local target="${HOME}/${rel}" real opt opt_real
+    [[ -d "$target" ]] || return 1
+    real="$(realpath "$target" 2>/dev/null || echo "$target")"
+    for opt in "$@"; do
+        [[ -n "$opt" ]] || continue
+        opt_real="$(realpath -m "$opt" 2>/dev/null || echo "$opt")"
+        [[ "$opt_real" == "$real" || "$opt_real" == "$real"/* ]] && return 1
+    done
+    mkdir -p "${CONTAINER_HOME}/_empty_${rel#.}"
+    BIND_ARGS+=(--bind "${CONTAINER_HOME}/_empty_${rel#.}:${real}:ro")
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# sandbox_home_dotfiles [OPT_IN_PATH...]
 #   Populates the ephemeral home (CONTAINER_HOME must already be set) with:
 #     - an empty dir shadowing ~/.ssh (so keys are not readable)
+#     - an empty dir shadowing ~/.aws (so cloud credentials are not readable),
+#       unless an OPT_IN_PATH re-exposes it
 #     - rw binds of ~/.cargo (resolving symlinks into shared storage)
 #     - rw binds of each ~/.cache entry (resolving symlinks)
 #     - symlinks to every other ~/dotfile so tools pick up the user's config
 #   Skips .claude / .claude.json (mqyolo handles those) and the entries above.
+#   OPT_IN_PATHs are the caller's --ro-paths/--rw-paths (see
+#   sandbox_home_shadow_dir); only ~/.aws honours them.
 # ---------------------------------------------------------------------------
 sandbox_home_dotfiles() {
+    local -a _opt_ins=("$@")
+
     # --- Hide ~/.ssh completely (shadow with an empty dir) ---
-    if [[ -d "${HOME}/.ssh" ]]; then
-        local _ssh_real
-        _ssh_real="$(realpath "${HOME}/.ssh" 2>/dev/null || echo "${HOME}/.ssh")"
-        mkdir -p "${CONTAINER_HOME}/_empty_ssh"
-        BIND_ARGS+=(--bind "${CONTAINER_HOME}/_empty_ssh:${_ssh_real}:ro")
-    fi
+    # Not opt-innable: nothing in the sandbox has a legitimate need for the
+    # user's private keys, so there is no --ro-paths escape hatch for them.
+    sandbox_home_shadow_dir .ssh || true
+
+    # --- Hide ~/.aws by default (shadow with an empty dir) ---
+    # ~/.aws is a credential store, not config: ~/.aws/sso/cache holds an SSO
+    # access token that can be exchanged (sso:GetRoleCredentials) for role
+    # credentials across every account the user is entitled to, and
+    # ~/.aws/credentials holds long-lived keys outright. Exposing it read-only
+    # still hands the in-container tool the caller's whole AWS identity, so it is
+    # shadowed like ~/.ssh. For Bedrock-backed models, prefer a credential scoped
+    # to model invocation (AWS_BEARER_TOKEN_BEDROCK, or an assume-role session
+    # policy — see mqyolo --help). `--ro-paths ~/.aws` re-exposes it for callers
+    # who accept that trade.
+    local _shadowed_aws=0
+    sandbox_home_shadow_dir .aws "${_opt_ins[@]+"${_opt_ins[@]}"}" && _shadowed_aws=1
 
     # Bind CARGO_HOME (default ~/.cargo) rw so `cargo build`/`cargo test` can
     # download missing deps into the registry.
@@ -632,6 +680,10 @@ sandbox_home_dotfiles() {
     while IFS= read -r -d '' item; do
         name="${item##*/}"
         [[ "$name" == ".claude" || "$name" == ".claude.json" || "$name" == ".cache" || "$name" == ".ssh" || "$name" == ".npm" ]] && continue
+        # Only skip .aws when it was actually shadowed above; when the caller
+        # opted it back in the symlink must exist, or ~/.aws would be unreachable
+        # at the container home and the AWS SDKs would not find the profile.
+        [[ "$name" == ".aws" && "$_shadowed_aws" -eq 1 ]] && continue
         # Resolve through any intermediate symlinks (e.g. /pkg -> /mnt/weka/pkg)
         # so the target is a canonical /mnt/... path that is bound in.
         ln -sf "$(readlink -f "$item" 2>/dev/null || echo "$item")" "${CONTAINER_HOME}/${name}" 2>/dev/null || true

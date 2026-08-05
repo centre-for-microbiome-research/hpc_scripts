@@ -460,6 +460,17 @@ FILESYSTEM INSIDE THE CONTAINER
   ~  (HOME)           isolated ephemeral directory, not your real home;
                       dotfiles are symlinked from your real home so tools
                       like git, ssh etc. pick up your config
+  ~/.ssh              NOT visible — shadowed by an empty directory so private
+                      keys are never readable. No opt-in.
+  ~/.aws              NOT visible — shadowed by an empty directory. It is a
+                      credential store: ~/.aws/sso/cache holds an SSO token
+                      exchangeable for role credentials across every account
+                      you can reach, and ~/.aws/credentials holds long-lived
+                      keys, so exposing it even read-only would give the AI
+                      your whole AWS identity. For Bedrock-backed models use a
+                      credential scoped to model invocation instead (see
+                      AWS_BEARER_TOKEN_BEDROCK below). Re-expose deliberately
+                      with: --ro-paths ~/.aws
 
 MQSUB FROM INSIDE THE CONTAINER
   Only when the host actually has the PBS batch queue (`qsub` is present, as on
@@ -661,7 +672,9 @@ trap '_cleanup; exit 143' TERM HUP
 # Read-only/HPC/tmp/rw/CWD binds, then the ephemeral-home dotfiles. Extra
 # read-only paths follow a `--` separator (see sandbox_build_binds).
 sandbox_build_binds "$CWD" "${RW_PATHS[@]+"${RW_PATHS[@]}"}" -- "${RO_PATHS[@]+"${RO_PATHS[@]}"}"
-sandbox_home_dotfiles
+# The granted paths are passed through so an explicit --ro-paths/--rw-paths on a
+# shadowed credential dir (~/.aws) re-exposes it instead of being overridden.
+sandbox_home_dotfiles "${RO_PATHS[@]+"${RO_PATHS[@]}"}" "${RW_PATHS[@]+"${RW_PATHS[@]}"}"
 
 # ---------------------------------------------------------------------------
 # mqsub broker (one per mqyolo session)

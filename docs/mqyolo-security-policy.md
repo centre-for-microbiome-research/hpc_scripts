@@ -111,6 +111,7 @@ agent.
 | `~/.claude` (claude), `~/.codex` (codex), `~/.config/opencode` + `~/.local/share/opencode` (opencode) | read-write | So the tool persists its own config/auth/history across sessions. For opencode the parent XDG directories are recreated inside the container as directories of symlinks, so only the two opencode dirs become writable. |
 | HPC data mounts (`/home`, `/mnt`, `/work`, `/data`, …), `/etc` selected files | **read-only** | The agent can read reference data and configs but not modify them. |
 | `--ro-paths` (operator-granted) + non-sensitive folders (§4.6) | read-only | Extra readable paths chosen at launch / from the sheet. |
+| `~/.ssh`, `~/.aws` | **not visible at all** | Credential stores, shadowed by an empty dir over their real path. Read-only is not sufficient for a credential: it is a key to systems *outside* the sandbox, which no filesystem constraint can contain. `~/.aws/sso/cache` in particular holds an SSO token exchangeable (`sso:GetRoleCredentials`) for role credentials across every account the operator can reach. `~/.aws` can be re-exposed with `--ro-paths ~/.aws`; `~/.ssh` cannot. |
 | **Deny-listed trees** (§4.4) | **not visible at all** | Anti-exfiltration. |
 | Everything else | not visible | `--contain` default. |
 
