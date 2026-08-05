@@ -698,6 +698,80 @@ sandbox_bind_codex_home() {
 }
 
 # ---------------------------------------------------------------------------
+# sandbox_mirror_home_subdir REL [SKIP_NAME...]
+#   Replace CONTAINER_HOME/REL — normally a symlink onto the real home's copy,
+#   created by sandbox_home_dotfiles — with a REAL directory inside the ephemeral
+#   home whose entries are symlinks to the real directory's entries (SKIP_NAMEs
+#   omitted). The directory itself is then writable, and a bind can be mounted
+#   *inside* it without the destination path resolving back through the symlink
+#   onto the read-only real home. Entry targets are resolved with `readlink -f`,
+#   like sandbox_home_dotfiles, so they land on the canonical (bound) paths.
+#   Nested paths are mirrored one level at a time, e.g.
+#       sandbox_mirror_home_subdir .local
+#       sandbox_mirror_home_subdir .local/share opencode
+#   CONTAINER_HOME must already exist (sandbox_make_home) and sandbox_home_dotfiles
+#   should have run first, so the symlink being replaced is the one it created.
+# ---------------------------------------------------------------------------
+sandbox_mirror_home_subdir() {
+    local rel="$1"; shift
+    local src="${HOME}/${rel}" dest="${CONTAINER_HOME}/${rel}"
+    # `rm -rf` on a symlink removes the link itself, never the real home behind it.
+    rm -rf "$dest"
+    mkdir -p "$dest"
+    local item name skip skipped
+    while IFS= read -r -d '' item; do
+        name="${item##*/}"
+        skipped=0
+        for skip in "$@"; do
+            [[ "$name" == "$skip" ]] && { skipped=1; break; }
+        done
+        (( skipped )) && continue
+        ln -sf "$(readlink -f "$item" 2>/dev/null || echo "$item")" "${dest}/${name}" 2>/dev/null || true
+    done < <(find "$src" -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# sandbox_bind_opencode_home CONFIG_DIR DATA_DIR [GUIDANCE_FILE]
+#   opencode splits its state across two XDG directories: config plus the global
+#   rules file in ~/.config/opencode (AGENTS.md), and auth.json plus session
+#   storage in ~/.local/share/opencode. Both sit under parents that
+#   sandbox_home_dotfiles symlinks wholesale onto the read-only real home, so
+#   opencode could neither log in nor persist a session. Mirror those parents into
+#   the ephemeral home (sandbox_mirror_home_subdir) and bind the two real opencode
+#   dirs read-write in their place, so config/auth/sessions survive across mqyolo
+#   runs — the same deal ~/.codex gets for codex.
+#
+#   When GUIDANCE_FILE is given it is bound read-only over the container's
+#   ~/.config/opencode/AGENTS.md (opencode's global rules file), so the mqyolo
+#   guidance reaches the tool without editing the user's real AGENTS.md.
+#
+#   The caller must also point XDG_CONFIG_HOME/XDG_DATA_HOME at the container home
+#   (see mqyolo), otherwise host XDG_* values would send opencode elsewhere.
+# ---------------------------------------------------------------------------
+sandbox_bind_opencode_home() {
+    local config="$1" data="$2" guidance="${3:-}"
+
+    [[ -n "$config" && -n "$data" ]] || return 0
+    mkdir -p "$config" "$data"
+
+    # Turn ~/.config and ~/.local/share into real dirs of symlinks, minus the
+    # opencode entries the binds below take over.
+    sandbox_mirror_home_subdir .config opencode
+    sandbox_mirror_home_subdir .local
+    sandbox_mirror_home_subdir .local/share opencode
+    mkdir -p "${CONTAINER_HOME}/.config/opencode" "${CONTAINER_HOME}/.local/share/opencode"
+
+    BIND_ARGS+=(--bind "${config}:/container_home/.config/opencode:rw" \
+                --bind "${data}:/container_home/.local/share/opencode:rw")
+
+    if [[ -n "$guidance" && -f "$guidance" ]]; then
+        BIND_ARGS+=(--bind "${guidance}:/container_home/.config/opencode/AGENTS.md:ro")
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # sandbox_write_shim_bashrc DEST_BASHRC REAL_BASHRC SHIM_DIR
 #   Write DEST_BASHRC so a shell that sources it first runs the user's real
 #   bashrc (if given/existing) and THEN puts SHIM_DIR first on PATH. This is how
