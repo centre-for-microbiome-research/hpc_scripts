@@ -258,6 +258,73 @@ def test_mqyolo_opencode_uses_auto_flag_and_binds_its_dirs(tmp_path):
     assert "XDG_DATA_HOME=/container_home/.local/share" in out
 
 
+def test_mqyolo_opencode_xdg_survives_user_bashrc(tmp_path):
+    # An apptainer --env value is applied BEFORE the container sources the user's
+    # real ~/.bashrc, so a bashrc that exports XDG_CONFIG_HOME would win and send
+    # opencode's config/auth back onto the read-only real home. The shim bashrc
+    # must re-assert the pins after sourcing the real one (same fix as PATH).
+    real = tmp_path / "real_bashrc"
+    real.write_text(
+        'export XDG_CONFIG_HOME="$HOME/decoy_config"\n'
+        'export XDG_DATA_HOME="$HOME/decoy_data"\n'
+    )
+    dest = tmp_path / "dest_bashrc"
+    script = (
+        "set -euo pipefail; source %s; "
+        "sandbox_write_shim_bashrc %s %s /shims "
+        "XDG_CONFIG_HOME=/container_home/.config "
+        "XDG_DATA_HOME=/container_home/.local/share; "
+        "HOME=/container_home; source %s; "
+        'printf "%%s\\n%%s\\n" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"'
+        % (SANDBOX_LIB, shlex.quote(str(dest)), shlex.quote(str(real)),
+           shlex.quote(str(dest)))
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    assert p.stdout.split() == [
+        "/container_home/.config",
+        "/container_home/.local/share",
+    ], p.stdout
+
+
+def test_mqyolo_does_not_forward_general_aws_credentials(tmp_path):
+    # Bedrock access must not drag the user's whole AWS identity into the
+    # sandbox: only the Bedrock-scoped API key and the (non-secret) region are
+    # forwarded. AWS_PROFILE / access keys are deliberately withheld.
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    fake_apptainer = fakebin / "apptainer"
+    fake_apptainer.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+    fake_apptainer.chmod(0o755)
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    fake_sif = tmp_path / "ai_tool.sif"
+    fake_sif.write_text("")
+    env = {
+        **os.environ,
+        "PATH": f"{fakebin}:{os.environ['PATH']}",
+        "HOME": str(fake_home),
+        "AI_TOOL_SIF": str(fake_sif),
+        "AWS_PROFILE": "sso-profile",
+        "AWS_ACCESS_KEY_ID": "AKIAsecret",
+        "AWS_SECRET_ACCESS_KEY": "shhh",
+        "AWS_SESSION_TOKEN": "sso-session-token",
+        "AWS_REGION": "us-east-1",
+        "AWS_BEARER_TOKEN_BEDROCK": "bedrock-scoped-key",
+    }
+    p = subprocess.run(
+        [str(MQYOLO), "--no-broker", "opencode"],
+        text=True, capture_output=True, env=env, cwd=str(fake_home),
+    )
+    assert p.returncode == 0, p.stderr
+    forwarded = [l for l in (p.stdout + p.stderr).splitlines() if l.startswith("AWS_")]
+    assert "AWS_REGION=us-east-1" in forwarded
+    assert "AWS_BEARER_TOKEN_BEDROCK=bedrock-scoped-key" in forwarded
+    for withheld in ("AWS_PROFILE", "AWS_ACCESS_KEY_ID",
+                     "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+        assert not any(l.startswith(f"{withheld}=") for l in forwarded), forwarded
+
+
 def test_mqyolo_rejects_disallowed_launch_dir(tmp_path):
     # The working directory is bound read-write into the sandbox, so mqyolo only
     # allows launching from /work/microbiome, $HOME, /scratch/microbiome/$USER or
