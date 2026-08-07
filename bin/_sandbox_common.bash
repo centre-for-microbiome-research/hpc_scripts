@@ -784,38 +784,55 @@ sandbox_mirror_home_subdir() {
 }
 
 # ---------------------------------------------------------------------------
-# sandbox_bind_opencode_home CONFIG_DIR DATA_DIR [GUIDANCE_FILE]
-#   opencode splits its state across two XDG directories: config plus the global
-#   rules file in ~/.config/opencode (AGENTS.md), and auth.json plus session
-#   storage in ~/.local/share/opencode. Both sit under parents that
-#   sandbox_home_dotfiles symlinks wholesale onto the read-only real home, so
-#   opencode could neither log in nor persist a session. Mirror those parents into
-#   the ephemeral home (sandbox_mirror_home_subdir) and bind the two real opencode
-#   dirs read-write in their place, so config/auth/sessions survive across mqyolo
-#   runs — the same deal ~/.codex gets for codex.
+# sandbox_bind_opencode_home CONFIG_DIR DATA_DIR STATE_DIR CACHE_DIR [GUIDANCE_FILE]
+#   opencode spreads itself across FOUR XDG directories, and creates all of them
+#   unconditionally at startup (a recursive mkdir of each before it does anything
+#   else — so a single unwritable one is a hard launch failure, e.g.
+#   `EROFS: read-only file system, mkdir '/container_home/.local/state/opencode'`):
+#     ~/.config/opencode        config plus the global rules file (AGENTS.md)
+#     ~/.local/share/opencode   auth.json, session storage, log/, repos/
+#     ~/.local/state/opencode   XDG_STATE_HOME — per-session/TUI state
+#     ~/.cache/opencode         cache, plus the bin/ it downloads helpers into
+#   The first three sit under parents that sandbox_home_dotfiles symlinks wholesale
+#   onto the read-only real home, so opencode could neither start, log in, nor
+#   persist a session. Mirror those parents into the ephemeral home
+#   (sandbox_mirror_home_subdir) and bind the real opencode dirs read-write in
+#   their place, so config/auth/sessions/state survive across mqyolo runs — the
+#   same deal ~/.codex gets for codex. ~/.cache is already a real dir in the
+#   ephemeral home, but sandbox_home_dotfiles only rw-binds the entries that exist
+#   in the real ~/.cache when it runs, so bind ~/.cache/opencode here too rather
+#   than leaving it ephemeral and re-downloading helpers every session.
 #
 #   When GUIDANCE_FILE is given it is bound read-only over the container's
 #   ~/.config/opencode/AGENTS.md (opencode's global rules file), so the mqyolo
 #   guidance reaches the tool without editing the user's real AGENTS.md.
 #
-#   The caller must also point XDG_CONFIG_HOME/XDG_DATA_HOME at the container home
-#   (see mqyolo), otherwise host XDG_* values would send opencode elsewhere.
+#   The caller must also point XDG_CONFIG_HOME / XDG_DATA_HOME / XDG_STATE_HOME /
+#   XDG_CACHE_HOME at the container home (see mqyolo), otherwise host XDG_* values
+#   would send opencode outside these binds — in the worst case back onto the
+#   read-only real home, which is the EROFS crash above.
 # ---------------------------------------------------------------------------
 sandbox_bind_opencode_home() {
-    local config="$1" data="$2" guidance="${3:-}"
+    local config="$1" data="$2" state="$3" cache="$4" guidance="${5:-}"
 
-    [[ -n "$config" && -n "$data" ]] || return 0
-    mkdir -p "$config" "$data"
+    [[ -n "$config" && -n "$data" && -n "$state" && -n "$cache" ]] || return 0
+    mkdir -p "$config" "$data" "$state" "$cache"
 
-    # Turn ~/.config and ~/.local/share into real dirs of symlinks, minus the
-    # opencode entries the binds below take over.
+    # Turn ~/.config, ~/.local/share and ~/.local/state into real dirs of
+    # symlinks, minus the opencode entries the binds below take over.
     sandbox_mirror_home_subdir .config opencode
     sandbox_mirror_home_subdir .local
     sandbox_mirror_home_subdir .local/share opencode
-    mkdir -p "${CONTAINER_HOME}/.config/opencode" "${CONTAINER_HOME}/.local/share/opencode"
+    sandbox_mirror_home_subdir .local/state opencode
+    mkdir -p "${CONTAINER_HOME}/.config/opencode" \
+             "${CONTAINER_HOME}/.local/share/opencode" \
+             "${CONTAINER_HOME}/.local/state/opencode" \
+             "${CONTAINER_HOME}/.cache/opencode"
 
     BIND_ARGS+=(--bind "${config}:/container_home/.config/opencode:rw" \
-                --bind "${data}:/container_home/.local/share/opencode:rw")
+                --bind "${data}:/container_home/.local/share/opencode:rw" \
+                --bind "${state}:/container_home/.local/state/opencode:rw" \
+                --bind "${cache}:/container_home/.cache/opencode:rw")
 
     if [[ -n "$guidance" && -f "$guidance" ]]; then
         BIND_ARGS+=(--bind "${guidance}:/container_home/.config/opencode/AGENTS.md:ro")

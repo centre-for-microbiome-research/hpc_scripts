@@ -89,10 +89,15 @@ Key invariants the tests guard (keep them true):
   global `~/.codex/AGENTS.md` via a read-only file bind over the real read-write
   `~/.codex` mount, and for opencode via the same trick on its global
   `~/.config/opencode/AGENTS.md` (`sandbox_bind_opencode_home`, which also rw-binds
-  `~/.config/opencode` and `~/.local/share/opencode` so config/auth/sessions
-  persist; their XDG parents are mirrored into the ephemeral home as directories
-  of symlinks by `sandbox_mirror_home_subdir`, and `XDG_CONFIG_HOME`/`XDG_DATA_HOME`
-  are pinned to the container home so host values cannot redirect opencode).
+  all four dirs opencode uses — `~/.config/opencode`, `~/.local/share/opencode`,
+  `~/.local/state/opencode` and `~/.cache/opencode` — so config/auth/sessions/state
+  persist. opencode recursively mkdirs all four at startup, so any one left on the
+  read-only home is a hard launch failure (`EROFS ... mkdir
+  '/container_home/.local/state/opencode'`), not just lost persistence. Their XDG
+  parents are mirrored into the ephemeral home as directories of symlinks by
+  `sandbox_mirror_home_subdir`, and `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/
+  `XDG_STATE_HOME`/`XDG_CACHE_HOME` are all pinned to the container home so host
+  values cannot redirect opencode).
   The guidance adapts to the boot environment
   (`_mqyolo_detect_resources` → `MQYOLO_ENV` = `login`|`pbs`|`local`): on a login
   node it says offload to `mqsub`; inside a PBS job it reports the actual allocated

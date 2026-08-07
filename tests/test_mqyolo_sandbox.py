@@ -220,10 +220,12 @@ def test_mqyolo_codex_uses_current_auto_mode_flag(tmp_path):
 
 
 def test_mqyolo_opencode_uses_auto_flag_and_binds_its_dirs(tmp_path):
-    # opencode is auto-approved with --auto, and both of the directories it keeps
-    # state in (config + global AGENTS.md, and auth/session storage) are bound
-    # read-write with XDG pinned to the container home so a host XDG_* cannot
-    # redirect it onto the read-only real home.
+    # opencode is auto-approved with --auto, and ALL FOUR directories it keeps
+    # state in (config + global AGENTS.md, auth/session storage, session state and
+    # cache) are bound read-write with every XDG base dir pinned to the container
+    # home so a host XDG_* cannot redirect it onto the read-only real home.
+    # opencode mkdirs all four at startup, so missing any one is a hard crash:
+    # EROFS: read-only file system, mkdir '/container_home/.local/state/opencode'
     fakebin = tmp_path / "fakebin"
     fakebin.mkdir()
     fake_apptainer = fakebin / "apptainer"
@@ -238,8 +240,10 @@ def test_mqyolo_opencode_uses_auto_flag_and_binds_its_dirs(tmp_path):
         "PATH": f"{fakebin}:{os.environ['PATH']}",
         "HOME": str(fake_home),
         "AI_TOOL_SIF": str(fake_sif),
-        # A host XDG_CONFIG_HOME must not leak through to opencode.
+        # A host XDG_* must not leak through to opencode.
         "XDG_CONFIG_HOME": str(fake_home / "xdg_config"),
+        "XDG_STATE_HOME": str(fake_home / "xdg_state"),
+        "XDG_CACHE_HOME": str(fake_home / "xdg_cache"),
     }
 
     p = subprocess.run(
@@ -254,8 +258,12 @@ def test_mqyolo_opencode_uses_auto_flag_and_binds_its_dirs(tmp_path):
     assert "--auto" in out.splitlines()
     assert f"{fake_home}/.config/opencode:/container_home/.config/opencode:rw" in out
     assert f"{fake_home}/.local/share/opencode:/container_home/.local/share/opencode:rw" in out
+    assert f"{fake_home}/.local/state/opencode:/container_home/.local/state/opencode:rw" in out
+    assert f"{fake_home}/.cache/opencode:/container_home/.cache/opencode:rw" in out
     assert "XDG_CONFIG_HOME=/container_home/.config" in out
     assert "XDG_DATA_HOME=/container_home/.local/share" in out
+    assert "XDG_STATE_HOME=/container_home/.local/state" in out
+    assert "XDG_CACHE_HOME=/container_home/.cache" in out
 
 
 def test_mqyolo_opencode_xdg_survives_user_bashrc(tmp_path):
@@ -267,15 +275,20 @@ def test_mqyolo_opencode_xdg_survives_user_bashrc(tmp_path):
     real.write_text(
         'export XDG_CONFIG_HOME="$HOME/decoy_config"\n'
         'export XDG_DATA_HOME="$HOME/decoy_data"\n'
+        'export XDG_STATE_HOME="$HOME/decoy_state"\n'
+        'export XDG_CACHE_HOME="$HOME/decoy_cache"\n'
     )
     dest = tmp_path / "dest_bashrc"
     script = (
         "set -euo pipefail; source %s; "
         "sandbox_write_shim_bashrc %s %s /shims "
         "XDG_CONFIG_HOME=/container_home/.config "
-        "XDG_DATA_HOME=/container_home/.local/share; "
+        "XDG_DATA_HOME=/container_home/.local/share "
+        "XDG_STATE_HOME=/container_home/.local/state "
+        "XDG_CACHE_HOME=/container_home/.cache; "
         "HOME=/container_home; source %s; "
-        'printf "%%s\\n%%s\\n" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"'
+        'printf "%%s\\n%%s\\n%%s\\n%%s\\n" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" '
+        '"$XDG_STATE_HOME" "$XDG_CACHE_HOME"'
         % (SANDBOX_LIB, shlex.quote(str(dest)), shlex.quote(str(real)),
            shlex.quote(str(dest)))
     )
@@ -284,6 +297,8 @@ def test_mqyolo_opencode_xdg_survives_user_bashrc(tmp_path):
     assert p.stdout.split() == [
         "/container_home/.config",
         "/container_home/.local/share",
+        "/container_home/.local/state",
+        "/container_home/.cache",
     ], p.stdout
 
 
@@ -875,13 +890,18 @@ def test_bind_opencode_home_mounts_real_dirs_rw_and_guidance_readonly(tmp_path):
     home = tmp_path / "home"
     (home / ".config").mkdir(parents=True)
     (home / ".local" / "share").mkdir(parents=True)
+    (home / ".local" / "state").mkdir(parents=True)
     chome = tmp_path / "chome"
     chome.mkdir()
-    # As sandbox_home_dotfiles leaves them: symlinks onto the real home.
+    # As sandbox_home_dotfiles leaves them: symlinks onto the real home, except
+    # ~/.cache which it builds as a real directory.
     (chome / ".config").symlink_to(home / ".config")
     (chome / ".local").symlink_to(home / ".local")
+    (chome / ".cache").mkdir()
     config = home / ".config" / "opencode"
     data = home / ".local" / "share" / "opencode"
+    state = home / ".local" / "state" / "opencode"
+    cache = home / ".cache" / "opencode"
     guidance = tmp_path / "guidance.md"
     guidance.write_text("use mqsub\n")
 
@@ -890,7 +910,7 @@ def test_bind_opencode_home_mounts_real_dirs_rw_and_guidance_readonly(tmp_path):
         "source %s; "
         "HOME=%s CONTAINER_HOME=%s; "
         "BIND_ARGS=(); "
-        "sandbox_bind_opencode_home %s %s %s; "
+        "sandbox_bind_opencode_home %s %s %s %s %s; "
         'for a in "${BIND_ARGS[@]}"; do [[ "$a" == --bind ]] || printf "%%s\\n" "$a"; done'
         % (
             SANDBOX_LIB,
@@ -898,25 +918,29 @@ def test_bind_opencode_home_mounts_real_dirs_rw_and_guidance_readonly(tmp_path):
             shlex.quote(str(chome)),
             shlex.quote(str(config)),
             shlex.quote(str(data)),
+            shlex.quote(str(state)),
+            shlex.quote(str(cache)),
             shlex.quote(str(guidance)),
         )
     )
     p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
     assert p.returncode == 0, p.stderr
-    # Both state dirs are created in the real home so the binds have a source.
-    assert config.is_dir() and data.is_dir()
+    # All four state dirs are created in the real home so the binds have a source.
+    assert config.is_dir() and data.is_dir() and state.is_dir() and cache.is_dir()
     binds = p.stdout.splitlines()
     assert f"{config}:/container_home/.config/opencode:rw" in binds
     assert f"{data}:/container_home/.local/share/opencode:rw" in binds
+    assert f"{state}:/container_home/.local/state/opencode:rw" in binds
+    assert f"{cache}:/container_home/.cache/opencode:rw" in binds
     assert f"{guidance}:/container_home/.config/opencode/AGENTS.md:ro" in binds
     # The XDG parents are now real dirs inside the ephemeral home, with the
     # opencode mountpoints present and NOT symlinked at the real home.
-    for rel in (".config", ".local", ".local/share"):
+    for rel in (".config", ".local", ".local/share", ".local/state", ".cache"):
         assert (chome / rel).is_dir() and not (chome / rel).is_symlink()
-    assert (chome / ".config" / "opencode").is_dir()
-    assert not (chome / ".config" / "opencode").is_symlink()
-    assert (chome / ".local" / "share" / "opencode").is_dir()
-    assert not (chome / ".local" / "share" / "opencode").is_symlink()
+    for rel in (".config/opencode", ".local/share/opencode",
+                ".local/state/opencode", ".cache/opencode"):
+        assert (chome / rel).is_dir(), rel
+        assert not (chome / rel).is_symlink(), rel
 
 
 def test_bind_opencode_home_without_guidance_omits_agents_bind(tmp_path):
@@ -929,7 +953,7 @@ def test_bind_opencode_home_without_guidance_omits_agents_bind(tmp_path):
         "source %s; "
         "HOME=%s CONTAINER_HOME=%s; "
         "BIND_ARGS=(); "
-        "sandbox_bind_opencode_home %s %s %s; "
+        "sandbox_bind_opencode_home %s %s %s %s %s; "
         'for a in "${BIND_ARGS[@]}"; do [[ "$a" == --bind ]] || printf "%%s\\n" "$a"; done'
         % (
             SANDBOX_LIB,
@@ -937,6 +961,8 @@ def test_bind_opencode_home_without_guidance_omits_agents_bind(tmp_path):
             shlex.quote(str(chome)),
             shlex.quote(str(home / ".config" / "opencode")),
             shlex.quote(str(home / ".local" / "share" / "opencode")),
+            shlex.quote(str(home / ".local" / "state" / "opencode")),
+            shlex.quote(str(home / ".cache" / "opencode")),
             shlex.quote(str(tmp_path / "missing_guidance.md")),
         )
     )

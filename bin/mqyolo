@@ -512,9 +512,17 @@ OPENCODE SETTINGS
                             commands persist across mqyolo runs
   ~/.local/share/opencode/  bound read-write so opencode auth (auth.json) and
                             session storage persist
-                      Their parent directories (~/.config, ~/.local/share) are
-                      recreated inside the container as directories of symlinks
-                      to your real ones, so other tools still see their config.
+  ~/.local/state/opencode/  bound read-write for opencode's session/TUI state
+  ~/.cache/opencode/        bound read-write so its cache and downloaded helper
+                            binaries are not re-fetched every session
+                      opencode creates all four at startup, so all four must be
+                      writable. Their parent directories (~/.config, ~/.local,
+                      ~/.local/share, ~/.local/state) are recreated inside the
+                      container as directories of symlinks to your real ones, so
+                      other tools still see their config, and XDG_CONFIG_HOME /
+                      XDG_DATA_HOME / XDG_STATE_HOME / XDG_CACHE_HOME are pinned
+                      at the container home so nothing redirects opencode back
+                      onto the read-only real home.
                       mqyolo's generated guidance is mounted read-only over
                       ~/.config/opencode/AGENTS.md (opencode's global rules file)
                       inside the container.
@@ -839,29 +847,40 @@ case "$TOOL" in
         # Auto-approve permissions that are not explicitly denied — the container
         # is the sandbox, so opencode's own prompts add nothing here.
         YOLO_ARGS=("--auto")
-        # opencode keeps config + its global rules file (AGENTS.md) in
-        # ~/.config/opencode, and auth.json + session storage in
-        # ~/.local/share/opencode. Bind both real dirs read-write so logins and
-        # sessions persist across runs, and expose the mqyolo guidance as the
-        # global AGENTS.md without touching the user's real one.
-        mkdir -p "${HOME}/.config/opencode" "${HOME}/.local/share/opencode"
+        # opencode spreads itself over four XDG dirs and mkdirs ALL of them at
+        # startup, so every one must be writable or it dies before the TUI opens:
+        # config + its global rules file (AGENTS.md) in ~/.config/opencode,
+        # auth.json + session storage in ~/.local/share/opencode, session/TUI
+        # state in ~/.local/state/opencode, and cache + downloaded helper binaries
+        # in ~/.cache/opencode. Bind all four real dirs read-write so logins,
+        # sessions and state persist across runs, and expose the mqyolo guidance as
+        # the global AGENTS.md without touching the user's real one.
+        mkdir -p "${HOME}/.config/opencode" "${HOME}/.local/share/opencode" \
+                 "${HOME}/.local/state/opencode" "${HOME}/.cache/opencode"
         _oc_config="$(readlink -f "${HOME}/.config/opencode" 2>/dev/null || echo "${HOME}/.config/opencode")"
         _oc_data="$(readlink -f "${HOME}/.local/share/opencode" 2>/dev/null || echo "${HOME}/.local/share/opencode")"
-        sandbox_bind_opencode_home "$_oc_config" "$_oc_data" \
+        _oc_state="$(readlink -f "${HOME}/.local/state/opencode" 2>/dev/null || echo "${HOME}/.local/state/opencode")"
+        _oc_cache="$(readlink -f "${HOME}/.cache/opencode" 2>/dev/null || echo "${HOME}/.cache/opencode")"
+        sandbox_bind_opencode_home "$_oc_config" "$_oc_data" "$_oc_state" "$_oc_cache" \
             "${CONTAINER_HOME}/.mqyolo/guidance.md"
-        unset _oc_config _oc_data
+        unset _oc_config _oc_data _oc_state _oc_cache
         # Apptainer forwards the host environment, so a host XDG_CONFIG_HOME /
-        # XDG_DATA_HOME would send opencode outside the binds above (onto the
-        # read-only real home). Pin both to the container home — via --env AND
-        # via the shim ~/.bashrc, because the container sources the user's real
-        # bashrc after apptainer applies --env: a bashrc that exports XDG_*
-        # (common with XDG-aware dotfile setups) would otherwise win and send
-        # opencode's auth/sessions back to the read-only home, silently losing
-        # persistence and the AGENTS.md guidance bind. Same fix as PATH.
+        # XDG_DATA_HOME / XDG_STATE_HOME / XDG_CACHE_HOME would send opencode
+        # outside the binds above (onto the read-only real home). Pin all four to
+        # the container home — via --env AND via the shim ~/.bashrc, because the
+        # container sources the user's real bashrc after apptainer applies --env: a
+        # bashrc that exports XDG_* (common with XDG-aware dotfile setups) would
+        # otherwise win and send opencode's auth/sessions/state back to the
+        # read-only home, silently losing persistence and the AGENTS.md guidance
+        # bind — or crashing it outright on the startup mkdir. Same fix as PATH.
         ENV_ARGS+=(--env "XDG_CONFIG_HOME=/container_home/.config" \
-                   --env "XDG_DATA_HOME=/container_home/.local/share")
+                   --env "XDG_DATA_HOME=/container_home/.local/share" \
+                   --env "XDG_STATE_HOME=/container_home/.local/state" \
+                   --env "XDG_CACHE_HOME=/container_home/.cache")
         SANDBOX_SHIM_EXPORTS+=("XDG_CONFIG_HOME=/container_home/.config" \
-                               "XDG_DATA_HOME=/container_home/.local/share")
+                               "XDG_DATA_HOME=/container_home/.local/share" \
+                               "XDG_STATE_HOME=/container_home/.local/state" \
+                               "XDG_CACHE_HOME=/container_home/.cache")
         ;;
     *)
         # A repo executable (see arg parsing): run it as-is with no wrapper flags and

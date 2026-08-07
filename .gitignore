@@ -6,3 +6,5 @@ singularity/ai_tool.sif
 # pixi environments
 .pixi/*
 !.pixi/config.toml
+singularity/ai_tool.test.sif
+
