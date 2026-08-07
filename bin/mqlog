@@ -14,6 +14,8 @@ import sys
 BATCH_SIZE = 20
 # Don't walk back further than this many finished jobs.
 MAX_JOBS_SCANNED = 400
+# -F exits immediately if the logs fit on one screen, -X leaves them on it.
+DEFAULT_PAGER = "less -RFX"
 
 
 def run(command, check=True):
@@ -133,14 +135,16 @@ def find_job(job_ids, only_failed, qstat_json_file=None):
 
 
 def open_pager():
-    """Start $PAGER and return (process, stream) to write the output to."""
-    pager = os.environ.get("PAGER") or "less -RFX"
+    """Start $PAGER for our output, or return None if we should not paginate."""
+    # An empty PAGER conventionally means "no pager"; honour that like git does.
+    pager = os.environ.get("PAGER", DEFAULT_PAGER)
+    if not pager.strip():
+        return None
     try:
-        process = subprocess.Popen(["bash", "-c", pager], stdin=subprocess.PIPE,
-                                   universal_newlines=True)
+        return subprocess.Popen(["bash", "-c", pager], stdin=subprocess.PIPE,
+                                universal_newlines=True)
     except OSError:
-        return None, sys.stdout
-    return process, process.stdin
+        return None
 
 
 def emit(stream, sections, notes, show_headers):
@@ -157,6 +161,16 @@ def emit(stream, sections, notes, show_headers):
                 shutil.copyfileobj(f, stream)
         elif show_headers:
             stream.write("(no log file)\n")
+
+
+def emit_to_stdout(sections, notes, show_headers):
+    """emit() to stdout, tolerating a closed pipe (e.g. `mqlog | head`)."""
+    try:
+        emit(sys.stdout, sections, notes, show_headers)
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # Silence Python's interpreter-shutdown flush of the dead stdout.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
 
 
 def main():
@@ -235,25 +249,35 @@ def main():
             file=sys.stderr)
         sys.exit(1)
 
-    if paginate:
-        process, stream = open_pager()
-    else:
-        process, stream = None, sys.stdout
+    process = open_pager() if paginate else None
+
+    if process is None:
+        # Unpaginated: notes belong on stderr so they stay out of piped output.
         for note in notes:
             print(note, file=sys.stderr)
-        notes = []
+        emit_to_stdout(sections, [], show_headers)
+        return
 
     try:
-        emit(stream, sections, notes, show_headers)
+        emit(process.stdin, sections, notes, show_headers)
     except BrokenPipeError:
-        pass
+        pass  # Reader quit early (e.g. `q` in less before the end).
     finally:
-        if process is not None:
-            try:
-                stream.close()
-            except BrokenPipeError:
-                pass
-            process.wait()
+        try:
+            process.stdin.close()
+        except BrokenPipeError:
+            pass
+        returncode = process.wait()
+
+    # bash reports a pager it could not execute as 127 (not found) or 126 (not
+    # executable). It never ran, so nothing was displayed and re-emitting is safe
+    # rather than double-printing.
+    if returncode in (126, 127):
+        print("WARNING: pager '{}' could not be run; printing without it."
+              .format(os.environ.get("PAGER", DEFAULT_PAGER)), file=sys.stderr)
+        for note in notes:
+            print(note, file=sys.stderr)
+        emit_to_stdout(sections, [], show_headers)
 
 
 if __name__ == '__main__':
