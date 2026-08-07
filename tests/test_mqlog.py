@@ -212,3 +212,72 @@ def test_pagination_used_on_a_tty(tmp_path):
     text = captured.read_text()
     assert "paged-out" in text
     assert "paged-err" in text
+
+
+def spawn_on_tty(tmp_path, x_file, json_file, pager, *extra):
+    """Run mqlog under a pty (so it paginates) with PAGER set, return its output."""
+    import pexpect
+
+    env = {"PATH": "/usr/bin:/bin", "TERM": "xterm", "USER": USER}
+    if pager is not None:
+        env["PAGER"] = pager
+    child = pexpect.spawn(
+        sys.executable,
+        [str(SCRIPT), "--qstat-x-file", str(x_file), "--qstat-json-file", str(json_file)]
+        + list(extra),
+        env=env, timeout=30,
+    )
+    child.expect(pexpect.EOF)
+    output = child.before.decode()
+    child.close()
+    return child.exitstatus, output
+
+
+def test_unrunnable_pager_still_prints_the_logs(tmp_path):
+    # bash starts fine and only the pager inside it fails, so mqlog has to notice
+    # the 127 and re-emit; otherwise the logs are silently lost with exit 0.
+    x_file, json_file = write_fixtures(tmp_path, [("100.aqua", 0, None)])
+    write_logs(tmp_path, "100.aqua", "the-stdout\n", "the-stderr\n")
+
+    status, output = spawn_on_tty(tmp_path, x_file, json_file, "definitely-not-a-real-pager")
+    assert status == 0
+    assert "the-stdout" in output
+    assert "the-stderr" in output
+    assert "could not be run" in output
+
+
+def test_empty_pager_means_no_pager(tmp_path):
+    x_file, json_file = write_fixtures(tmp_path, [("100.aqua", 0, None)])
+    write_logs(tmp_path, "100.aqua", "the-stdout\n", "the-stderr\n")
+
+    status, output = spawn_on_tty(tmp_path, x_file, json_file, "")
+    assert status == 0
+    assert "the-stdout" in output
+    # No pager was attempted, so there is nothing to warn about.
+    assert "could not be run" not in output
+
+
+def test_pager_exiting_nonzero_does_not_double_print(tmp_path):
+    # A pager that ran but exited non-zero (e.g. the reader quit) already showed
+    # the output; only 126/127 mean it never ran at all.
+    x_file, json_file = write_fixtures(tmp_path, [("100.aqua", 0, None)])
+    write_logs(tmp_path, "100.aqua", "the-stdout\n", "the-stderr\n")
+
+    status, output = spawn_on_tty(tmp_path, x_file, json_file, "cat; exit 3")
+    assert status == 0
+    assert output.count("the-stdout") == 1
+    assert "could not be run" not in output
+
+
+def test_broken_pipe_is_silent(tmp_path):
+    # `mqlog -o | head -1` must not spew a BrokenPipeError traceback.
+    x_file, json_file = write_fixtures(tmp_path, [("100.aqua", 0, None)])
+    write_logs(tmp_path, "100.aqua", "out-line\n" * 5000, "")
+
+    proc = subprocess.run(
+        "{} {} --no-pager -o --qstat-x-file {} --qstat-json-file {} | head -1".format(
+            sys.executable, SCRIPT, x_file, json_file),
+        shell=True, text=True, capture_output=True)
+    assert proc.stdout == "out-line\n"
+    assert "BrokenPipeError" not in proc.stderr
+    assert "Exception ignored" not in proc.stderr
