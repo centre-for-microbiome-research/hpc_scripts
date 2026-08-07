@@ -6,23 +6,33 @@ import argparse
 import getpass
 import json
 import os
+import shutil
 import subprocess
 import sys
 
+# How many jobs to ask qstat about in one go when hunting for a job with logs.
+BATCH_SIZE = 20
+# Don't walk back further than this many finished jobs.
+MAX_JOBS_SCANNED = 400
 
-def run(command):
+
+def run(command, check=True):
     process = subprocess.Popen(
         ["bash", "-o", "pipefail", "-c", command],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     stdout, stderr = process.communicate()
-    if process.returncode != 0:
+    if check and process.returncode != 0:
         raise Exception("Command failed: {}\nSTDERR: {}".format(command, stderr.decode()))
     return stdout
 
 
-def get_finished_job_ids(user):
-    """Parse qstat -x text output to get finished job IDs for the user, ordered as listed."""
-    stdout = run("qstat -x 2>/dev/null")
+def get_finished_job_ids(user, qstat_x_file=None):
+    """Parse qstat -x text output to get finished job IDs for the user, most recent first."""
+    if qstat_x_file:
+        with open(qstat_x_file) as f:
+            stdout = f.read().encode()
+    else:
+        stdout = run("qstat -x 2>/dev/null")
     job_ids = []
     for line in stdout.decode().splitlines():
         parts = line.split()
@@ -31,87 +41,219 @@ def get_finished_job_ids(user):
         job_id, _name, owner, _time, state = parts[0], parts[1], parts[2], parts[3], parts[4]
         if owner == user and state == 'F':
             job_ids.append(job_id)
-    return job_ids
+    # Job IDs increase monotonically, so sort by the leading integer rather than
+    # trusting the order qstat happened to print them in.
+    def sort_key(job_id):
+        head = job_id.split('.', 1)[0].split('[', 1)[0]
+        try:
+            return (0, int(head))
+        except ValueError:
+            return (1, 0)
+    return sorted(job_ids, key=sort_key, reverse=True)
 
 
-def get_stderr_path(job_id):
-    """Use qstat -xf on a single job to find its stderr file path."""
-    stdout = run("qstat -xf -F json {} 2>/dev/null".format(job_id))
-    data = json.loads(stdout.decode())
-    info = list(data.get("Jobs", {}).values())[0]
-    error_path = info.get("Error_Path", "")
-    # Error_Path is host:/path/to/dir/
-    if ":" in error_path:
-        error_path = error_path.split(":", 1)[1]
-    # The stderr file is <jobid>.ER inside the directory
-    stderr_file = os.path.join(error_path, "{}.ER".format(job_id))
-    return stderr_file
+def get_job_info(job_ids, qstat_json_file=None):
+    """Return {job_id: attributes} from qstat -xf for the given jobs."""
+    if qstat_json_file:
+        with open(qstat_json_file) as f:
+            data = json.load(f)
+        jobs = data.get("Jobs", {})
+        return {job_id: jobs[job_id] for job_id in job_ids if job_id in jobs}
+    # qstat exits non-zero if any one of the requested jobs is unknown, but it
+    # still reports the ones it does know about, so don't insist on rc == 0.
+    stdout = run("qstat -xf -F json {} 2>/dev/null".format(' '.join(job_ids)), check=False)
+    if not stdout.strip():
+        return {}
+    try:
+        data = json.loads(stdout.decode())
+    except ValueError:
+        return {}
+    return data.get("Jobs", {})
+
+
+def log_paths(job_id, info):
+    """Return the (stdout, stderr) log paths for a job from its qstat attributes.
+
+    PBS reports Output_Path/Error_Path as host:path. mqsub --segregated-log-files
+    points them at a directory, in which case the files inside are named
+    <jobid>.OU/<jobid>.ER; otherwise the path is the log file itself.
+    """
+    def resolve(path, suffix):
+        if not path:
+            return None
+        if ":" in path:
+            path = path.split(":", 1)[1]
+        if path.endswith('/') or os.path.isdir(path):
+            return os.path.join(path, "{}.{}".format(job_id, suffix))
+        return path
+
+    return (resolve(info.get("Output_Path", ""), "OU"),
+            resolve(info.get("Error_Path", ""), "ER"))
+
+
+def has_logs(paths):
+    return any(p and os.path.exists(p) for p in paths)
+
+
+def is_failed(info):
+    """True if the job finished with a non-zero exit status."""
+    exit_status = info.get("Exit_status")
+    if exit_status is None:
+        return False
+    try:
+        return int(exit_status) != 0
+    except (TypeError, ValueError):
+        return False
+
+
+def iter_job_info(job_ids, qstat_json_file=None):
+    """Yield (job_id, info) for job_ids in order, querying qstat in batches."""
+    for start in range(0, min(len(job_ids), MAX_JOBS_SCANNED), BATCH_SIZE):
+        batch = job_ids[start:start + BATCH_SIZE]
+        info_by_id = get_job_info(batch, qstat_json_file=qstat_json_file)
+        for job_id in batch:
+            if job_id in info_by_id:
+                yield job_id, info_by_id[job_id]
+
+
+def find_job(job_ids, only_failed, qstat_json_file=None):
+    """Find the most recent job (optionally failed) that actually has a log file.
+
+    Returns (job_id, stdout_path, stderr_path, skipped_job_ids).
+    """
+    skipped = []
+    for job_id, info in iter_job_info(job_ids, qstat_json_file=qstat_json_file):
+        if only_failed and not is_failed(info):
+            continue
+        paths = log_paths(job_id, info)
+        if has_logs(paths):
+            return job_id, paths[0], paths[1], skipped
+        skipped.append(job_id)
+    return None, None, None, skipped
+
+
+def open_pager():
+    """Start $PAGER and return (process, stream) to write the output to."""
+    pager = os.environ.get("PAGER") or "less -RFX"
+    try:
+        process = subprocess.Popen(["bash", "-c", pager], stdin=subprocess.PIPE,
+                                   universal_newlines=True)
+    except OSError:
+        return None, sys.stdout
+    return process, process.stdin
+
+
+def emit(stream, sections, notes, show_headers):
+    """Write notes and the log sections to stream."""
+    for note in notes:
+        stream.write(note + "\n")
+    if notes:
+        stream.write("\n")
+    for label, path in sections:
+        if show_headers:
+            stream.write("===== {}: {} =====\n".format(label, path or "not set"))
+        if path and os.path.exists(path):
+            with open(path, errors='replace') as f:
+                shutil.copyfileobj(f, stream)
+        elif show_headers:
+            stream.write("(no log file)\n")
 
 
 def main():
     parser = argparse.ArgumentParser(
         description='Print stdout and stderr of the most recently finished PBS job.')
     group = parser.add_mutually_exclusive_group()
-    group.add_argument('--stdout', action='store_true',
-                       help='Print only the stdout (.OU) of the job')
-    group.add_argument('--stderr', action='store_true',
-                       help='Print only the stderr (.ER) of the job')
+    group.add_argument('-o', '--stdout', action='store_true',
+                       help='Print only the stdout of the job')
+    group.add_argument('-e', '--stderr', action='store_true',
+                       help='Print only the stderr of the job')
+    parser.add_argument('-f', '--failed', action='store_true',
+                        help='Show logs from the most recent job that exited non-zero')
+    parser.add_argument('--no-pager', action='store_true',
+                        help='Do not pipe the output through a pager')
     parser.add_argument('job_id', nargs='?', default=None,
                         help='Job ID to show logs for (default: most recent finished job)')
+    parser.add_argument('--qstat-x-file', help=argparse.SUPPRESS)
+    parser.add_argument('--qstat-json-file', help=argparse.SUPPRESS)
     args = parser.parse_args()
 
+    if args.job_id is not None and args.failed:
+        parser.error("--failed cannot be combined with an explicit job ID")
+
+    notes = []
+
     if args.job_id is not None:
-        # Use the specified job ID directly
         job_id = args.job_id
-        if not job_id.endswith('.aqua'):
+        if '.' not in job_id:
             job_id = job_id + '.aqua'
-        found_er_path = get_stderr_path(job_id)
-        found_ou_path = found_er_path.rsplit(".ER", 1)[0] + ".OU"
-        if not os.path.exists(found_er_path) and not os.path.exists(found_ou_path):
+        info = get_job_info([job_id], qstat_json_file=args.qstat_json_file).get(job_id)
+        if info is None:
+            print("Job {} not found by qstat.".format(job_id), file=sys.stderr)
+            sys.exit(1)
+        stdout_path, stderr_path = log_paths(job_id, info)
+        if not has_logs((stdout_path, stderr_path)):
             print("Log file not found for job {}.".format(job_id), file=sys.stderr)
             sys.exit(1)
     else:
         user = getpass.getuser()
-        job_ids = get_finished_job_ids(user)
+        job_ids = get_finished_job_ids(user, qstat_x_file=args.qstat_x_file)
 
         if not job_ids:
             print("No finished jobs found.", file=sys.stderr)
             sys.exit(1)
 
-        # Walk backwards from most recent to find a job that actually ran (has a log file)
-        most_recent = job_ids[-1]
-        found_job_id = None
-        found_er_path = None
-        for job_id in reversed(job_ids):
-            stderr_path = get_stderr_path(job_id)
-            stdout_path = stderr_path.rsplit(".ER", 1)[0] + ".OU"
-            if os.path.exists(stderr_path) or os.path.exists(stdout_path):
-                found_job_id = job_id
-                found_er_path = stderr_path
-                break
+        job_id, stdout_path, stderr_path, skipped = find_job(
+            job_ids, args.failed, qstat_json_file=args.qstat_json_file)
 
-        if found_job_id is None:
-            print("No finished jobs with log files found.", file=sys.stderr)
+        if job_id is None:
+            if args.failed:
+                print("No failed jobs with log files found.", file=sys.stderr)
+            else:
+                print("No finished jobs with log files found.", file=sys.stderr)
             sys.exit(1)
 
-        if found_job_id != most_recent:
-            print("WARNING: Most recent finished job {} has no log file. "
-                  "Showing log from {}.".format(most_recent, found_job_id),
-                  file=sys.stderr)
-
-    found_ou_path = found_er_path.rsplit(".ER", 1)[0] + ".OU"
+        if args.failed:
+            notes.append("Showing logs from failed job {}.".format(job_id))
+        elif skipped:
+            notes.append("WARNING: Most recent finished job {} has no log file. "
+                         "Showing log from {}.".format(skipped[0], job_id))
 
     if args.stdout:
-        paths = [found_ou_path]
+        sections = [("STDOUT", stdout_path)]
     elif args.stderr:
-        paths = [found_er_path]
+        sections = [("STDERR", stderr_path)]
     else:
-        paths = [found_ou_path, found_er_path]
+        sections = [("STDOUT", stdout_path), ("STDERR", stderr_path)]
 
-    for path in paths:
-        if os.path.exists(path):
-            with open(path) as f:
-                sys.stdout.write(f.read())
+    # Both streams go to stdout so a single pager shows them together.
+    paginate = not args.no_pager and sys.stdout.isatty()
+    show_headers = len(sections) > 1
+
+    if not has_logs([path for _label, path in sections]):
+        print("Log file not found: {}".format(
+            ", ".join(path or "path unknown" for _label, path in sections)),
+            file=sys.stderr)
+        sys.exit(1)
+
+    if paginate:
+        process, stream = open_pager()
+    else:
+        process, stream = None, sys.stdout
+        for note in notes:
+            print(note, file=sys.stderr)
+        notes = []
+
+    try:
+        emit(stream, sections, notes, show_headers)
+    except BrokenPipeError:
+        pass
+    finally:
+        if process is not None:
+            try:
+                stream.close()
+            except BrokenPipeError:
+                pass
+            process.wait()
 
 
 if __name__ == '__main__':
