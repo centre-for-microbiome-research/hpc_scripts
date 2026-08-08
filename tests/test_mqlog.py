@@ -1,4 +1,5 @@
 import getpass
+import io
 import json
 import subprocess
 import sys
@@ -231,6 +232,68 @@ def spawn_on_tty(tmp_path, x_file, json_file, pager, *extra):
     output = child.before.decode()
     child.close()
     return child.exitstatus, output
+
+
+SMCUP = "\x1b[?1049h"  # switch to the alternate screen
+RMCUP = "\x1b[?1049l"  # switch back, discarding what was shown on it
+
+
+def test_long_log_leaves_nothing_on_screen_after_quitting(tmp_path):
+    """Quitting the pager on a long log must not strand it on the terminal.
+
+    This is what `less -X` breaks: it suppresses the terminal init/deinit strings,
+    so less never switches to the alternate screen and the log stays behind.
+    """
+    import pexpect
+
+    x_file, json_file = write_fixtures(tmp_path, [("100.aqua", 0, None)])
+    write_logs(tmp_path, "100.aqua", "out-line\n" * 400, "err-line\n")
+
+    log = io.BytesIO()
+    child = pexpect.spawn(
+        sys.executable,
+        [str(SCRIPT), "--qstat-x-file", str(x_file), "--qstat-json-file", str(json_file)],
+        env={"PATH": "/usr/bin:/bin", "TERM": "xterm", "LESS": "", "USER": USER},
+        timeout=30,
+    )
+    # logfile_read captures everything, including bytes expect() consumes.
+    child.logfile_read = log
+    child.expect("out-line")
+    child.send("q")
+    child.expect(pexpect.EOF)
+    child.close()
+
+    raw = log.getvalue().decode(errors="replace")
+    assert SMCUP in raw, "pager did not use the alternate screen"
+    # What survives on the main screen is whatever was written before switching to
+    # the alternate screen, plus anything after switching back.
+    main_screen = raw.split(SMCUP)[0] + raw.split(RMCUP)[-1]
+    assert "out-line" not in main_screen
+
+
+def test_short_log_stays_on_screen(tmp_path):
+    # The counterpart: a log that fits one screen must print inline and stay put
+    # (less -F), not flash up on the alternate screen and vanish on exit.
+    import pexpect
+
+    x_file, json_file = write_fixtures(tmp_path, [("100.aqua", 0, None)])
+    write_logs(tmp_path, "100.aqua", "short-out\n", "short-err\n")
+
+    log = io.BytesIO()
+    child = pexpect.spawn(
+        sys.executable,
+        [str(SCRIPT), "--qstat-x-file", str(x_file), "--qstat-json-file", str(json_file)],
+        env={"PATH": "/usr/bin:/bin", "TERM": "xterm", "LESS": "", "USER": USER},
+        timeout=30,
+    )
+    child.logfile_read = log
+    child.expect(pexpect.EOF)
+    child.close()
+
+    raw = log.getvalue().decode(errors="replace")
+    assert SMCUP not in raw, "short log should not use the alternate screen"
+    assert "short-out" in raw
+    assert "short-err" in raw
 
 
 def test_unrunnable_pager_still_prints_the_logs(tmp_path):
