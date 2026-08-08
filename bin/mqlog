@@ -14,8 +14,11 @@ import sys
 BATCH_SIZE = 20
 # Don't walk back further than this many finished jobs.
 MAX_JOBS_SCANNED = 400
-# -F exits immediately if the logs fit on one screen, -X leaves them on it.
-DEFAULT_PAGER = "less -RFX"
+# -F prints inline and exits when the logs fit on one screen, so short logs stay
+# on the terminal rather than flashing past. Longer logs get the alternate screen
+# and leave nothing behind on quit, which is why -X is deliberately absent: it
+# suppresses the terminal init/deinit strings and would strand the log on screen.
+DEFAULT_PAGER = "less -RF"
 
 
 def run(command, check=True):
