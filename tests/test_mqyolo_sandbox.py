@@ -1227,6 +1227,12 @@ def _run_in_sandbox(cwd, script, rw_paths=()):
         args += ["--rw-paths", p]
     args += ["--", "bash", "-c", script]
     p = subprocess.run(args, text=True, capture_output=True, timeout=120)
+    if p.returncode == 255:
+        output = p.stdout + p.stderr
+        if "socket communication error" in output:
+            pytest.skip("container runtime cannot pass sockets in this sandbox")
+        if "Couldn't determine user account information" in output:
+            pytest.skip("container runtime cannot resolve this sandbox user")
     return p.returncode, p.stdout + p.stderr
 
 

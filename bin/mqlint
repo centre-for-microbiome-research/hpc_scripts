@@ -59,6 +59,13 @@ def run_command(cmd, capture_output=True):
             return None
 
 
+def expand_path(path):
+    """Expand a path without following symlinks."""
+    if not path:
+        return str(path)
+    return os.path.expanduser(os.path.expandvars(str(path)))
+
+
 def resolve_path(path):
     """Resolve a path (following symlinks) without invoking a shell.
 
@@ -69,7 +76,18 @@ def resolve_path(path):
     """
     if not path:
         return str(path)
-    expanded = os.path.expanduser(os.path.expandvars(str(path)))
+    expanded = expand_path(path)
+    try:
+        return os.path.abspath(expanded)
+    except OSError:
+        return expanded
+
+
+def real_path(path):
+    """Expand and resolve symlinks for filesystem placement checks."""
+    if not path:
+        return str(path)
+    expanded = expand_path(path)
     try:
         return os.path.realpath(expanded)
     except OSError:
@@ -87,7 +105,7 @@ def is_within_weka(path):
         return True
     
     # Check resolved path (following symlinks)
-    resolved = resolve_path(path)
+    resolved = real_path(path)
     if resolved and (resolved.startswith('/mnt/weka') or resolved.startswith('/pkg/cmr')):
         return True
     
@@ -227,7 +245,7 @@ def check_env_dirs(config):
     if is_within_weka(first_env_dir):
         return True, f"First env_dirs entry is correctly within /pkg/cmr or /mnt/weka: {first_env_dir}"
     else:
-        resolved = resolve_path(first_env_dir)
+        resolved = real_path(first_env_dir)
         return False, f"First env_dirs entry '{first_env_dir}' (resolves to '{resolved}') is not within /pkg/cmr or /mnt/weka"
 
 
@@ -242,7 +260,7 @@ def check_pkg_dirs(config):
     if is_within_weka(first_pkg_dir):
         return True, f"First pkgs_dirs entry is correctly within /pkg/cmr or /mnt/weka: {first_pkg_dir}"
     else:
-        resolved = resolve_path(first_pkg_dir)
+        resolved = real_path(first_pkg_dir)
         return False, f"First pkgs_dirs entry '{first_pkg_dir}' (resolves to '{resolved}') is not within /pkg/cmr or /mnt/weka"
 
 
@@ -257,7 +275,7 @@ def check_conda_symlink():
         return False, f"~/.conda does not exist"
     
     if not home_conda.is_symlink():
-        resolved = resolve_path(str(home_conda))
+        resolved = real_path(str(home_conda))
         if resolved and (resolved.startswith('/mnt/weka') or resolved.startswith('/pkg/cmr')):
             return True, f"~/.conda is within /pkg/cmr or /mnt/weka (resolves to {resolved})"
         else:
@@ -499,7 +517,7 @@ def check_pixi_cache_dir():
         )
 
     if not is_within_weka(cache_dir):
-        resolved = resolve_path(cache_dir)
+        resolved = real_path(cache_dir)
         return False, cache_dir, (
             f"pixi cache dir '{cache_dir}' (resolves to '{resolved}', via {source}) "
             f"is not within /pkg/cmr or /mnt/weka"
@@ -653,7 +671,11 @@ def generate_fix_suggestions(env_dirs_ok, pkg_dirs_ok, conda_symlink_ok, qsub_lo
         # within weka; in that case the check failed purely on a per-kind override
         # (handled below) so no root-level fix is needed. An unknown root
         # (pixi_cache_dir is None) still gets the default symlink guidance.
-        root_ok = bool(pixi_cache_dir) and is_within_weka(pixi_cache_dir)
+        root_ok = (
+            bool(pixi_cache_dir)
+            and is_within_weka(pixi_cache_dir)
+            and resolve_path(pixi_cache_dir) != default_cache
+        )
         cache_from_config_root = (
             not overriding_env
             and pixi_cache_dir

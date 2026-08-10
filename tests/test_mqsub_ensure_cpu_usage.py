@@ -26,8 +26,20 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def home_is_writable():
+    path = Path.home() / ".mqsub_pytest_write_check"
+    try:
+        path.write_text("")
+        path.unlink()
+        return True
+    except OSError:
+        return False
+
+
 @pytest.fixture
 def shared_cwd():
+    if not home_is_writable():
+        pytest.skip("$HOME is not writable; PBS integration tests need a shared home cwd")
     # PBS writes the job's .o/.e files to the submission cwd on the compute
     # node; if cwd is /tmp it won't be visible to the head node. Use $HOME.
     base = Path.home() / ".mqsub_pytest"

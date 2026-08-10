@@ -48,6 +48,8 @@ REFRESH_INTERVAL = 10 * 60
 # Maximum number of jobs to display. If more jobs are found, the list is
 # truncated and the user is notified.
 MAX_JOBS = 1000
+DEFAULT_QSTAT_JSON = "/pkg/hpc/scripts/qstat.json"
+DEFAULT_QSTATX_JSON = "/pkg/hpc/scripts/qstatx.json"
 
 
 def _parse_time(val: str | None) -> int | None:
@@ -147,7 +149,7 @@ def _parse_job(obj: dict) -> dict:
     return job
 
 
-def _load_jobs_from_json(path: str, user: str) -> list[dict]:
+def _load_jobs_from_json(path: str, user: str | None) -> list[dict]:
     """Load jobs for *user* from a qstat JSON file."""
     if not path or not os.path.exists(path):
         return []
@@ -159,7 +161,7 @@ def _load_jobs_from_json(path: str, user: str) -> list[dict]:
     )
 
     proc = None
-    if os.path.exists(rust_bin):
+    if user and os.path.exists(rust_bin):
         try:
             proc = subprocess.run(
                 [rust_bin, path, user], text=True, capture_output=True
@@ -180,7 +182,7 @@ def _load_jobs_from_json(path: str, user: str) -> list[dict]:
     except Exception:
         return []
     for jid, info in (data.get("Jobs") or {}).items():
-        if info.get("euser") != user:
+        if user and info.get("euser") != user:
             continue
         info = dict(info)
         info["id"] = jid
@@ -703,12 +705,12 @@ def main() -> None:
     parser.add_argument(
         "--qstat-json",
         help="Path to qstat.json",
-        default="/pkg/hpc/scripts/qstat.json",
+        default=DEFAULT_QSTAT_JSON,
     )
     parser.add_argument(
         "--qstatx-json",
         help="Path to qstatx.json",
-        default="/pkg/hpc/scripts/qstatx.json",
+        default=None,
     )
     parser.add_argument(
         "--print-first-page",
@@ -732,15 +734,18 @@ def main() -> None:
         profiler.enable()
 
     def get_jobs(include_history: bool = False):
-        active = _load_jobs_from_json(args.qstat_json, user)
+        active_user = user if args.qstat_json == DEFAULT_QSTAT_JSON else None
+        active = _load_jobs_from_json(args.qstat_json, active_user)
         job_dict = {j["id"]: j for j in active}
         if include_history and len(job_dict) <= MAX_JOBS:
-            hist = _load_jobs_from_json(args.qstatx_json, user)
-            for job in hist:
-                if len(job_dict) >= MAX_JOBS:
-                    break
-                job_dict.setdefault(job["id"], job)
-            if len(job_dict) < MAX_JOBS:
+            if args.qstatx_json:
+                hist_user = user if args.qstatx_json == DEFAULT_QSTATX_JSON else None
+                hist = _load_jobs_from_json(args.qstatx_json, hist_user)
+                for job in hist:
+                    if len(job_dict) >= MAX_JOBS:
+                        break
+                    job_dict.setdefault(job["id"], job)
+            if args.qstat_json == DEFAULT_QSTAT_JSON and len(job_dict) < MAX_JOBS:
                 for job in _recent_finished_jobs(user, set(job_dict)):
                     if len(job_dict) >= MAX_JOBS:
                         break

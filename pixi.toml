@@ -5,9 +5,6 @@ name = "hpc_scripts"
 platforms = ["linux-64"]
 version = "0.1.0"
 
-[tasks]
-test = "pytest tests"
-
 [dependencies]
 
 [feature.dev.dependencies]
@@ -16,6 +13,7 @@ pytest = "*"
 pexpect = "*"
 
 [feature.dev.tasks]
+test = "pytest tests"
 # Refresh mqyolo-non-sensitive-folders.json from the CMR work-folders sheet.
 update-non-sensitive-folders = "python bin/generate_mqyolo_non_sensitive_folders.py"
 

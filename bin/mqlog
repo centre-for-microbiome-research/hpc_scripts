@@ -3,6 +3,7 @@
 """Print the stdout and stderr of the most recently finished PBS job."""
 
 import argparse
+from datetime import datetime
 import getpass
 import json
 import os
@@ -46,8 +47,8 @@ def get_finished_job_ids(user, qstat_x_file=None):
         job_id, _name, owner, _time, state = parts[0], parts[1], parts[2], parts[3], parts[4]
         if owner == user and state == 'F':
             job_ids.append(job_id)
-    # Job IDs increase monotonically, so sort by the leading integer rather than
-    # trusting the order qstat happened to print them in.
+    # Restrict the detailed lookup to the newest submissions. Their final order
+    # is determined from completion metadata in iter_job_info().
     def sort_key(job_id):
         head = job_id.split('.', 1)[0].split('[', 1)[0]
         try:
@@ -83,17 +84,31 @@ def log_paths(job_id, info):
     points them at a directory, in which case the files inside are named
     <jobid>.OU/<jobid>.ER; otherwise the path is the log file itself.
     """
-    def resolve(path, suffix):
+    def candidates(path, suffix):
         if not path:
-            return None
+            return []
         if ":" in path:
             path = path.split(":", 1)[1]
         if path.endswith('/') or os.path.isdir(path):
-            return os.path.join(path, "{}.{}".format(job_id, suffix))
-        return path
+            return [os.path.join(path, "{}.{}".format(job_id, suffix))]
 
-    return (resolve(info.get("Output_Path", ""), "OU"),
-            resolve(info.get("Error_Path", ""), "ER"))
+        paths = [path]
+        # PBS array parents can report paths like 123[].aqua.OU while the real
+        # subjob log is 123[7].aqua.OU. Prefer the concrete subjob id when it
+        # exists, but keep PBS's reported path as a fallback.
+        if "[]" in path and "[" in job_id:
+            concrete = path.replace("[]", job_id[job_id.index("["):job_id.index("]") + 1], 1)
+            paths.insert(0, concrete)
+        return paths
+
+    def first_existing_or_reported(paths):
+        for path in paths:
+            if os.path.exists(path):
+                return path
+        return paths[0] if paths else None
+
+    return (first_existing_or_reported(candidates(info.get("Output_Path", ""), "OU")),
+            first_existing_or_reported(candidates(info.get("Error_Path", ""), "ER")))
 
 
 def has_logs(paths):
@@ -112,13 +127,32 @@ def is_failed(info):
 
 
 def iter_job_info(job_ids, qstat_json_file=None):
-    """Yield (job_id, info) for job_ids in order, querying qstat in batches."""
+    """Yield jobs newest-finished first, querying qstat in batches."""
+    jobs = []
     for start in range(0, min(len(job_ids), MAX_JOBS_SCANNED), BATCH_SIZE):
         batch = job_ids[start:start + BATCH_SIZE]
         info_by_id = get_job_info(batch, qstat_json_file=qstat_json_file)
         for job_id in batch:
             if job_id in info_by_id:
-                yield job_id, info_by_id[job_id]
+                jobs.append((job_id, info_by_id[job_id]))
+
+    def completion_key(job):
+        job_id, info = job
+        timestamp = info.get("obittime") or info.get("mtime")
+        try:
+            finished = datetime.strptime(timestamp, "%a %b %d %H:%M:%S %Y").timestamp()
+        except (TypeError, ValueError):
+            finished = 0
+        # Keep the numeric ID as a deterministic fallback/tie-breaker.
+        head = job_id.split('.', 1)[0].split('[', 1)[0]
+        try:
+            numeric_id = int(head)
+        except ValueError:
+            numeric_id = 0
+        return finished, numeric_id
+
+    for job in sorted(jobs, key=completion_key, reverse=True):
+        yield job
 
 
 def find_job(job_ids, only_failed, qstat_json_file=None):

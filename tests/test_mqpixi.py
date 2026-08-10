@@ -41,6 +41,16 @@ JOB_TIMEOUT_SECONDS = 30 * 60
 AVIARY_WARNING_SNIPPET = "aviary .. --snakemake-profile aqua .."
 
 
+def home_is_writable():
+    path = Path.home() / ".mqpixi_pytest_write_check"
+    try:
+        path.write_text("")
+        path.unlink()
+        return True
+    except OSError:
+        return False
+
+
 @pytest.fixture
 def stub_pixi(tmp_path):
     """A fake manifest plus a pixi stub that just echoes its arguments.
@@ -117,6 +127,10 @@ def shared_cwd():
 @pytest.mark.skipif(
     shutil.which("qsub") is None,
     reason="qsub not available; mqpixi integration tests need a PBS queue",
+)
+@pytest.mark.skipif(
+    not home_is_writable(),
+    reason="$HOME is not writable; PBS integration tests need a shared home cwd",
 )
 def test_mqpixi_aviary_env(shared_cwd):
     """Shell into aviary-v0-13-0 via mqpixi, submit a job that checks binary path and env vars."""

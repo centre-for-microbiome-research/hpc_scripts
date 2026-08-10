@@ -3,6 +3,7 @@ import io
 import json
 import subprocess
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -10,16 +11,18 @@ SCRIPT = REPO / "bin" / "mqlog"
 USER = getpass.getuser()
 
 
-def write_fixtures(tmp_path, jobs):
+def write_fixtures(tmp_path, jobs, completion_times=None):
     """Write a qstat -x listing and a qstat -xf JSON for the given jobs.
 
     jobs is a list of (job_id, exit_status, log_dir_or_None). When log_dir is
     given the job uses segregated logs (a directory containing <jobid>.OU/.ER),
     otherwise Output_Path/Error_Path point straight at files in tmp_path.
     """
+    completion_times = completion_times or {}
     listing = []
     json_jobs = {}
     for job_id, exit_status, log_dir in jobs:
+        numeric_id = int(job_id.split('.')[0].split('[', 1)[0])
         listing.append(
             "{:<22} {:<16} {:<17} {:<8} {} {}".format(
                 job_id, "somejob", USER, "00:01:00", "F", "cpu_batch_exec"))
@@ -34,6 +37,9 @@ def write_fixtures(tmp_path, jobs):
             "Exit_status": exit_status,
             "Output_Path": "host:{}".format(out),
             "Error_Path": "host:{}".format(err),
+            "obittime": completion_times.get(
+                job_id, (datetime(2024, 1, 1) + timedelta(seconds=numeric_id)).strftime(
+                    "%a %b %d %H:%M:%S %Y")),
         }
 
     x_file = tmp_path / "qstat_x.txt"
@@ -96,16 +102,21 @@ def test_dash_e_prints_only_stderr(tmp_path):
     assert result.stdout == "the-stderr\n"
 
 
-def test_defaults_to_most_recent_job_by_id(tmp_path):
-    # Listed out of numeric order to check mqlog sorts rather than trusting qstat.
+def test_defaults_to_most_recent_job_by_completion_time(tmp_path):
+    # 200 finished last even though 300 was submitted later.
     x_file, json_file = write_fixtures(
-        tmp_path, [("300.aqua", 0, None), ("100.aqua", 0, None), ("200.aqua", 0, None)])
+        tmp_path, [("300.aqua", 0, None), ("100.aqua", 0, None), ("200.aqua", 0, None)],
+        completion_times={
+            "100.aqua": "Mon Jan  1 01:00:00 2024",
+            "300.aqua": "Mon Jan  1 02:00:00 2024",
+            "200.aqua": "Mon Jan  1 03:00:00 2024",
+        })
     for job_id in ("100.aqua", "200.aqua", "300.aqua"):
         write_logs(tmp_path, job_id, "out-{}\n".format(job_id), "")
 
     result = run_mqlog(x_file, json_file, "-o")
     assert result.returncode == 0
-    assert result.stdout == "out-300.aqua\n"
+    assert result.stdout == "out-200.aqua\n"
 
 
 def test_dash_f_shows_most_recent_failed_job(tmp_path):
@@ -157,6 +168,21 @@ def test_segregated_log_directory(tmp_path):
     result = run_mqlog(x_file, json_file, "-o")
     assert result.returncode == 0
     assert result.stdout == "seg-out\n"
+
+
+def test_array_log_placeholder_uses_concrete_subjob_id(tmp_path):
+    job_id = "100[7].aqua"
+    x_file, json_file = write_fixtures(tmp_path, [(job_id, 0, None)])
+    data = json.loads(json_file.read_text())
+    data["Jobs"][job_id]["Output_Path"] = "host:{}".format(tmp_path / "100[].aqua.OU")
+    data["Jobs"][job_id]["Error_Path"] = "host:{}".format(tmp_path / "100[].aqua.ER")
+    json_file.write_text(json.dumps(data))
+    (tmp_path / "{}.OU".format(job_id)).write_text("array-out\n")
+    (tmp_path / "{}.ER".format(job_id)).write_text("array-err\n")
+
+    result = run_mqlog(x_file, json_file, "-o")
+    assert result.returncode == 0
+    assert result.stdout == "array-out\n"
 
 
 def test_explicit_job_id(tmp_path):

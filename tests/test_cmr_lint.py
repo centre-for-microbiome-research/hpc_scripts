@@ -78,7 +78,7 @@ class TestCmrLint(unittest.TestCase):
         self.assertFalse(cmr_lint.is_within_weka(None))
     
     @unittest.skipIf(cmr_lint is None, "Could not import cmr_lint module")
-    @patch('cmr_lint.resolve_path')
+    @patch('cmr_lint.real_path')
     def test_is_within_weka_symlink(self, mock_resolve):
         """Test is_within_weka with symlinked paths."""
         
