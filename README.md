@@ -210,6 +210,52 @@ In this example pbs_job_list would contain:
 
 Specifying the `-l` parameter will verbosely display the number of remaining jobs on your terminal and it controlled by the polling rate `-p` (default 60 seconds)
 
+# mqlog
+`mqlog` prints the stdout and stderr of a finished PBS job, so you don't have to hunt down the `.o`/`.e`/`.OU`/`.ER` files yourself. With no arguments it shows the most recently finished job belonging to you, working out the log paths from `qstat`
+```
+mqlog
+```
+```
+Showing logs from job 9524870.aqua.
+
+===== STDOUT: /work/microbiome/user/logs/9524870.aqua.OU =====
+Processing sample 12 of 12
+...
+
+===== STDERR: /work/microbiome/user/logs/9524870.aqua.ER =====
+...
+```
+
+To look at a specific job rather than the most recent one, pass its job ID. A bare number is fine — `.aqua` is appended automatically — so these are equivalent:
+```
+mqlog 9524870
+mqlog 9524870.aqua
+```
+
+`-f` (`--failed`) skips over jobs that succeeded and shows the most recent job that exited non-zero, which is usually the one you want after a batch of `mqsub`s. It reports which job it picked, and cannot be combined with an explicit job ID:
+```
+mqlog -f
+```
+```
+Showing logs from failed job 9524863.aqua.
+
+===== STDOUT: /work/microbiome/user/logs/9524863.aqua.OU =====
+...
+```
+
+By default both streams are printed with `===== STDOUT: ... =====` headers separating them. Use `-e` (`--stderr`) to print only stderr, or `-o` (`--stdout`) for only stdout; with a single stream the headers are omitted so the output is clean to pipe or grep. These two options are mutually exclusive, and combine with a job ID or with `-f`:
+```
+mqlog -e                 # stderr of the most recent finished job
+mqlog -e 9524870         # stderr of a particular job
+mqlog -e -f              # stderr of the most recent failed job
+```
+
+Output is paged through `less -RF` when writing to a terminal, meaning short logs are printed inline and left on screen while longer ones open in the pager. Set `$PAGER` to use a different pager (or to the empty string for none), pass `--no-pager` to disable it for one invocation, or simply pipe the output — paging is skipped automatically when stdout is not a terminal:
+```
+mqlog --no-pager
+mqlog -e 9524870 | grep -i error
+```
+
 
 # mcreate
 This is a basic script which searches for the latest version of conda package and creates a new, versioned, environment using conda (with the `-c` parameter) or mamba (default; requires mamba to be installed first).
