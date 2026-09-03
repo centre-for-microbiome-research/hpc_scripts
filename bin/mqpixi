@@ -77,7 +77,8 @@ fi
 # wrapping the whole run in a single mqsub job wastes a large allocation while
 # the workflow serializes. Nudge users towards the profile instead.
 if [[ "$env_name" == aviary || "$env_name" == aviary-* ]]; then
-    echo "NOTE: Please run aviary using 'aviary .. --snakemake-profile aqua ..' rather than 'mqsub .. -- aviary ..'. This will help your jobs run faster and it is better for overall cluster utilisation. See the aviary section of https://tinyurl.com/cmr-internal-compute for more details." >&2
+    echo "NOTE: Please run aviary using 'aviary .. --snakemake-profile aqua --request-gpu ..' rather than 'mqsub .. -- aviary ..'. This will help your jobs run faster and it is better for overall cluster utilisation. See the aviary section of https://tinyurl.com/cmr-internal-compute for more details." >&2
+    echo "NOTE: You probably want to use the --request-gpu option, so that Aviary utilizes available GPUs, when binning programs (e.g. SemiBin2) can make use of them. Your jobs will run faster." >&2
 fi
 
 exec pixi shell --manifest-path "$CMR_PIXI_TOML" --as-is -e "$env_name" "$@"
