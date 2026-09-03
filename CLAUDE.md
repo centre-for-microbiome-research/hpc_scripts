@@ -65,9 +65,8 @@ Key invariants the tests guard (keep them true):
   mqyolo's fixed `--rw-paths`; the container cannot change them (`--no-sandbox` and
   `--sandbox-rw-paths` from the container are rejected).
 - NVIDIA GPUs are passed through when the host has a driver: `sandbox_add_gpu_args`
-  in `_sandbox_common.bash` sets `GPU_ARGS=(--nv)` and binds every existing
-  `SANDBOX_GPU_DEVICE_GLOBS` device node, and both mqyolo and mqsandbox pass
-  `GPU_ARGS` to `apptainer exec`. `--contain` otherwise hides both halves the host
+  in `_sandbox_common.bash` sets `GPU_ARGS=(--nv)`, and both mqyolo and mqsandbox
+  pass `GPU_ARGS` to `apptainer exec`. `--contain` otherwise hides both halves the host
   must supply — the driver userspace libs (`libcuda.so`, only in the host's
   `/usr/lib64`) and `/dev/nvidia*` — and CUDA then fails with
   `cudaErrorInsufficientDriver`, which misleadingly reads as version skew but is
@@ -81,9 +80,14 @@ Key invariants the tests guard (keep them true):
   lands on a GPU node. `MQSANDBOX_NV=0`/`1` forces it off/on; because mqsub does
   not `qsub -V`, `sandbox_wrap` forwards that variable explicitly as an
   `MQSANDBOX_NV=... mqsandbox ...` prefix so the override survives the submit
-  boundary. The device nodes are bound explicitly rather than left to `--nv` because
-  whether the runtime adds them under `--contain` is version-dependent; duplicates
-  are harmless (`sandbox_dedupe_binds`, and the runtime just warns). mqsandbox also
+  boundary. `SANDBOX_GPU_DEVICE_GLOBS` is used for **detection only** — we do not
+  bind the device nodes, because `--nv` already binds them under `--contain`, and a
+  superset at that (a verification run on gpu0n008 also got `/dev/nvidia-nvlink`
+  and `/dev/nvidia-nvswitch0-5`). Binding them ourselves was tried and reverted: it
+  earned a `Skipping /dev/nvidiaN bind mount: already mounted` warning per device on
+  every GPU job (13 lines on an 8-GPU node) straight into every snakemake log. If a
+  runtime ever stops binding them, the symptom is the `cudaErrorInsufficientDriver`
+  signature above plus an empty `ls /dev/nvidia*` inside the sandbox. mqsandbox also
   forwards `CUDA_VISIBLE_DEVICES` (and `NVIDIA_VISIBLE_DEVICES`,
   `CUDA_DEVICE_ORDER`, `GPU_DEVICE_ORDINAL`) explicitly, since PBS sets it to
   select the allocated GPU.
