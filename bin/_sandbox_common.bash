@@ -194,6 +194,79 @@ sandbox_add_default_scratch_paths() {
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# NVIDIA GPU support.
+#   A CUDA program needs three things, from three different places:
+#     - the CUDA runtime (libcudart): ships in the conda/pixi env, always present
+#     - the driver userspace lib (libcuda.so, libnvidia-*): comes from the HOST
+#       driver install, only ever /usr/lib64 on the node
+#     - the device nodes (/dev/nvidia*): the kernel interface
+#   `--contain` gives the container a minimal /dev and none of the host's
+#   /usr/lib64, so the last two vanish. CUDA then reports
+#   `cudaErrorInsufficientDriver` — "driver version is insufficient" — because
+#   cudaDriverGetVersion() returns 0 with no driver reachable. That reads like
+#   version skew but is really "no driver at all", and it hits every CUDA
+#   workload run in the sandbox (semibin-gpu, comebin-gpu, taxvamb-gpu, ...)
+#   even though PBS allocated a real GPU and set CUDA_VISIBLE_DEVICES.
+#
+#   apptainer/singularity `--nv` is the mechanism for this: it resolves the host
+#   driver libraries (nvliblist.conf + ldconfig) and the nvidia binaries
+#   (nvidia-smi) and binds them in. We add it whenever the host actually has an
+#   NVIDIA driver, so GPU jobs work while CPU-only login nodes are untouched
+#   (`--nv` on a driverless host only warns).
+#
+#   The device nodes are bound explicitly as well rather than left to the runtime:
+#   whether `--nv` adds them under `--contain` is version-dependent, and a missing
+#   /dev/nvidia0 fails in the same silent way. Duplicates are harmless — they go
+#   through sandbox_dedupe_binds like every other bind, and a runtime that also
+#   binds them just skips the second with a warning.
+#
+#   Detection is by device node, which is what a compute node with a loaded
+#   driver has; it deliberately runs where the container is launched, i.e. on the
+#   compute node inside the PBS job for `mqsub --sandbox`, not at submit time.
+#   MQSANDBOX_NV=0 forces it off, MQSANDBOX_NV=1 forces it on (e.g. a host whose
+#   device nodes are created on first use).
+# ---------------------------------------------------------------------------
+SANDBOX_GPU_DEVICE_GLOBS=(
+    '/dev/nvidia[0-9]*'
+    '/dev/nvidiactl'
+    '/dev/nvidia-uvm'
+    '/dev/nvidia-uvm-tools'
+    '/dev/nvidia-modeset'
+    '/dev/nvidia-caps'
+)
+
+# sandbox_host_has_nvidia
+#   True when this host has an NVIDIA driver loaded (or MQSANDBOX_NV forces it).
+sandbox_host_has_nvidia() {
+    case "${MQSANDBOX_NV:-}" in
+        0|no|off|false) return 1 ;;
+        1|yes|on|true|force) return 0 ;;
+    esac
+    local _glob
+    for _glob in "${SANDBOX_GPU_DEVICE_GLOBS[@]}"; do
+        compgen -G "$_glob" >/dev/null 2>&1 && return 0
+    done
+    return 1
+}
+
+# sandbox_add_gpu_args
+#   Populates GPU_ARGS with `--nv` and appends the host's NVIDIA device nodes to
+#   BIND_ARGS, when a driver is present. A no-op (GPU_ARGS emptied) otherwise, so
+#   callers can always pass "${GPU_ARGS[@]}" to the runtime.
+sandbox_add_gpu_args() {
+    GPU_ARGS=()
+    sandbox_host_has_nvidia || return 0
+    GPU_ARGS+=(--nv)
+    local _glob _dev
+    for _glob in "${SANDBOX_GPU_DEVICE_GLOBS[@]}"; do
+        while IFS= read -r _dev; do
+            [[ -e "$_dev" ]] && BIND_ARGS+=(--bind "${_dev}:${_dev}")
+        done < <(compgen -G "$_glob" 2>/dev/null || true)
+    done
+    return 0
+}
+
 # sandbox_looks_like_pixi_cache_dir PATH
 #   Heuristically decide whether PATH is a dedicated pixi/rattler cache dir,
 #   mirroring mqlint's looks_like_pixi_cache_dir(). Used to gate the pixi
