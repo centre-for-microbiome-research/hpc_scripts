@@ -720,19 +720,28 @@ def _fake_nvidia_devices(tmp_path, names):
     return dev
 
 
-def test_add_gpu_args_requests_nv_and_binds_device_nodes(tmp_path):
-    # With a driver present the container must get BOTH halves CUDA needs from the
-    # host: the driver userspace libs (via --nv) and the /dev/nvidia* device nodes
-    # (bound explicitly, because whether --nv adds them under --contain is
-    # runtime-version dependent). Without them CUDA reports
+def test_add_gpu_args_requests_nv_when_a_device_node_exists(tmp_path):
+    # A device node means the host has a driver loaded, so the container needs --nv
+    # to reach the driver userspace libs (libcuda.so et al). Without it CUDA reports
     # cudaErrorInsufficientDriver even though PBS allocated a real GPU.
     dev = _fake_nvidia_devices(tmp_path, ["nvidia0", "nvidia1", "nvidiactl", "nvidia-uvm"])
     gpu, binds = _add_gpu_args([f"{dev}/nvidia[0-9]*", f"{dev}/nvidiactl",
                                 f"{dev}/nvidia-uvm", f"{dev}/nvidia-absent"])
     assert gpu == ["--nv"]
-    assert sorted(binds) == sorted(
-        f"{dev / n}:{dev / n}" for n in ("nvidia0", "nvidia1", "nvidiactl", "nvidia-uvm")
-    )
+    # The globs are for DETECTION ONLY. Binding the device nodes ourselves is
+    # redundant -- the runtime's --nv already binds them (a superset: a real A100
+    # job also got /dev/nvidia-nvlink and /dev/nvidia-nvswitch0-5) -- and earns a
+    # "Skipping ... bind mount: already mounted" warning per device on every GPU
+    # job, which lands in every snakemake log.
+    assert binds == []
+
+
+def test_add_gpu_args_detects_a_driver_from_any_single_glob(tmp_path):
+    # Detection must not depend on which device node happens to exist: a host with
+    # only /dev/nvidiactl (no numbered GPU visible yet) still has a driver.
+    dev = _fake_nvidia_devices(tmp_path, ["nvidiactl"])
+    gpu, _ = _add_gpu_args([f"{dev}/nvidia[0-9]*", f"{dev}/nvidiactl"])
+    assert gpu == ["--nv"]
 
 
 def test_add_gpu_args_is_a_noop_without_a_driver(tmp_path):
@@ -752,7 +761,6 @@ def test_add_gpu_args_honours_mqsandbox_nv_override(tmp_path, value, expect_nv):
     dev = _fake_nvidia_devices(tmp_path, names)
     gpu, binds = _add_gpu_args([f"{dev}/nvidia[0-9]*"], env={"MQSANDBOX_NV": value})
     assert gpu == (["--nv"] if expect_nv else [])
-    # Forcing it on cannot invent device nodes that do not exist.
     assert binds == []
 
 

@@ -215,17 +215,21 @@ sandbox_add_default_scratch_paths() {
 #   NVIDIA driver, so GPU jobs work while CPU-only login nodes are untouched
 #   (`--nv` on a driverless host only warns).
 #
-#   The device nodes are bound explicitly as well rather than left to the runtime:
-#   whether `--nv` adds them under `--contain` is version-dependent, and a missing
-#   /dev/nvidia0 fails in the same silent way. Duplicates are harmless — they go
-#   through sandbox_dedupe_binds like every other bind, and a runtime that also
-#   binds them just skips the second with a warning.
+#   `--nv` also binds the device nodes itself under `--contain`, so we do NOT bind
+#   them here. That was tried: it is redundant and produces a "Skipping
+#   /dev/nvidiaN bind mount: already mounted" warning per device on every GPU job
+#   (13 lines on an 8-GPU A100 node), which then lands in every snakemake log. The
+#   runtime's own list is a superset of anything we would write — a verification
+#   run on gpu0n008 came up with /dev/nvidia-nvlink and /dev/nvidia-nvswitch0-5
+#   bound as well, which are not in SANDBOX_GPU_DEVICE_GLOBS. If a future runtime
+#   ever stops doing this, CUDA fails with the cudaErrorInsufficientDriver
+#   signature described above and `ls /dev/nvidia*` inside the sandbox is empty.
 #
-#   Detection is by device node, which is what a compute node with a loaded
-#   driver has; it deliberately runs where the container is launched, i.e. on the
-#   compute node inside the PBS job for `mqsub --sandbox`, not at submit time.
-#   MQSANDBOX_NV=0 forces it off, MQSANDBOX_NV=1 forces it on (e.g. a host whose
-#   device nodes are created on first use).
+#   The globs below are therefore used for DETECTION ONLY: a device node is what a
+#   compute node with a loaded driver has. Detection deliberately runs where the
+#   container is launched, i.e. on the compute node inside the PBS job for
+#   `mqsub --sandbox`, not at submit time. MQSANDBOX_NV=0 forces it off,
+#   MQSANDBOX_NV=1 forces it on (e.g. a host whose device nodes appear on first use).
 # ---------------------------------------------------------------------------
 SANDBOX_GPU_DEVICE_GLOBS=(
     '/dev/nvidia[0-9]*'
@@ -251,19 +255,13 @@ sandbox_host_has_nvidia() {
 }
 
 # sandbox_add_gpu_args
-#   Populates GPU_ARGS with `--nv` and appends the host's NVIDIA device nodes to
-#   BIND_ARGS, when a driver is present. A no-op (GPU_ARGS emptied) otherwise, so
-#   callers can always pass "${GPU_ARGS[@]}" to the runtime.
+#   Populates GPU_ARGS with `--nv` when the host has a driver; leaves it empty
+#   otherwise, so callers can always pass "${GPU_ARGS[@]}" to the runtime. Adds no
+#   binds: the runtime's `--nv` handles the device nodes (see above).
 sandbox_add_gpu_args() {
     GPU_ARGS=()
     sandbox_host_has_nvidia || return 0
     GPU_ARGS+=(--nv)
-    local _glob _dev
-    for _glob in "${SANDBOX_GPU_DEVICE_GLOBS[@]}"; do
-        while IFS= read -r _dev; do
-            [[ -e "$_dev" ]] && BIND_ARGS+=(--bind "${_dev}:${_dev}")
-        done < <(compgen -G "$_glob" 2>/dev/null || true)
-    done
     return 0
 }
 
