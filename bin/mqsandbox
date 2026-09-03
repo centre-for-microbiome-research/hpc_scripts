@@ -69,6 +69,7 @@ CWD="$(realpath "$CWD")"
 
 BIND_ARGS=()
 ENV_ARGS=()
+GPU_ARGS=()
 
 sandbox_make_home
 trap 'rm -rf "$CONTAINER_HOME"' EXIT
@@ -82,7 +83,16 @@ sandbox_build_binds "$CWD" "${RW_PATHS[@]+"${RW_PATHS[@]}"}" -- "${RO_PATHS[@]+"
 sandbox_home_dotfiles "${RO_PATHS[@]+"${RO_PATHS[@]}"}" "${RW_PATHS[@]+"${RW_PATHS[@]}"}"
 # Forward terminal-rendering vars and the pixi/rattler cache location (so jobs
 # that run pixi reuse the rw-bound cache); jobs should not inherit API keys.
-sandbox_build_env PIXI_CACHE_DIR RATTLER_CACHE_DIR TERM COLORTERM NO_COLOR
+# CUDA_VISIBLE_DEVICES (and friends) are set by PBS in the job environment and
+# select which allocated GPU the job may use; forward them explicitly so they do
+# not depend on the runtime's default environment passthrough.
+sandbox_build_env PIXI_CACHE_DIR RATTLER_CACHE_DIR TERM COLORTERM NO_COLOR \
+    CUDA_VISIBLE_DEVICES NVIDIA_VISIBLE_DEVICES CUDA_DEVICE_ORDER GPU_DEVICE_ORDINAL
+
+# Expose the host NVIDIA driver + device nodes when the node has a GPU, so CUDA
+# code in a `mqsub --gpu`/`--A100`/`--H100` job actually finds a driver. Detected
+# on the node this runs on, i.e. inside the PBS job (see sandbox_add_gpu_args).
+sandbox_add_gpu_args
 
 # Drop duplicate-destination binds so apptainer doesn't warn "destination is
 # already in the mount point list" (last bind per dest wins; see
@@ -92,6 +102,7 @@ sandbox_dedupe_binds
 if [[ "$DEBUG" -eq 1 ]]; then
     echo "mqsandbox: exec command:" >&2
     printf '  %q' "$RUNTIME" exec --contain \
+        "${GPU_ARGS[@]+"${GPU_ARGS[@]}"}" \
         "${BIND_ARGS[@]}" "${ENV_ARGS[@]}" \
         --pwd "${CWD}" "${SIF}" \
         bash -c '[[ -f ~/.bashrc ]] && source ~/.bashrc 2>/dev/null; exec "$@"' _ "$@" >&2
@@ -102,6 +113,7 @@ fi
 # — important on compute nodes where it would otherwise leak under /tmp.
 "$RUNTIME" exec \
     --contain \
+    "${GPU_ARGS[@]+"${GPU_ARGS[@]}"}" \
     "${BIND_ARGS[@]}" \
     "${ENV_ARGS[@]}" \
     --pwd "${CWD}" \

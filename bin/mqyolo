@@ -629,6 +629,7 @@ sandbox_require_sif "$SIF"
 # ---------------------------------------------------------------------------
 BIND_ARGS=()
 ENV_ARGS=()
+GPU_ARGS=()
 
 # Ephemeral home directory (cleaned up on exit by the trap below).
 sandbox_make_home
@@ -805,7 +806,9 @@ sandbox_build_env ANTHROPIC_API_KEY OPENAI_API_KEY GITHUB_TOKEN OPENCODE_API_KEY
                   OPENAI_BASE_URL ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK \
                   AWS_REGION AWS_DEFAULT_REGION AWS_BEARER_TOKEN_BEDROCK \
                   PIXI_CACHE_DIR RATTLER_CACHE_DIR \
-                  TERM COLORTERM NO_COLOR
+                  TERM COLORTERM NO_COLOR \
+                  CUDA_VISIBLE_DEVICES NVIDIA_VISIBLE_DEVICES CUDA_DEVICE_ORDER \
+                  GPU_DEVICE_ORDINAL
 
 # ---------------------------------------------------------------------------
 # Tool-specific flags
@@ -900,6 +903,11 @@ sandbox_write_shim_bashrc "${CONTAINER_HOME}/.bashrc" "$_real_bashrc" \
     "$SANDBOX_PATH_PREFIX" "${SANDBOX_SHIM_EXPORTS[@]+"${SANDBOX_SHIM_EXPORTS[@]}"}"
 unset _real_bashrc
 
+# Expose the host NVIDIA driver + device nodes when this machine has a GPU (an
+# interactive PBS GPU job, or a GPU workstation) — without them CUDA sees no
+# driver at all inside --contain. No-op on a CPU-only login node.
+sandbox_add_gpu_args
+
 # Drop duplicate-destination binds (e.g. non-sensitive /work folders re-exposed
 # via --ro-paths over the ro-allow and /proc/mounts binds) so apptainer doesn't
 # warn "destination is already in the mount point list". Last bind per dest wins.
@@ -921,6 +929,7 @@ fi
 if [[ "$DEBUG" -eq 1 ]]; then
     echo "mqyolo: exec command:" >&2
     printf '  %q' "$RUNTIME" exec --contain \
+        "${GPU_ARGS[@]+"${GPU_ARGS[@]}"}" \
         "${BIND_ARGS[@]}" "${ENV_ARGS[@]}" \
         --pwd "${CWD}" "${SIF}" \
         bash -c '[[ -f ~/.bashrc ]] && source ~/.bashrc 2>/dev/null; exec "$@"' _ \
@@ -930,6 +939,7 @@ fi
 
 "$RUNTIME" exec \
     --contain \
+    "${GPU_ARGS[@]+"${GPU_ARGS[@]}"}" \
     "${BIND_ARGS[@]}" \
     "${ENV_ARGS[@]}" \
     --pwd "${CWD}" \

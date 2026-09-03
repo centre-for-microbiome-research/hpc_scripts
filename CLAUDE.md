@@ -64,6 +64,29 @@ Key invariants the tests guard (keep them true):
 - Jobs submitted from inside the container are always `--sandbox`ed and inherit
   mqyolo's fixed `--rw-paths`; the container cannot change them (`--no-sandbox` and
   `--sandbox-rw-paths` from the container are rejected).
+- NVIDIA GPUs are passed through when the host has a driver: `sandbox_add_gpu_args`
+  in `_sandbox_common.bash` sets `GPU_ARGS=(--nv)` and binds every existing
+  `SANDBOX_GPU_DEVICE_GLOBS` device node, and both mqyolo and mqsandbox pass
+  `GPU_ARGS` to `apptainer exec`. `--contain` otherwise hides both halves the host
+  must supply — the driver userspace libs (`libcuda.so`, only in the host's
+  `/usr/lib64`) and `/dev/nvidia*` — and CUDA then fails with
+  `cudaErrorInsufficientDriver`, which misleadingly reads as version skew but is
+  really "no driver at all". Conda/pixi ship only the CUDA runtime. Detection is by
+  device node and happens where the container is launched, i.e. **on the compute
+  node inside the PBS job** for `mqsub --sandbox`, so `--A100`/`--H100` jobs get a
+  GPU while CPU-only login nodes are unaffected. **The sandbox is deliberately not
+  restricted to mirror the submitting environment**: `sandbox_wrap` in `mqsub`
+  bakes no GPU flag into the job script (only `--cwd`/`--rw-paths`/`--ro-paths`),
+  so a job submitted from a CPU-only login node still gets full GPU access when it
+  lands on a GPU node. `MQSANDBOX_NV=0`/`1` forces it off/on; because mqsub does
+  not `qsub -V`, `sandbox_wrap` forwards that variable explicitly as an
+  `MQSANDBOX_NV=... mqsandbox ...` prefix so the override survives the submit
+  boundary. The device nodes are bound explicitly rather than left to `--nv` because
+  whether the runtime adds them under `--contain` is version-dependent; duplicates
+  are harmless (`sandbox_dedupe_binds`, and the runtime just warns). mqsandbox also
+  forwards `CUDA_VISIBLE_DEVICES` (and `NVIDIA_VISIBLE_DEVICES`,
+  `CUDA_DEVICE_ORDER`, `GPU_DEVICE_ORDINAL`) explicitly, since PBS sets it to
+  select the allocated GPU.
 - Both mqyolo and mqsandbox auto-mount the per-user scratch defaults when present
   (`sandbox_add_default_scratch_paths` in `_sandbox_common.bash`):
   `/scratch/microbiome/$USER/non_sensitive` read-only and its `scratch` and `tmp`

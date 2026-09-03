@@ -689,6 +689,159 @@ def test_add_default_scratch_paths_mounts_writable_subdirs(tmp_path, subdirs, ex
     assert rw == [str(ns / d) for d in expect_rw], p.stdout
 
 
+# ---------------------------------------------------------------------------
+# NVIDIA GPU passthrough (sandbox_add_gpu_args)
+# ---------------------------------------------------------------------------
+def _add_gpu_args(globs, env=None):
+    """Run sandbox_add_gpu_args with SANDBOX_GPU_DEVICE_GLOBS overridden, and
+    return (GPU_ARGS, [bind specs])."""
+    script = (
+        "set -euo pipefail; source %s; "
+        "SANDBOX_GPU_DEVICE_GLOBS=(%s); BIND_ARGS=(); GPU_ARGS=(); "
+        "sandbox_add_gpu_args; "
+        'printf "GPU:%%s\\n" "${GPU_ARGS[@]:-}"; printf "BIND:%%s\\n" "${BIND_ARGS[@]:-}"'
+        % (shlex.quote(str(SANDBOX_LIB)), " ".join(shlex.quote(g) for g in globs))
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True,
+                       env={**os.environ, **(env or {})})
+    assert p.returncode == 0, p.stderr
+    gpu = [l[len("GPU:"):] for l in p.stdout.splitlines()
+           if l.startswith("GPU:") and l != "GPU:"]
+    binds = [l[len("BIND:"):] for l in p.stdout.splitlines()
+             if l.startswith("BIND:") and l not in ("BIND:", "BIND:--bind")]
+    return gpu, binds
+
+
+def _fake_nvidia_devices(tmp_path, names):
+    dev = tmp_path / "dev"
+    dev.mkdir(exist_ok=True)
+    for n in names:
+        (dev / n).write_text("")
+    return dev
+
+
+def test_add_gpu_args_requests_nv_and_binds_device_nodes(tmp_path):
+    # With a driver present the container must get BOTH halves CUDA needs from the
+    # host: the driver userspace libs (via --nv) and the /dev/nvidia* device nodes
+    # (bound explicitly, because whether --nv adds them under --contain is
+    # runtime-version dependent). Without them CUDA reports
+    # cudaErrorInsufficientDriver even though PBS allocated a real GPU.
+    dev = _fake_nvidia_devices(tmp_path, ["nvidia0", "nvidia1", "nvidiactl", "nvidia-uvm"])
+    gpu, binds = _add_gpu_args([f"{dev}/nvidia[0-9]*", f"{dev}/nvidiactl",
+                                f"{dev}/nvidia-uvm", f"{dev}/nvidia-absent"])
+    assert gpu == ["--nv"]
+    assert sorted(binds) == sorted(
+        f"{dev / n}:{dev / n}" for n in ("nvidia0", "nvidia1", "nvidiactl", "nvidia-uvm")
+    )
+
+
+def test_add_gpu_args_is_a_noop_without_a_driver(tmp_path):
+    # A CPU-only node (login node, non-GPU compute node) must be untouched: no
+    # --nv (which would warn about missing nv files) and no extra binds.
+    dev = _fake_nvidia_devices(tmp_path, [])
+    gpu, binds = _add_gpu_args([f"{dev}/nvidia[0-9]*", f"{dev}/nvidiactl"])
+    assert gpu == []
+    assert binds == []
+
+
+@pytest.mark.parametrize("value, expect_nv", [("0", False), ("1", True)])
+def test_add_gpu_args_honours_mqsandbox_nv_override(tmp_path, value, expect_nv):
+    # MQSANDBOX_NV forces the decision either way, against what detection sees:
+    # devices present + MQSANDBOX_NV=0 -> off; no devices + MQSANDBOX_NV=1 -> on.
+    names = ["nvidia0"] if value == "0" else []
+    dev = _fake_nvidia_devices(tmp_path, names)
+    gpu, binds = _add_gpu_args([f"{dev}/nvidia[0-9]*"], env={"MQSANDBOX_NV": value})
+    assert gpu == (["--nv"] if expect_nv else [])
+    # Forcing it on cannot invent device nodes that do not exist.
+    assert binds == []
+
+
+def test_mqsub_sandbox_wrapper_defers_the_gpu_decision_to_the_exec_node():
+    # The whole point: GPU passthrough must NOT be gated on the submitting node.
+    # mqsub runs on a CPU-only login node, so it bakes NO GPU flag into the job
+    # script -- only --cwd/--rw-paths/--ro-paths. mqsandbox then detects the driver
+    # on the compute node it lands on, so an --A100/--H100 job gets the GPU even
+    # though nothing GPU-ish existed where it was submitted from.
+    rc, out = _mqsub_dry_run("--sandbox", "--A100", "--", "python", "train.py")
+    assert rc == 0, out
+    assert "mqsandbox" in out
+    assert "ngpus=1" in out          # the PBS request IS made at submit time
+    assert "gpu_id=A100" in out
+    # ...but the sandbox invocation carries no GPU decision of its own.
+    wrapper = [l for l in out.splitlines() if "mqsandbox" in l][0]
+    assert "--nv" not in wrapper, wrapper
+    assert "/dev/nvidia" not in wrapper, wrapper
+
+
+def test_mqsub_forwards_nv_override_across_the_submit_boundary(monkeypatch):
+    # mqsub does not `qsub -V`, so the job runs with PBS's own environment. The
+    # MQSANDBOX_NV escape hatch would therefore never reach mqsandbox on the exec
+    # node unless mqsub forwards it -- leaving no way to force passthrough on (or
+    # off) for a job submitted from a CPU-only node.
+    monkeypatch.setenv("MQSANDBOX_NV", "1")
+    rc, out = _mqsub_dry_run("--sandbox", "--A100", "--", "python", "train.py")
+    assert rc == 0, out
+    wrapper = [l for l in out.splitlines() if "mqsandbox" in l][0]
+    assert wrapper.strip().startswith("MQSANDBOX_NV=1 "), wrapper
+
+
+def test_mqsub_sandbox_wrapper_omits_nv_override_when_unset(monkeypatch):
+    # No env prefix when the escape hatch is not in use, so the ordinary job script
+    # stays exactly as it was.
+    monkeypatch.delenv("MQSANDBOX_NV", raising=False)
+    rc, out = _mqsub_dry_run("--sandbox", "--", "echo", "hi")
+    assert rc == 0, out
+    wrapper = [l for l in out.splitlines() if "mqsandbox" in l][0]
+    assert "MQSANDBOX_NV" not in wrapper, wrapper
+
+
+def _fake_runtime_argv(tmp_path, argv, env=None, cwd=None):
+    """Run mqyolo/mqsandbox against a fake apptainer that echoes its arguments."""
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir(exist_ok=True)
+    fake_apptainer = fakebin / "apptainer"
+    fake_apptainer.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+    fake_apptainer.chmod(0o755)
+    fake_home = tmp_path / "home"
+    fake_home.mkdir(exist_ok=True)
+    fake_sif = tmp_path / "ai_tool.sif"
+    fake_sif.write_text("")
+    p = subprocess.run(
+        argv, text=True, capture_output=True,
+        env={**os.environ, "PATH": f"{fakebin}:{os.environ['PATH']}",
+             "HOME": str(fake_home), "AI_TOOL_SIF": str(fake_sif), **(env or {})},
+        cwd=str(cwd or fake_home),
+    )
+    assert p.returncode == 0, p.stderr
+    return p.stdout + p.stderr
+
+
+@pytest.mark.parametrize("nv, expect_nv", [("1", True), ("0", False)])
+def test_mqsandbox_passes_nv_to_the_runtime(tmp_path, nv, expect_nv):
+    # mqsandbox is what `mqsub --sandbox` wraps every submitted job in, so this is
+    # where the GPU flag has to land for a queued CUDA job to see a driver.
+    out = _fake_runtime_argv(tmp_path, [str(MQSANDBOX), "--", "true"],
+                             env={"MQSANDBOX_NV": nv})
+    assert ("--nv" in out.splitlines()) is expect_nv, out
+
+
+@pytest.mark.parametrize("nv, expect_nv", [("1", True), ("0", False)])
+def test_mqyolo_passes_nv_to_the_runtime(tmp_path, nv, expect_nv):
+    # The interactive session gets the same treatment, for mqyolo run inside an
+    # interactive PBS GPU job or on a GPU workstation.
+    out = _fake_runtime_argv(tmp_path, [str(MQYOLO), "--no-broker", "claude"],
+                             env={"MQSANDBOX_NV": nv})
+    assert ("--nv" in out.splitlines()) is expect_nv, out
+
+
+def test_mqsandbox_forwards_cuda_visible_devices(tmp_path):
+    # PBS sets CUDA_VISIBLE_DEVICES in the job environment to the GPU(s) it
+    # allocated; the job inside the sandbox must still see it.
+    out = _fake_runtime_argv(tmp_path, [str(MQSANDBOX), "--", "true"],
+                             env={"CUDA_VISIBLE_DEVICES": "GPU-deadbeef"})
+    assert "CUDA_VISIBLE_DEVICES=GPU-deadbeef" in out
+
+
 def test_pixi_and_mqpixi_declared_as_repo_tools():
     # pixi (the package manager) and mqpixi (its CMR wrapper) must be staged onto
     # PATH inside the container so the in-container AI can build/run pixi envs.
