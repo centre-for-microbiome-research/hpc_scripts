@@ -426,6 +426,16 @@ def calculate_cluster_stats(nodes):
     total_cpu_himem_cores = sum(node['total_cpu'] for node in himem_nodes)
     used_cpu_himem_cores = sum(node['used_cpu'] for node in himem_nodes)
 
+    # Everything a normal batch job cannot route to: GPU nodes, interactive
+    # nodes and ACL-restricted nodes. Their cores are counted in CPU-all but in
+    # neither pool above, so without this the std/himem bars do not weighted
+    # average to CPU-all -- these nodes are typically much less CPU-loaded.
+    other_nodes = [node for node in nodes
+                   if 'cpu_batch_exec' not in _qlist(node)
+                   and 'cpu_batch_exlm' not in _qlist(node)]
+    total_cpu_other_cores = sum(node['total_cpu'] for node in other_nodes)
+    used_cpu_other_cores = sum(node['used_cpu'] for node in other_nodes)
+
     total_gpus = sum(node['total_gpu'] for node in nodes)
     used_gpus = sum(node['used_gpu'] for node in nodes)
     
@@ -463,6 +473,9 @@ def calculate_cluster_stats(nodes):
         'total_cpu_himem_cores': total_cpu_himem_cores,
         'used_cpu_himem_cores': used_cpu_himem_cores,
         'cpu_himem_utilization': (used_cpu_himem_cores / total_cpu_himem_cores * 100) if total_cpu_himem_cores else 0,
+        'total_cpu_other_cores': total_cpu_other_cores,
+        'used_cpu_other_cores': used_cpu_other_cores,
+        'cpu_other_utilization': (used_cpu_other_cores / total_cpu_other_cores * 100) if total_cpu_other_cores else 0,
         'total_gpus': total_gpus,
         'used_gpus': used_gpus,
         'gpu_utilization': (used_gpus / total_gpus * 100) if total_gpus else 0
@@ -1280,11 +1293,14 @@ def main():
     
     # ASCII art utilization bars
     print(f"CPU-all:  {create_ascii_bar(cluster_stats['cpu_utilization'])}")
-    print(f"RAM-all:  {create_ascii_bar(cluster_stats['memory_utilization'])}")
     if cluster_stats['total_cpu_batch_cores'] > 0:
         print(f"CPU-std:  {create_ascii_bar(cluster_stats['cpu_batch_utilization'])}")
     if cluster_stats['total_cpu_himem_cores'] > 0:
         print(f"CPU-himem:{create_ascii_bar(cluster_stats['cpu_himem_utilization'])}")
+    if cluster_stats['total_cpu_other_cores'] > 0:
+        print(f"CPU-other:{create_ascii_bar(cluster_stats['cpu_other_utilization'])}")
+    print()
+    print(f"RAM-all:  {create_ascii_bar(cluster_stats['memory_utilization'])}")
     if cluster_stats['total_gpus'] > 0:
         print(f"GPU:      {create_ascii_bar(cluster_stats['gpu_utilization'])}")
     offline_names = get_offline_node_names()

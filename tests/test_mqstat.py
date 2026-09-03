@@ -390,3 +390,45 @@ def test_watch_jobs_no_curses_error(monkeypatch):
     monkeypatch.setattr(curses, 'wrapper', fake_wrapper)
 
     mod['watch_jobs'](fake_get_jobs, interval=0)
+
+
+def test_cluster_stats_cpu_pools_partition_all_cores():
+    # The std / himem / other CPU bars must together account for every core
+    # counted in CPU-all, so the three bars weighted-average to it. "other" is
+    # everything a normal batch job cannot route to: GPU, interactive and
+    # ACL-restricted nodes.
+    repo = Path(__file__).resolve().parents[1]
+    script = repo / "bin" / "mqstat"
+    import runpy
+    mod = runpy.run_path(str(script))
+    nodes = [
+        # general batch pool
+        {'total_cpu': 100, 'used_cpu': 90, 'total_gpu': 0, 'used_gpu': 0,
+         'total_mem': 0, 'used_mem': 0, 'qlist': 'cpu_batch_exec,cpu_batch_exlm'},
+        # large-mem-only batch pool
+        {'total_cpu': 50, 'used_cpu': 25, 'total_gpu': 0, 'used_gpu': 0,
+         'total_mem': 0, 'used_mem': 0, 'qlist': 'cpu_batch_exlm'},
+        # GPU batch node -- reachable by neither CPU batch queue
+        {'total_cpu': 40, 'used_cpu': 10, 'total_gpu': 4, 'used_gpu': 4,
+         'total_mem': 0, 'used_mem': 0, 'qlist': 'gpu_batch_exec,ded_gpu_b'},
+        # interactive node -- likewise
+        {'total_cpu': 10, 'used_cpu': 0, 'total_gpu': 0, 'used_gpu': 0,
+         'total_mem': 0, 'used_mem': 0, 'qlist': 'cpu_inter_exec'},
+    ]
+    for node in nodes:
+        node['cpu_usage'] = node['used_cpu'] / node['total_cpu'] * 100
+        node['ram_usage'] = 0
+        node['gpu_usage'] = (node['used_gpu'] / node['total_gpu'] * 100) if node['total_gpu'] else 0
+    stats = mod['calculate_cluster_stats'](nodes)
+
+    assert stats['total_cpu_batch_cores'] == 100
+    assert stats['used_cpu_batch_cores'] == 90
+    assert stats['total_cpu_himem_cores'] == 50
+    assert stats['used_cpu_himem_cores'] == 25
+    assert stats['total_cpu_other_cores'] == 50
+    assert stats['used_cpu_other_cores'] == 10
+    assert stats['cpu_other_utilization'] == 20.0
+
+    pools = ('batch', 'himem', 'other')
+    assert sum(stats[f'total_cpu_{p}_cores'] for p in pools) == stats['total_cpu_cores']
+    assert sum(stats[f'used_cpu_{p}_cores'] for p in pools) == stats['used_cpu_cores']
