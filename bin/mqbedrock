@@ -25,6 +25,29 @@ SSO_PROFILE=bedrock-sso          # profile holding the SSO settings.
                                  # instead of adding a second copy.
 SSO_SESSION=my-sso-bedrock
 
+# Locate the AWS CLI. It is not installed system-wide on this cluster —
+# interactive shells reach it through an alias onto the central pixi
+# environment, and aliases do not survive into scripts (this one normally runs
+# as a Claude Code hook, with no shell rc at all). So resolve it here: a real
+# aws on PATH wins, otherwise run the one from the pixi environment the alias
+# points at.
+PIXI_CENTRAL_TOML=${PIXI_CENTRAL_TOML:-/pkg/cmr/sw/pixi_central/pixi.toml}
+if ! command -v aws >/dev/null 2>&1; then
+  # pixi ships alongside this script in the deployed hpc_scripts bin directory,
+  # so fall back to that when running a git checkout that has no pixi next to it.
+  PIXI=$(command -v pixi || true)
+  for candidate in "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/pixi" \
+                   /work/microbiome/sw/hpc_scripts/bin/pixi; do
+    [[ -n $PIXI ]] && break
+    [[ -x $candidate ]] && PIXI=$candidate
+  done
+  if [[ ! -x $PIXI || ! -s $PIXI_CENTRAL_TOML ]]; then
+    echo "aws not on PATH, and no pixi + $PIXI_CENTRAL_TOML to run it from" >&2
+    exit 1
+  fi
+  aws() { "$PIXI" run --manifest-path "$PIXI_CENTRAL_TOML" aws "$@"; }
+fi
+
 # Section header for a profile: "default" has no prefix, everything else does.
 sec() { [[ $1 == default ]] && echo "default" || echo "profile $1"; }
 
