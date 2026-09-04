@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+#
+# bedrock-refresh.sh — keep a static AWS profile topped up for Claude Code.
+#
+# Why this exists: QUT's SSO access token dies after ~1h and cannot be
+# refreshed silently, but the role credentials it issued are valid for 12h and
+# sit in ~/.aws/cli/cache. Claude Code doesn't read that cache — it re-requests
+# credentials from Identity Center and hits the dead token. So this script pulls
+# the cached credentials out via the AWS CLI and writes them into a plain
+# [bedrock] profile with static keys, which Claude Code can read all day.
+#
+# Wire it up in ~/.claude/settings.json:
+#   "awsAuthRefresh": "~/.claude/bin/bedrock-refresh.sh",
+#   "env": { "AWS_PROFILE": "bedrock", ... }
+#
+# Claude Code runs it only after an STS GetCallerIdentity shows the current
+# credentials are dead, so within the 12h window this costs one cheap STS call.
+
+set -euo pipefail
+umask 077                        # credentials get written; keep them 0600
+
+CFG=$HOME/.aws/config
+SSO_PROFILE=bedrock-sso          # profile holding the SSO settings.
+                                 # Set to "default" to reuse an existing stanza
+                                 # instead of adding a second copy.
+SSO_SESSION=my-sso-bedrock
+
+# Section header for a profile: "default" has no prefix, everything else does.
+sec() { [[ $1 == default ]] && echo "default" || echo "profile $1"; }
+
+# cfg_get SECTION KEY — print the value of KEY within [SECTION] of $CFG.
+# Written by hand rather than using `aws configure get` because that resolves
+# sso_session indirection and can't read [sso-session ...] blocks at all.
+cfg_get() {
+  [[ -s $CFG ]] || return 1
+  awk -v s="[$1]" -v k="$2" '
+    # Track which section we are in; trailing whitespace on headers is common.
+    /^[ \t]*\[/ { gsub(/[ \t]+$/,""); insec = ($0 == s); next }
+    # Match "key=value" and "key = value" without matching a longer key
+    # that merely starts with the same characters.
+    insec && index($0, k"=") == 1 || insec && index($0, k" ") == 1 {
+      sub(/^[^=]*=[ \t]*/, ""); gsub(/[ \t]+$/,""); print; exit }
+  ' "$CFG"
+}
+
+# want SECTION KEY VALUE — assert a config entry, reporting what was found.
+# Checks values, not just presence: a stale sso_role_name otherwise fails much
+# later, during the credential fetch, with an error that doesn't point back here.
+want() {
+  local got; got=$(cfg_get "$1" "$2" || true)
+  [[ $got == "$3" ]] || { echo "  [$1] $2 = $3   (found: ${got:-missing})" >&2; return 1; }
+}
+
+# Append the stanzas needed for Bedrock. Only ever called on an empty config,
+# so this never has to worry about clobbering existing entries.
+bootstrap() {
+  cat >> "$CFG" <<EOF
+
+[$(sec "$SSO_PROFILE")]
+sso_session = $SSO_SESSION
+sso_account_id = 267451755618
+sso_role_name = DFAZCB7230-BedrockUserAccess
+region = ap-southeast-2
+output = json
+
+[sso-session $SSO_SESSION]
+sso_start_url = https://d-97671c4bd0.awsapps.com/start
+sso_region = ap-southeast-2
+sso_registration_scopes = sso:account:access
+
+[profile bedrock]
+region = ap-southeast-2
+EOF
+}
+
+# Verify an existing config has everything needed, collecting all problems
+# rather than stopping at the first so one run reports the full list.
+check() {
+  local ok=0
+  want "$(sec "$SSO_PROFILE")" sso_session    "$SSO_SESSION"                 || ok=1
+  want "$(sec "$SSO_PROFILE")" sso_account_id 267451755618                   || ok=1
+  want "$(sec "$SSO_PROFILE")" sso_role_name  DFAZCB7230-BedrockUserAccess   || ok=1
+  want "sso-session $SSO_SESSION" sso_start_url https://d-97671c4bd0.awsapps.com/start || ok=1
+  want "sso-session $SSO_SESSION" sso_region   ap-southeast-2                || ok=1
+  # Without this scope Identity Center issues no refresh token at all.
+  want "sso-session $SSO_SESSION" sso_registration_scopes sso:account:access || ok=1
+  # Claude Code needs a region on the profile it actually reads.
+  want "profile bedrock" region ap-southeast-2                               || ok=1
+  return $ok
+}
+
+mkdir -p "$(dirname "$CFG")"
+if [[ ! -s $CFG ]]; then
+  bootstrap                      # fresh machine: write the config ourselves
+elif ! check; then
+  echo "$CFG is missing the entries above; add them or delete the conflicting keys" >&2
+  exit 1                         # never edit a config that has other entries in it
+fi
+
+# Fetch credentials. Normally served from ~/.aws/cli/cache without touching the
+# network; falls through to a login only once the full 12h has elapsed.
+if ! creds=$(aws configure export-credentials --profile "$SSO_PROFILE" --format process 2>/dev/null); then
+  # Device code rather than the browser flow: BROWSER=echo just prints the URL.
+  # Set here, not at the caller — the hook doesn't inherit your shell's env.
+  # Note Claude Code shows this output but accepts no input, so complete the
+  # login in a browser while it polls.
+  BROWSER=echo aws sso login --profile "$SSO_PROFILE" --use-device-code
+  creds=$(aws configure export-credentials --profile "$SSO_PROFILE" --format process)
+fi
+
+# Copy into [bedrock] as plain static keys. Claude Code re-resolves these about
+# hourly, but that is now a local file read rather than an Identity Center call.
+aws configure set aws_access_key_id     "$(jq -r .AccessKeyId     <<<"$creds")" --profile bedrock
+aws configure set aws_secret_access_key "$(jq -r .SecretAccessKey <<<"$creds")" --profile bedrock
+aws configure set aws_session_token     "$(jq -r .SessionToken    <<<"$creds")" --profile bedrock
+
+echo "bedrock profile refreshed, expires $(jq -r .Expiration <<<"$creds")"
