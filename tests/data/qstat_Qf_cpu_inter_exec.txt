@@ -1,0 +1,25 @@
+Queue: cpu_inter_exec
+    queue_type = Execution
+    total_jobs = 19
+    state_count = Transit:0 Queued:0 Held:0 Waiting:0 Running:19 Exiting:0 Begu
+	n:0
+    max_queued = [u:PBS_GENERIC=8]
+    from_route_only = True
+    resources_max.mem = 34gb
+    resources_max.ncpus = 8
+    resources_max.qlist = cpu_inter_exec
+    resources_max.walltime = 12:00:00
+    resources_min.mem = 1gb
+    resources_min.ncpus = 1
+    resources_min.qlist = cpu_inter_exec
+    default_chunk.qlist = cpu_inter_exec
+    resources_assigned.mem = 552gb
+    resources_assigned.ncpus = 126
+    resources_assigned.nodect = 19
+    max_run = [u:PBS_GENERIC=8]
+    max_run_res.mem = [u:PBS_GENERIC=34gb]
+    max_run_res.ncpus = [u:PBS_GENERIC=8]
+    backfill_depth = 1
+    enabled = True
+    started = True
+    partition = cpu_inter
