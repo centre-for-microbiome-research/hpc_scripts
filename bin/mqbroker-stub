@@ -36,8 +36,33 @@ mkdir -p "$staging"
 printf '%s' "$cmd" > "${staging}/cmd"
 printf '%s' "$PWD" > "${staging}/cwd"
 printf '%s\0' "$@" > "${staging}/argv"
-# Capture stdin only when it is piped/redirected, never from a terminal.
-[[ -t 0 ]] || cat > "${staging}/stdin"
+# Capture stdin only for the commands that can actually consume it, and only when
+# it is piped/redirected (never from a terminal). Reading it unconditionally hangs
+# the stub forever whenever the caller leaves an idle pipe on fd 0 without ever
+# writing to or closing it — which is exactly what Claude Code's awsAuthRefresh
+# hook does: it spawns the command with a socket on stdin that it never closes. So
+# `mqbedrock` never even reached `mv`, the broker never saw the request, and the AI
+# sat in front of an empty "Authentication" panel until Claude killed the hook
+# after its 3-minute timeout.
+# mqsub reads stdin only for `--script -`; qsub takes the job script on stdin when
+# no script file is given; none of the others (mqstat/mqwait/mqdel/qstat/qdel/
+# pbsnodes/mqbedrock) ever read it.
+reads_stdin=0
+case "$cmd" in
+    qsub) reads_stdin=1 ;;
+    mqsub)
+        prev=""
+        for arg in "$@"; do
+            if [[ ( "$prev" == "--script" && "$arg" == "-" ) || "$arg" == "--script=-" ]]; then
+                reads_stdin=1
+                break
+            fi
+            prev="$arg"
+        done ;;
+esac
+if [[ "$reads_stdin" -eq 1 && ! -t 0 ]]; then
+    cat > "${staging}/stdin"
+fi
 touch "${staging}/ready"
 
 mv "$staging" "$reqdir"

@@ -19,6 +19,7 @@ login node without a built image.
 
 import contextlib
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -520,6 +521,54 @@ def test_broker_propagates_nonzero_exit_and_stderr():
         rc, out = _run_stub(mqsub, spool, "--dry-run")
         assert rc != 0
         assert "Must specify" in out
+
+
+def test_stub_does_not_block_on_an_idle_stdin_pipe(tmp_path):
+    # Claude Code's awsAuthRefresh hook spawns its command with a socket on stdin
+    # that it never writes to and never closes. A stub that reads stdin
+    # unconditionally blocks there forever: the request is never even renamed into
+    # the spool, so the broker never runs it and the AI just watches an empty
+    # "Authentication" panel until Claude kills the hook 3 minutes later. Only the
+    # commands that can consume stdin may read it.
+    with running_broker() as (spool, shim, *_):
+        mqstat = _stub_as(shim, "mqstat")
+        outfile = tmp_path / "out"
+        with open(outfile, "wb") as fh:
+            p = subprocess.Popen(
+                [mqstat, "--help"], stdin=subprocess.PIPE, stdout=fh,
+                stderr=subprocess.STDOUT,
+                env={**os.environ, "MQBROKER_SPOOL": spool},
+            )
+            try:
+                deadline = time.time() + 60
+                while time.time() < deadline and p.poll() is None:
+                    time.sleep(0.2)
+                assert p.poll() is not None, \
+                    "stub blocked reading an idle stdin pipe"
+            finally:
+                if p.poll() is None:
+                    p.kill()
+                p.stdin.close()
+                p.wait(timeout=5)
+
+
+def test_stub_still_forwards_stdin_for_mqsub_script_stdin():
+    # The flip side: `mqsub --script -` really does read the job script from
+    # stdin, so that one must still be captured and handed to the host.
+    with running_broker() as (spool, shim, *_):
+        mqsub = _stub_as(shim, "mqsub")
+        p = subprocess.run(
+            [mqsub, "--dry-run", "--script", "-", "-t", "1", "--hours", "1"],
+            input="echo hello-from-stdin\n", text=True, capture_output=True,
+            env={**os.environ, "MQBROKER_SPOOL": spool}, timeout=120,
+        )
+        out = p.stdout + p.stderr
+        assert "Wrote 1 lines of stdin" in out, out
+        # --dry-run leaves the script it wrote behind (the rm lives in the job
+        # script that never gets submitted); don't litter the shared tmpdir.
+        for tf in re.findall(r"\S+/mqsub_stdin_\S+\.sh", out):
+            with contextlib.suppress(OSError):
+                os.unlink(tf)
 
 
 def test_broker_exits_when_parent_dies():

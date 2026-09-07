@@ -89,6 +89,13 @@ Key invariants the tests guard (keep them true):
   display, since the stub only replays output once the command has finished. Past
   the SSO session's own expiry the re-login is therefore a `mqbedrock` run on the
   host, and `--no-login` says exactly that instead of hanging.
+  **The stub must only read stdin for the commands that consume it** (`qsub`, and
+  `mqsub --script -`). Claude Code runs `awsAuthRefresh` with a socket on the
+  hook's stdin that it never writes to and never closes, so an unconditional
+  `cat` blocked before the request was even renamed into the spool: the broker
+  never saw it, and the symptom was an empty `Authentication` panel — no device
+  code, no error, nothing — until Claude SIGTERMed the hook at its 3-minute
+  timeout. Guarded by `test_stub_does_not_block_on_an_idle_stdin_pipe`.
 - mqyolo refuses to launch unless the working directory is within `/work/microbiome`,
   `$HOME`, `/scratch/microbiome/$USER`, or `/tmp` (anti-leakage; the CWD is bound
   read-write). Checked before the runtime/image checks.
