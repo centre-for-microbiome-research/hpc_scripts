@@ -15,8 +15,50 @@
 #
 # Claude Code runs it only after an STS GetCallerIdentity shows the current
 # credentials are dead, so within the 12h window this costs one cheap STS call.
+#
+# Inside an mqyolo sandbox this script cannot do its job — ~/.aws there is a
+# generated Bedrock-only credential dir, and the SSO token plus its cache live on
+# the host — so it forwards itself to the host broker, which runs the real thing
+# and restages the sandbox credentials afterwards. That means one awsAuthRefresh
+# entry works both on the host and inside the sandbox.
+#
+# Options:
+#   --no-login   Never start an interactive `aws sso login`; if the cached role
+#                credentials are gone, fail with instructions instead. Forced when
+#                run via the broker, where a device code could not be displayed.
 
 set -euo pipefail
+
+# --- Forward to the host when running inside an mqyolo sandbox ---
+# MQBROKER_SPOOL is set only in the container (by mqyolo), and the shim dir on
+# PATH holds an `mqbedrock` that is really mqbroker-stub. Guard against exec'ing
+# ourselves in case PATH resolves back to this file.
+if [[ -n "${MQBROKER_SPOOL:-}" ]]; then
+  _self=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")
+  _stub=$(command -v mqbedrock 2>/dev/null || true)
+  if [[ -n $_stub && $(readlink -f "$_stub" 2>/dev/null) != "$_self" ]]; then
+    exec "$_stub" --no-login "$@"
+  fi
+  echo "mqbedrock: running inside an mqyolo sandbox, where the Bedrock credential" >&2
+  echo "mqbedrock: cannot be refreshed (the SSO token and its cache are on the host)," >&2
+  echo "mqbedrock: and no broker stub is available to forward to." >&2
+  echo "mqbedrock: Run 'mqbedrock' on the host, then relaunch mqyolo." >&2
+  exit 1
+fi
+
+NO_LOGIN=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-login) NO_LOGIN=1; shift ;;
+    -h|--help)
+      echo "usage: mqbedrock [--no-login]"
+      echo "  Top up the static [bedrock] AWS profile Claude Code reads."
+      echo "  --no-login  fail with instructions instead of starting an SSO login"
+      exit 0 ;;
+    *) echo "mqbedrock: unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
 umask 077                        # credentials get written; keep them 0600
 
 CFG=$HOME/.aws/config
@@ -123,6 +165,17 @@ fi
 # Fetch credentials. Normally served from ~/.aws/cli/cache without touching the
 # network; falls through to a login only once the full 12h has elapsed.
 if ! creds=$(aws configure export-credentials --profile "$SSO_PROFILE" --format process 2>/dev/null); then
+  # Past the 12h window the cache is empty and the SSO session is gone, so a new
+  # credential needs an interactive device-code approval in a browser. Under
+  # --no-login (i.e. run via the mqyolo broker) there is nowhere to show the code
+  # and nobody to approve it, so say what to do instead of blocking on a poll.
+  if [[ $NO_LOGIN -eq 1 ]]; then
+    echo "mqbedrock: the SSO session has expired and the cached role credentials are gone," >&2
+    echo "mqbedrock: so a new one needs an interactive login that cannot be done from here." >&2
+    echo "mqbedrock: Run 'mqbedrock' in a terminal on the host and approve the device code;" >&2
+    echo "mqbedrock: this session then picks up the new credentials automatically." >&2
+    exit 3
+  fi
   # Device code rather than the browser flow: BROWSER=echo just prints the URL.
   # Set here, not at the caller — the hook doesn't inherit your shell's env.
   # Note Claude Code shows this output but accepts no input, so complete the

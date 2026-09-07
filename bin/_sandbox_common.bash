@@ -762,6 +762,87 @@ sandbox_home_dotfiles() {
 }
 
 # ---------------------------------------------------------------------------
+# sandbox_stage_bedrock_credentials PROFILE DEST_DIR
+#   Write a Bedrock-only ~/.aws into DEST_DIR: a `credentials` file holding just
+#   PROFILE's static keys (copied from the real ~/.aws/credentials) and a `config`
+#   holding just its region. Nothing else from ~/.aws is copied or bound, so the
+#   SSO access token (~/.aws/sso/cache), the AWS CLI's role-credential cache
+#   (~/.aws/cli/cache), every other profile and ~/.aws/saml2aws all stay
+#   invisible: the in-container tool gets model access, not the caller's whole AWS
+#   identity. That is the whole point of doing this rather than `--ro-paths ~/.aws`.
+#
+#   PROFILE must already hold STATIC keys (aws_access_key_id/aws_secret_access_key
+#   [/aws_session_token]) — i.e. the profile `mqbedrock` tops up. An SSO-only
+#   profile cannot work here: resolving one needs the SSO token and a writable
+#   cache, neither of which the sandbox has.
+#
+#   Both files are written via a temp file + rename so a reader never sees a torn
+#   file: the broker rewrites them underneath a live session after `mqbedrock`
+#   mints new keys, and Claude Code re-resolves static keys periodically.
+#
+#   Returns 0 when credentials were written, 1 otherwise (no ~/.aws, no such
+#   profile, no static keys, or no python3). The caller decides how loudly to
+#   complain — mqyolo warns at launch, the broker warns after a refresh.
+# ---------------------------------------------------------------------------
+sandbox_stage_bedrock_credentials() {
+    local profile="$1" dest="$2"
+    [[ -n "$profile" && -n "$dest" ]] || return 1
+    command -v python3 &>/dev/null || return 1
+    mkdir -p "$dest" || return 1
+    chmod 700 "$dest" 2>/dev/null || true
+    python3 - "$profile" "$dest" "${HOME}/.aws" <<'PY'
+import configparser, os, sys
+
+profile, dest, awsdir = sys.argv[1], sys.argv[2], sys.argv[3]
+
+# RawConfigParser: credential values are opaque (session tokens are long base64
+# blobs) and must not go through interpolation.
+def read(name):
+    cp = configparser.RawConfigParser()
+    try:
+        cp.read(os.path.join(awsdir, name))
+    except configparser.Error:
+        return None
+    return cp
+
+# The credentials file names profiles bare; config prefixes them with "profile "
+# (except "default"), so the section name differs between the two files.
+def config_section(p):
+    return p if p == "default" else "profile %s" % p
+
+creds = read("credentials")
+if creds is None or not creds.has_section(profile):
+    sys.exit(1)
+WANTED = ("aws_access_key_id", "aws_secret_access_key", "aws_session_token")
+keys = {k: v for k, v in creds.items(profile) if k in WANTED}
+if "aws_access_key_id" not in keys or "aws_secret_access_key" not in keys:
+    sys.exit(1)   # SSO-only (or half-written) profile: nothing usable to stage
+
+# Region is not a credential, but the SDKs need it on the profile they read.
+region = ""
+cfg = read("config")
+if cfg is not None:
+    for section in (config_section(profile), "default"):
+        if cfg.has_section(section) and cfg.has_option(section, "region"):
+            region = cfg.get(section, "region")
+            break
+
+def write(name, text):
+    path = os.path.join(dest, name)
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)   # atomic: a live session may be reading this
+
+write("credentials",
+      "[%s]\n" % profile + "".join("%s = %s\n" % (k, keys[k]) for k in sorted(keys)))
+write("config",
+      "[%s]\n" % config_section(profile) + ("region = %s\n" % region if region else ""))
+PY
+}
+
+# ---------------------------------------------------------------------------
 # Repo helper scripts that should be on PATH inside the sandbox. These ship with
 # this repo (the same tree mqyolo runs from) so the in-container AI always has them
 # and runs the version that ships with mqyolo, independent of any separately
@@ -959,6 +1040,23 @@ sandbox_build_env() {
     # inspection proxy (e.g. IAClient) is in use and re-signs outbound HTTPS.
     [[ -f /etc/ssl/certs/ca-certificates.crt ]] && \
         ENV_ARGS+=(--env "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt")
+
+    # Make a missing AWS credential fail FAST instead of hanging. The sandbox is
+    # never on EC2, and this network BLACKHOLES the instance-metadata address
+    # (169.254.169.254) rather than refusing connections to it — so an AWS SDK that
+    # falls through to the metadata provider stalls there instead of erroring. That
+    # is exactly how a Bedrock-backed Claude Code presents when ~/.aws is shadowed
+    # and no credential was staged: it starts, accepts a prompt, and then answers
+    # nothing, with no error even under --debug. Disabling the provider (and
+    # capping it, for SDKs that ignore the disable flag) turns that silence into an
+    # immediate credentials error. An explicit host value wins — apptainer forwards
+    # the environment, so only fill these in when the caller has not set them.
+    [[ -z "${AWS_EC2_METADATA_DISABLED:-}" ]] && \
+        ENV_ARGS+=(--env "AWS_EC2_METADATA_DISABLED=true")
+    [[ -z "${AWS_METADATA_SERVICE_TIMEOUT:-}" ]] && \
+        ENV_ARGS+=(--env "AWS_METADATA_SERVICE_TIMEOUT=1")
+    [[ -z "${AWS_METADATA_SERVICE_NUM_ATTEMPTS:-}" ]] && \
+        ENV_ARGS+=(--env "AWS_METADATA_SERVICE_NUM_ATTEMPTS=1")
     # Point Cargo at the rw-bound logical host path (same inside and outside)
     local _cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
     [[ -d "$_cargo_home" ]] && ENV_ARGS+=(--env "CARGO_HOME=${_cargo_home}")

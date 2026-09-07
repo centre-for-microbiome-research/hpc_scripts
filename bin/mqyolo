@@ -122,6 +122,38 @@ _mqyolo_broker_available() {
     command -v qsub &>/dev/null
 }
 
+# Print the AWS profile the in-container AI tool will use for Bedrock, or nothing
+# if Bedrock is not in play. Used to decide whether to stage a Bedrock-only ~/.aws
+# into the sandbox (see sandbox_stage_bedrock_credentials).
+#
+# The host environment alone is NOT a reliable signal: a plain login shell has
+# none of these set, yet Claude Code applies its own `env` block from
+# ~/.claude/settings.json to its process — the same file, bound read-write into the
+# container — so CLAUDE_CODE_USE_BEDROCK/AWS_PROFILE appear only once Claude is
+# running. Read both, environment first.
+#
+# AWS_BEARER_TOKEN_BEDROCK short-circuits the whole thing: it is already forwarded,
+# it is scoped to model invocation, and it needs no profile or credential file.
+_mqyolo_bedrock_profile() {
+    [[ -n "${AWS_BEARER_TOKEN_BEDROCK:-}" ]] && return 0
+    command -v python3 &>/dev/null || return 0
+    python3 - "${HOME}/.claude/settings.json" \
+             "${CLAUDE_CODE_USE_BEDROCK:-}" "${AWS_PROFILE:-}" <<'PY' 2>/dev/null
+import json, sys
+
+settings, use, profile = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(settings) as f:
+        env = (json.load(f) or {}).get("env") or {}
+except Exception:
+    env = {}                      # no/unreadable settings.json is not an error
+use = use or str(env.get("CLAUDE_CODE_USE_BEDROCK", ""))
+profile = profile or str(env.get("AWS_PROFILE", ""))
+if use.lower() not in ("", "0", "false"):
+    print(profile or "default")
+PY
+}
+
 # Total physical RAM of this host in whole GB, or "" if it can't be read. Used to
 # describe the local budget when mqyolo runs off the batch queue.
 _mqyolo_host_mem_gb() {
@@ -471,6 +503,11 @@ FILESYSTEM INSIDE THE CONTAINER
                       credential scoped to model invocation instead (see
                       AWS_BEARER_TOKEN_BEDROCK below). Re-expose deliberately
                       with: --ro-paths ~/.aws
+                      EXCEPTION when Bedrock is configured (see BEDROCK below):
+                      a generated ~/.aws holding ONLY the static keys of the one
+                      profile the AI tool uses, and its region. The SSO token,
+                      the AWS CLI role cache and every other profile still stay
+                      invisible.
 
 MQSUB FROM INSIDE THE CONTAINER
   Only when the host actually has the PBS batch queue (`qsub` is present, as on
@@ -490,6 +527,32 @@ MQSUB FROM INSIDE THE CONTAINER
   read-only) via mqsandbox. Those writable and read-only paths are fixed by mqyolo
   at launch and cannot be changed from inside the container. The broker exits when
   mqyolo exits or is killed; use --no-broker to disable it.
+
+BEDROCK
+  A Bedrock-backed Claude Code needs AWS credentials inside the container, but
+  ~/.aws is shadowed — which used to leave it with none. Since the network
+  blackholes the instance-metadata address, the SDK then hung there rather than
+  erroring, and the session simply never answered. So:
+
+  - If AWS_BEARER_TOKEN_BEDROCK is set it is forwarded and nothing else is done.
+    This is the preferred credential: it is scoped to model invocation.
+  - Otherwise, when Bedrock is configured — CLAUDE_CODE_USE_BEDROCK in the
+    environment or in the "env" block of ~/.claude/settings.json (which is where
+    it usually lives, since Claude applies that block to its own process) —
+    mqyolo copies the static keys of that profile (AWS_PROFILE, else "default")
+    out of ~/.aws/credentials into a generated, Bedrock-only ~/.aws in the
+    container. The profile must already hold static keys, i.e. the profile
+    `mqbedrock` maintains; an SSO-only profile cannot be used here and mqyolo
+    warns instead of leaving the tool to hang.
+  - Those keys expire (12h for an SSO-issued role). When the broker is running,
+    `mqbedrock` is proxied to the host so Claude's awsAuthRefresh hook can mint
+    new ones there, and the broker restages them into the live session — no
+    relaunch needed. Once the SSO session itself is gone the re-login needs an
+    interactive device code, which cannot be approved from inside the container:
+    run `mqbedrock` on the host and the session picks the new keys up.
+  - Instance-metadata credential lookups are disabled in the container
+    (AWS_EC2_METADATA_DISABLED), so a missing credential fails immediately with
+    an error instead of hanging on a blackholed address.
 
 CLAUDE SETTINGS
   ~/.cache/           bound read-write so tools can read and write the
@@ -686,6 +749,44 @@ sandbox_build_binds "$CWD" "${RW_PATHS[@]+"${RW_PATHS[@]}"}" -- "${RO_PATHS[@]+"
 sandbox_home_dotfiles "${RO_PATHS[@]+"${RO_PATHS[@]}"}" "${RW_PATHS[@]+"${RW_PATHS[@]}"}"
 
 # ---------------------------------------------------------------------------
+# Bedrock credentials: a Bedrock-only ~/.aws in the ephemeral home
+#
+# sandbox_home_dotfiles shadows the real ~/.aws, which is what breaks a
+# Bedrock-backed Claude Code: settings.json puts CLAUDE_CODE_USE_BEDROCK and
+# AWS_PROFILE into Claude's environment, the profile is then unresolvable, and the
+# SDK falls through to the blackholed instance-metadata address — so the session
+# starts and then silently never answers. Stage just that profile's static keys
+# into the ephemeral home (which is already bound rw as /container_home, so no
+# extra bind is needed) so model access works while the SSO token, the CLI
+# credential cache and every other profile stay invisible.
+#
+# Skipped when --ro-paths ~/.aws already opted the real directory back in: the
+# caller made that choice deliberately, and sandbox_home_dotfiles then leaves
+# ~/.aws as a symlink to the real dir rather than shadowing it.
+# ---------------------------------------------------------------------------
+# `|| true`: a failing probe (unreadable settings.json, python3 blowing up) means
+# "no Bedrock", never a dead mqyolo — this runs under `set -e`.
+BEDROCK_PROFILE="$(_mqyolo_bedrock_profile || true)"
+BEDROCK_AWS_DIR=""
+if [[ -n "$BEDROCK_PROFILE" && ! -L "${CONTAINER_HOME}/.aws" ]]; then
+    if sandbox_stage_bedrock_credentials "$BEDROCK_PROFILE" "${CONTAINER_HOME}/.aws"; then
+        BEDROCK_AWS_DIR="${CONTAINER_HOME}/.aws"
+        # Safe to forward now, and needed for tools that do not read Claude's
+        # settings.json (e.g. opencode's amazon-bedrock provider): the staged
+        # directory contains ONLY this profile, so naming it grants nothing beyond
+        # the model access the keys already carry.
+        ENV_ARGS+=(--env "AWS_PROFILE=${BEDROCK_PROFILE}")
+    else
+        {
+            echo "mqyolo: WARNING: Bedrock is configured (profile '${BEDROCK_PROFILE}') but"
+            echo "mqyolo:          ${HOME}/.aws/credentials has no static keys for it, so the"
+            echo "mqyolo:          in-container tool will have no model access."
+            echo "mqyolo:          Run 'mqbedrock' on the host first, or set AWS_BEARER_TOKEN_BEDROCK."
+        } >&2
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # mqsub broker (one per mqyolo session)
 #
 # Start a lightweight host-side broker that the container-side mqsub/mqstat/...
@@ -727,10 +828,17 @@ if [[ "$NO_BROKER" -eq 0 && -x "${SCRIPT_DIR}/mqsub-broker" && -x "${SCRIPT_DIR}
     # pbsnodes is proxied so node-status queries work too (PBS binaries are absent
     # in the container).
     _stub_real="$(readlink -f "${SCRIPT_DIR}/mqbroker-stub")"
-    for _c in mqsub mqstat mqwait mqdel qstat qdel pbsnodes; do
+    _stub_cmds=(mqsub mqstat mqwait mqdel qstat qdel pbsnodes)
+    # mqbedrock is proxied only when a Bedrock credential was actually staged:
+    # refreshing it from inside the sandbox is impossible (the SSO token and the
+    # writable cache are both on the host), so Claude's awsAuthRefresh hook has to
+    # reach the host to mint new keys — and the broker restages them afterwards.
+    # Without a staged credential there would be nothing to restage.
+    [[ -n "$BEDROCK_AWS_DIR" ]] && _stub_cmds+=(mqbedrock)
+    for _c in "${_stub_cmds[@]}"; do
         ln -sf "$_stub_real" "${SHIM_DIR}/${_c}"
     done
-    unset _c _stub_real
+    unset _c _stub_real _stub_cmds
 
     # Pass this session's --rw-paths/--ro-paths to the broker as the FIXED sets of
     # writable and read-only paths for every submitted job. The broker forces these
@@ -750,12 +858,18 @@ if [[ "$NO_BROKER" -eq 0 && -x "${SCRIPT_DIR}/mqsub-broker" && -x "${SCRIPT_DIR}
     for _p in "${RO_PATHS[@]+"${RO_PATHS[@]}"}"; do
         _broker_ro+=(--ro-path "$(realpath -s "$_p" 2>/dev/null || echo "$_p")")
     done
+    # Where to rewrite the staged Bedrock credentials after a broker-run
+    # `mqbedrock` mints new ones, so a live session picks them up without relaunch.
+    _broker_bedrock=()
+    [[ -n "$BEDROCK_AWS_DIR" ]] && \
+        _broker_bedrock=(--bedrock-profile "$BEDROCK_PROFILE" --bedrock-aws-dir "$BEDROCK_AWS_DIR")
     _broker_dbg=()
     [[ "$DEBUG" -eq 1 ]] && _broker_dbg=(--debug)
     "${SCRIPT_DIR}/mqsub-broker" --spool "$BROKER_SPOOL" --watch-pid "$$" \
-        "${_broker_rw[@]}" "${_broker_ro[@]}" "${_broker_dbg[@]}" &
+        "${_broker_rw[@]}" "${_broker_ro[@]}" \
+        "${_broker_bedrock[@]+"${_broker_bedrock[@]}"}" "${_broker_dbg[@]}" &
     BROKER_PID=$!
-    unset _broker_dbg _broker_rw _broker_ro _p
+    unset _broker_dbg _broker_rw _broker_ro _broker_bedrock _p
 
     # The shim dir lives at this path inside the container too (CONTAINER_HOME ->
     # /container_home). It must beat everything (including the repo tools dir) so the

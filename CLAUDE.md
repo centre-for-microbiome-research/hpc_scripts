@@ -56,8 +56,39 @@ Key invariants the tests guard (keep them true):
   so a shadow would otherwise silently override an explicit opt-in). When `~/.aws` is
   opted in its home symlink must be recreated, or the AWS SDKs cannot find the profile.
   Bedrock access should instead use a credential scoped to model invocation
-  (`AWS_BEARER_TOKEN_BEDROCK`); mqyolo deliberately does not forward `AWS_PROFILE` or
-  the access-key/session-token trio, which carry the caller's whole AWS identity.
+  (`AWS_BEARER_TOKEN_BEDROCK`); mqyolo's explicit `--env` list deliberately omits
+  `AWS_PROFILE` and the access-key/session-token trio, which carry the caller's
+  whole AWS identity. (Note this is not *isolation*: neither script passes
+  `--cleanenv`, so anything already exported in the caller's shell reaches the
+  container regardless — the `--env` list only controls what mqyolo adds.)
+- **Bedrock credentials are staged as a Bedrock-only `~/.aws`, not by exposing the
+  real one.** Symptom when this is missing: Claude starts, takes a prompt, and
+  never answers — no error even under `--debug` — because `~/.aws` is shadowed, the
+  profile from `~/.claude/settings.json`'s `env` block is unresolvable, and the SDK
+  falls through to `169.254.169.254`, which this network *blackholes* rather than
+  refuses. `_mqyolo_bedrock_profile` detects Bedrock (environment first, then
+  settings.json — a plain login shell has none of it set, since Claude applies that
+  block to its own process) and `sandbox_stage_bedrock_credentials` writes just that
+  profile's static keys plus its region into `${CONTAINER_HOME}/.aws`. The SSO
+  token, `~/.aws/cli/cache` and every other profile stay invisible; the profile must
+  already hold static keys (what `mqbedrock` maintains), and an SSO-only profile is
+  a warning, not a silent hang. `AWS_PROFILE` *is* forwarded once staged — safe
+  because only that profile exists there, and needed by tools that don't read
+  Claude's settings.json. Skipped entirely when `AWS_BEARER_TOKEN_BEDROCK` is set,
+  or when `--ro-paths ~/.aws` already opted the real directory back in.
+  `AWS_EC2_METADATA_DISABLED` is set in `sandbox_build_env` so any future credential
+  gap errors immediately instead of hanging (an explicit host value wins).
+- **Refreshing those keys must happen on the host.** They expire (12h for an
+  SSO-issued role) and nothing in the sandbox can renew them, so `mqbedrock` is on
+  the broker allowlist (only when a credential was staged), it self-dispatches to
+  the broker stub when `MQBROKER_SPOOL` is set — so one `awsAuthRefresh` entry in
+  settings.json works on both sides — and the broker restages the credentials after
+  a successful run, atomically, so a live session picks them up without relaunch.
+  The broker forces `--no-login` and rejects every other argument: an interactive
+  `aws sso login` would block it polling for a device code the container can never
+  display, since the stub only replays output once the command has finished. Past
+  the SSO session's own expiry the re-login is therefore a `mqbedrock` run on the
+  host, and `--no-login` says exactly that instead of hanging.
 - mqyolo refuses to launch unless the working directory is within `/work/microbiome`,
   `$HOME`, `/scratch/microbiome/$USER`, or `/tmp` (anti-leakage; the CWD is bound
   read-write). Checked before the runtime/image checks.

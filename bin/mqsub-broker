@@ -15,12 +15,25 @@
 # (normal exit OR kill -9) the broker cleans up and exits, so it is never
 # orphaned.
 #
+# It also brokers the one non-queue command the container cannot run for itself:
+# `mqbedrock`, which refreshes the Bedrock credential the in-container Claude runs
+# on. That needs the SSO token and its writable cache, both of which live on the
+# host; after a successful refresh the broker restages the session's generated
+# Bedrock-only ~/.aws so the running container picks up the new keys.
+#
 # Usage:
 #   mqsub-broker --spool DIR --watch-pid PID [--watch-interval SECS] [--debug]
+#                [--rw-path PATH]... [--ro-path PATH]...
+#                [--bedrock-profile NAME --bedrock-aws-dir DIR]
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
+# For sandbox_stage_bedrock_credentials (used to restage the session's Bedrock
+# credentials after a broker-run mqbedrock). Sourcing is side-effect-free apart
+# from reading /proc/mounts to build the deny lists.
+# shellcheck source=_sandbox_common.bash
+source "${SCRIPT_DIR}/_sandbox_common.bash"
 
 SPOOL=""
 WATCH_PID=""
@@ -30,15 +43,21 @@ DEBUG=0
 # paths applied to every sandboxed job. The container cannot change these.
 RW_PATHS=()
 RO_PATHS=()
+# Session's staged Bedrock credential (mqyolo --bedrock-*), rewritten after a
+# successful mqbedrock so a live session picks up the new keys.
+BEDROCK_PROFILE=""
+BEDROCK_AWS_DIR=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --spool)          SPOOL="$2"; shift 2 ;;
-        --watch-pid)      WATCH_PID="$2"; shift 2 ;;
-        --watch-interval) WATCH_INTERVAL="$2"; shift 2 ;;
-        --rw-path)        RW_PATHS+=("$2"); shift 2 ;;
-        --ro-path)        RO_PATHS+=("$2"); shift 2 ;;
-        --debug)          DEBUG=1; shift ;;
+        --spool)           SPOOL="$2"; shift 2 ;;
+        --watch-pid)       WATCH_PID="$2"; shift 2 ;;
+        --watch-interval)  WATCH_INTERVAL="$2"; shift 2 ;;
+        --rw-path)         RW_PATHS+=("$2"); shift 2 ;;
+        --ro-path)         RO_PATHS+=("$2"); shift 2 ;;
+        --bedrock-profile) BEDROCK_PROFILE="$2"; shift 2 ;;
+        --bedrock-aws-dir) BEDROCK_AWS_DIR="$2"; shift 2 ;;
+        --debug)           DEBUG=1; shift ;;
         *) echo "mqsub-broker: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -54,7 +73,11 @@ mkdir -p "$REQ_DIR"
 # snakemake_mqstat shells out to `qstat`, and its cluster-cancel command is
 # `qdel`); PBS enforces that a user can only qdel their own jobs. pbsnodes is a
 # read-only query of cluster node status (no PBS binaries exist in the container).
-ALLOWED="mqsub mqstat mqwait mqdel qstat qdel pbsnodes"
+# mqbedrock refreshes the Bedrock credential the in-container Claude runs on; it
+# can only work on the host (the SSO token and its writable cache are there), and
+# it is accepted only when mqyolo actually staged a credential to refresh — see
+# the mqbedrock handling in process_request.
+ALLOWED="mqsub mqstat mqwait mqdel qstat qdel pbsnodes mqbedrock"
 
 log() { [[ "$DEBUG" -eq 1 ]] && echo "mqsub-broker: $*" >&2 || true; }
 
@@ -126,6 +149,32 @@ process_request() {
         for p in "${RO_PATHS[@]+"${RO_PATHS[@]}"}"; do
             runargs+=("--sandbox-ro-paths" "$p")
         done
+    elif [[ "$cmd" == "mqbedrock" ]]; then
+        # Only meaningful when this session has a staged credential to refresh.
+        if [[ -z "$BEDROCK_AWS_DIR" ]]; then
+            printf 'mqsub-broker: mqbedrock is not permitted from the container in this session (no Bedrock credential was staged at launch)\n' \
+                > "${reqdir}/stderr"
+            echo 126 > "${reqdir}/exit"
+            touch "${reqdir}/done"
+            return 0
+        fi
+        # --no-login is forced: an interactive `aws sso login` would block the
+        # broker polling for a device code the container can never display (the
+        # stub only replays output once the command has finished), so the host-side
+        # run must fail fast and tell the user to run mqbedrock themselves. The
+        # only argument the container may pass is that same flag.
+        local a
+        for a in "${argv[@]+"${argv[@]}"}"; do
+            if [[ "$a" != "--no-login" ]]; then
+                printf 'mqsub-broker: mqbedrock accepts no arguments from the container (got %q)\n' "$a" \
+                    > "${reqdir}/stderr"
+                echo 126 > "${reqdir}/exit"
+                touch "${reqdir}/done"
+                return 0
+            fi
+        done
+        runargs+=("--no-login")
+        argv=()
     fi
     runargs+=("${argv[@]+"${argv[@]}"}")
 
@@ -138,6 +187,20 @@ process_request() {
         < "$stdin_src" \
         > "${reqdir}/stdout" \
         2> "${reqdir}/stderr" || rc=$?
+
+    # A successful mqbedrock refreshed the host's static keys; copy the new ones
+    # into the session's staged Bedrock-only ~/.aws so the running container picks
+    # them up (Claude Code re-resolves static profile keys periodically, and the
+    # rewrite is atomic) instead of needing a relaunch.
+    if [[ "$cmd" == "mqbedrock" && "$rc" -eq 0 && -n "$BEDROCK_AWS_DIR" ]]; then
+        if sandbox_stage_bedrock_credentials "$BEDROCK_PROFILE" "$BEDROCK_AWS_DIR"; then
+            log "restaged Bedrock credentials for profile ${BEDROCK_PROFILE}"
+        else
+            printf 'mqsub-broker: WARNING: refreshed the host credentials but could not restage profile %q into the sandbox; the session still has the old keys.\n' \
+                "$BEDROCK_PROFILE" >> "${reqdir}/stderr"
+        fi
+    fi
+
     echo "$rc" > "${reqdir}/exit"
     touch "${reqdir}/done"
     log "request ${reqdir##*/} finished rc=$rc"

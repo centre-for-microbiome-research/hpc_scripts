@@ -374,9 +374,14 @@ def test_mqyolo_allows_home_launch_dir(tmp_path):
 # Broker <-> stub round-trip helpers
 # ---------------------------------------------------------------------------
 @contextlib.contextmanager
-def running_broker(rw_paths=(), ro_paths=(), watch_pid=None, interval=1):
+def running_broker(rw_paths=(), ro_paths=(), watch_pid=None, interval=1,
+                   bedrock=None, broker_path=None):
     """Start a broker (watching a throwaway parent unless watch_pid given),
-    yield (spool_dir, shim_dir, broker_proc, dummy_proc). Cleans up on exit."""
+    yield (spool_dir, shim_dir, broker_proc, dummy_proc). Cleans up on exit.
+
+    bedrock: (profile, aws_dir) to pass as --bedrock-profile/--bedrock-aws-dir.
+    broker_path: run a copy of the broker from elsewhere (used to give it a
+    SCRIPT_DIR with a fake mqbedrock in it)."""
     spool = tempfile.mkdtemp(prefix="mqbroker_spool_")
     shim = tempfile.mkdtemp(prefix="mqbroker_shim_")
 
@@ -385,12 +390,14 @@ def running_broker(rw_paths=(), ro_paths=(), watch_pid=None, interval=1):
         dummy = subprocess.Popen(["sleep", "120"])
         watch_pid = dummy.pid
 
-    args = [str(BROKER), "--spool", spool, "--watch-pid", str(watch_pid),
-            "--watch-interval", str(interval)]
+    args = [str(broker_path or BROKER), "--spool", spool,
+            "--watch-pid", str(watch_pid), "--watch-interval", str(interval)]
     for p in rw_paths:
         args += ["--rw-path", p]
     for p in ro_paths:
         args += ["--ro-path", p]
+    if bedrock:
+        args += ["--bedrock-profile", bedrock[0], "--bedrock-aws-dir", str(bedrock[1])]
     broker = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         time.sleep(0.4)  # let the broker create the req dir / start watching
@@ -1462,6 +1469,424 @@ def test_mqsandbox_hides_denied_paths():
             assert "scratch:ABSENT" in out, out
     finally:
         shutil.rmtree(cwd, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Bedrock credentials in the sandbox
+#
+# ~/.aws is shadowed, so a Bedrock-backed Claude Code (CLAUDE_CODE_USE_BEDROCK +
+# AWS_PROFILE, set from ~/.claude/settings.json) finds no credential and the AWS
+# SDK falls through to the blackholed instance-metadata address — the session
+# starts and then silently never answers. mqyolo stages ONLY that profile's static
+# keys into the ephemeral home; everything else in ~/.aws stays invisible.
+# ---------------------------------------------------------------------------
+MQBEDROCK = BIN / "mqbedrock"
+
+BEDROCK_CREDENTIALS = """\
+[default]
+aws_access_key_id = AKIA_OTHER_IDENTITY
+aws_secret_access_key = other-secret
+
+[bedrock]
+aws_access_key_id = AKIA_BEDROCK
+aws_secret_access_key = bedrock-secret==
+aws_session_token = tok/en+with=padding==
+"""
+
+BEDROCK_CONFIG = """\
+[profile bedrock-sso]
+sso_session = my-sso-bedrock
+
+[profile bedrock]
+region = ap-southeast-2
+"""
+
+
+def _fake_aws_home(home, credentials=BEDROCK_CREDENTIALS, config=BEDROCK_CONFIG):
+    """Populate home/.aws the way mqbedrock leaves it, including the secrets that
+    must NOT reach the sandbox (SSO token, CLI role cache, other profiles)."""
+    aws = home / ".aws"
+    (aws / "sso" / "cache").mkdir(parents=True)
+    (aws / "sso" / "cache" / "tok.json").write_text('{"accessToken":"SSO_SECRET"}')
+    (aws / "cli" / "cache").mkdir(parents=True)
+    (aws / "cli" / "cache" / "role.json").write_text('{"Credentials":"CACHED_SECRET"}')
+    (aws / "credentials").write_text(credentials)
+    (aws / "config").write_text(config)
+    return aws
+
+
+def _stage_bedrock(home, profile, dest):
+    """Drive sandbox_stage_bedrock_credentials against a fake HOME; return rc."""
+    script = (
+        "source %s; HOME=%s; sandbox_stage_bedrock_credentials %s %s"
+        % (SANDBOX_LIB, shlex.quote(str(home)), shlex.quote(profile),
+           shlex.quote(str(dest)))
+    )
+    return subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+
+
+def test_stage_bedrock_credentials_copies_only_that_profile(tmp_path):
+    # The whole reason for generating a credentials file instead of binding
+    # ~/.aws: the SSO access token is exchangeable for role credentials across
+    # every account the user can reach, so only the named profile's static keys
+    # may cross into the sandbox.
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home)
+    dest = tmp_path / "chome" / ".aws"
+
+    p = _stage_bedrock(home, "bedrock", dest)
+    assert p.returncode == 0, p.stderr
+
+    creds = (dest / "credentials").read_text()
+    assert "[bedrock]" in creds
+    assert "aws_access_key_id = AKIA_BEDROCK" in creds
+    # Values containing '=' must survive verbatim (session tokens are base64).
+    assert "aws_session_token = tok/en+with=padding==" in creds
+    # No other identity, and nothing exchangeable for one.
+    assert "AKIA_OTHER_IDENTITY" not in creds
+    assert "[default]" not in creds
+    assert "SSO_SECRET" not in creds and "CACHED_SECRET" not in creds
+    assert sorted(os.listdir(dest)) == ["config", "credentials"]
+    # Region is not a credential but the SDKs need it on the profile they read.
+    assert "region = ap-southeast-2" in (dest / "config").read_text()
+    # Credentials on disk stay private even inside the ephemeral home.
+    assert oct(os.stat(dest / "credentials").st_mode)[-3:] == "600"
+    assert oct(os.stat(dest).st_mode)[-3:] == "700"
+
+
+def test_stage_bedrock_credentials_rejects_sso_only_profile(tmp_path):
+    # An SSO-only profile cannot be resolved in the sandbox (that needs the SSO
+    # token and a writable cache), so staging must fail rather than write a
+    # credentials file that looks usable and then hangs.
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home, credentials="[bedrock]\nsso_session = my-sso-bedrock\n")
+    dest = tmp_path / "chome" / ".aws"
+
+    p = _stage_bedrock(home, "bedrock", dest)
+    assert p.returncode == 1, p.stdout + p.stderr
+    assert not (dest / "credentials").exists()
+
+
+def test_stage_bedrock_credentials_rewrite_is_atomic(tmp_path):
+    # The broker rewrites this file underneath a live session, so a reader must
+    # never see a truncated one: the write goes to a temp file and is renamed.
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home)
+    dest = tmp_path / "chome" / ".aws"
+    assert _stage_bedrock(home, "bedrock", dest).returncode == 0
+    first = (dest / "credentials").read_text()
+
+    rotated = BEDROCK_CREDENTIALS.replace("AKIA_BEDROCK", "AKIA_ROTATED")
+    (home / ".aws" / "credentials").write_text(rotated)
+    assert _stage_bedrock(home, "bedrock", dest).returncode == 0
+
+    assert "AKIA_ROTATED" in (dest / "credentials").read_text()
+    assert "AKIA_BEDROCK" not in (dest / "credentials").read_text()
+    assert first != (dest / "credentials").read_text()
+    # No temp file left behind for the container to find.
+    assert sorted(os.listdir(dest)) == ["config", "credentials"]
+
+
+def _mqyolo_dry_run(tmp_path, home, args=("--no-broker",), extra_env=None):
+    """Run mqyolo against a fake apptainer that records its argv and copies the
+    ephemeral container home (which is otherwise deleted on exit) so the staged
+    credentials can be inspected. Returns (proc, argv_lines, saved_home)."""
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir(parents=True, exist_ok=True)
+    saved = tmp_path / "saved_chome"
+    fake_apptainer = fakebin / "apptainer"
+    # Find the /container_home bind and snapshot its source before mqyolo's EXIT
+    # trap removes it. (No %-formatting here: the script is full of ${a%%...}.)
+    script = """\
+#!/bin/sh
+for a in "$@"; do
+  case "$a" in
+    *:/container_home:rw) cp -a "${a%%:*}" @SAVED@ ;;
+  esac
+done
+printf '%s\\n' "$@"
+"""
+    fake_apptainer.write_text(script.replace("@SAVED@", shlex.quote(str(saved))))
+    fake_apptainer.chmod(0o755)
+    fake_sif = tmp_path / "ai_tool.sif"
+    fake_sif.write_text("")
+    env = {
+        **os.environ,
+        "PATH": f"{fakebin}:{os.environ['PATH']}",
+        "HOME": str(home),
+        "AI_TOOL_SIF": str(fake_sif),
+        # Pin the Bedrock inputs: the ambient environment of whoever runs the
+        # suite must not decide whether staging happens.
+        "CLAUDE_CODE_USE_BEDROCK": "",
+        "AWS_PROFILE": "",
+        "AWS_BEARER_TOKEN_BEDROCK": "",
+        **(extra_env or {}),
+    }
+    p = subprocess.run([str(MQYOLO), *args], text=True, capture_output=True,
+                       env=env, cwd=str(home))
+    return p, (p.stdout + p.stderr).splitlines(), saved
+
+
+def _bedrock_settings(home, profile="bedrock"):
+    """Write the ~/.claude/settings.json env block that turns Bedrock on. This is
+    where it really comes from: a plain login shell has none of it set, so mqyolo
+    cannot rely on its own environment to detect Bedrock."""
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    (home / ".claude" / "settings.json").write_text(
+        '{"env": {"CLAUDE_CODE_USE_BEDROCK": "1", "AWS_PROFILE": "%s"}}' % profile
+    )
+
+
+def test_mqyolo_stages_bedrock_profile_named_in_claude_settings(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home)
+    _bedrock_settings(home)
+
+    p, argv, saved = _mqyolo_dry_run(tmp_path, home)
+    assert p.returncode == 0, p.stderr
+
+    creds = (saved / ".aws" / "credentials").read_text()
+    assert "AKIA_BEDROCK" in creds
+    assert "AKIA_OTHER_IDENTITY" not in creds
+    assert not (saved / ".aws" / "sso").exists()
+    # Naming the profile is safe once only that profile is staged, and opencode
+    # (which never reads Claude's settings.json) needs it.
+    assert "AWS_PROFILE=bedrock" in argv
+    # The real ~/.aws stays shadowed by an empty dir, not bound through.
+    aws_real = os.path.realpath(home / ".aws")
+    assert any(a.endswith(f":{aws_real}:ro") and "_empty_aws" in a for a in argv), argv
+
+
+def test_mqyolo_warns_when_bedrock_profile_has_no_static_keys(tmp_path):
+    # Silence is what made the original failure so hard to diagnose, so an
+    # unusable profile must say so at launch rather than let the container hang.
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home, credentials="[bedrock]\nsso_session = my-sso-bedrock\n")
+    _bedrock_settings(home)
+
+    p, argv, saved = _mqyolo_dry_run(tmp_path, home)
+    assert p.returncode == 0, p.stderr
+    assert "no static keys" in p.stderr, p.stderr
+    assert "mqbedrock" in p.stderr
+    assert not any(a.startswith("AWS_PROFILE=") for a in argv), argv
+
+
+def test_mqyolo_stages_nothing_without_bedrock(tmp_path):
+    # No Bedrock configured: ~/.aws stays entirely out of the sandbox.
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home)
+
+    p, argv, saved = _mqyolo_dry_run(tmp_path, home)
+    assert p.returncode == 0, p.stderr
+    assert not (saved / ".aws").exists()
+    assert not any(a.startswith("AWS_PROFILE=") for a in argv), argv
+
+
+def test_mqyolo_prefers_bedrock_api_key_over_staging(tmp_path):
+    # A Bedrock API key is already scoped to model invocation, so there is no
+    # reason to put any AWS profile in the sandbox at all.
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home)
+    _bedrock_settings(home)
+
+    p, argv, saved = _mqyolo_dry_run(
+        tmp_path, home, extra_env={"AWS_BEARER_TOKEN_BEDROCK": "bedrock-scoped-key"}
+    )
+    assert p.returncode == 0, p.stderr
+    assert not (saved / ".aws").exists()
+    assert "AWS_BEARER_TOKEN_BEDROCK=bedrock-scoped-key" in argv
+    assert not any(a.startswith("AWS_PROFILE=") for a in argv), argv
+
+
+def test_mqyolo_skips_staging_when_aws_is_opted_in(tmp_path):
+    # --ro-paths ~/.aws is a deliberate choice to expose the real directory;
+    # staging over it would silently narrow what the caller asked for.
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home)
+    _bedrock_settings(home)
+
+    p, argv, saved = _mqyolo_dry_run(
+        tmp_path, home, args=("--ro-paths", str(home / ".aws"), "--no-broker")
+    )
+    assert p.returncode == 0, p.stderr
+    # sandbox_home_dotfiles left a symlink to the real dir; nothing was generated.
+    assert (saved / ".aws").is_symlink()
+    assert not (saved / ".aws" / "credentials").is_file() or \
+        "AKIA_OTHER_IDENTITY" in (home / ".aws" / "credentials").read_text()
+
+
+@pytest.mark.skipif(shutil.which("qsub") is None, reason="no batch queue: broker is skipped")
+def test_mqyolo_proxies_mqbedrock_only_when_a_credential_was_staged(tmp_path):
+    # The staged keys expire and cannot be refreshed from inside the sandbox, so
+    # the session gets an mqbedrock stub to reach the host with — but only when
+    # there is something to restage.
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home)
+    _bedrock_settings(home)
+
+    p, argv, saved = _mqyolo_dry_run(tmp_path, home, args=())
+    assert p.returncode == 0, p.stderr
+    shims = saved / ".mqyolo" / "shims"
+    assert (shims / "mqsub").is_symlink()
+    assert (shims / "mqbedrock").is_symlink()
+
+    # Without Bedrock there is no credential to refresh, so no stub.
+    (home / ".claude" / "settings.json").write_text("{}")
+    p, argv, saved2 = _mqyolo_dry_run(tmp_path / "second", home, args=())
+    assert p.returncode == 0, p.stderr
+    assert (saved2 / ".mqyolo" / "shims" / "mqsub").is_symlink()
+    assert not (saved2 / ".mqyolo" / "shims" / "mqbedrock").exists()
+
+
+def test_sandbox_build_env_disables_instance_metadata(tmp_path):
+    # 169.254.169.254 is blackholed on this network, so an AWS SDK with no
+    # credential hangs there instead of erroring. Fail fast instead.
+    script = (
+        "set -euo pipefail; source %s; "
+        "unset AWS_EC2_METADATA_DISABLED AWS_METADATA_SERVICE_TIMEOUT "
+        "AWS_METADATA_SERVICE_NUM_ATTEMPTS; "
+        "ENV_ARGS=(); sandbox_build_env; "
+        'for a in "${ENV_ARGS[@]}"; do [[ "$a" == --env ]] || echo "$a"; done'
+        % SANDBOX_LIB
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    out = p.stdout.splitlines()
+    assert "AWS_EC2_METADATA_DISABLED=true" in out
+    assert "AWS_METADATA_SERVICE_TIMEOUT=1" in out
+    assert "AWS_METADATA_SERVICE_NUM_ATTEMPTS=1" in out
+
+
+def test_sandbox_build_env_honours_explicit_metadata_setting():
+    # Apptainer forwards the environment, so an explicit host value must win
+    # rather than be overridden by our default.
+    script = (
+        "set -euo pipefail; source %s; "
+        "export AWS_EC2_METADATA_DISABLED=false; "
+        "ENV_ARGS=(); sandbox_build_env; "
+        'for a in "${ENV_ARGS[@]}"; do [[ "$a" == --env ]] || echo "$a"; done'
+        % SANDBOX_LIB
+    )
+    p = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    assert "AWS_EC2_METADATA_DISABLED=true" not in p.stdout.splitlines()
+
+
+def test_mqbedrock_forwards_itself_to_the_broker_inside_the_sandbox(tmp_path):
+    # One awsAuthRefresh entry has to work on both sides of the container, so
+    # mqbedrock detects the sandbox (MQBROKER_SPOOL) and re-execs the broker stub
+    # rather than trying to refresh credentials it cannot reach.
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    stub = fakebin / "mqbedrock"
+    stub.write_text("#!/bin/sh\necho STUB \"$@\"\n")
+    stub.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fakebin}:{os.environ['PATH']}",
+        "MQBROKER_SPOOL": str(tmp_path / "spool"),
+    }
+    p = subprocess.run([str(MQBEDROCK)], text=True, capture_output=True, env=env)
+    assert p.returncode == 0, p.stdout + p.stderr
+    # --no-login is forced: the broker cannot display a device code.
+    assert p.stdout.strip() == "STUB --no-login", p.stdout
+
+
+def test_mqbedrock_reports_when_it_cannot_reach_the_host(tmp_path):
+    # In the sandbox with no stub on PATH there is no way to refresh; say so
+    # instead of failing somewhere deep in the AWS CLI.
+    env = {
+        **os.environ,
+        # A usable PATH (the script needs bash) that holds no mqbedrock.
+        "PATH": "/usr/bin:/bin",
+        "MQBROKER_SPOOL": str(tmp_path / "spool"),
+    }
+    p = subprocess.run([str(MQBEDROCK)], text=True, capture_output=True, env=env)
+    assert p.returncode == 1
+    assert "cannot be refreshed" in p.stderr
+    assert "Run 'mqbedrock' on the host" in p.stderr
+
+
+def test_broker_rejects_mqbedrock_without_a_staged_credential():
+    # Nothing to refresh means the container gains nothing by asking the host to
+    # mint credentials, so the capability is not offered at all.
+    with running_broker() as (spool, shim, *_):
+        mqbedrock = _stub_as(shim, "mqbedrock")
+        rc, out = _run_stub(mqbedrock, spool)
+        assert rc == 126, out
+        assert "not permitted" in out
+
+
+def _broker_with_fake_mqbedrock(tmp_path, script):
+    """A broker whose SCRIPT_DIR contains a fake mqbedrock (the broker runs
+    ${SCRIPT_DIR}/<cmd>), so the real SSO flow is never touched."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    # Copies, not symlinks: the broker resolves its SCRIPT_DIR through realpath,
+    # so a symlink would send it back to the real bin/ and run the real mqbedrock.
+    for name in ("mqsub-broker", "_sandbox_common.bash"):
+        shutil.copy2(BIN / name, bindir / name)
+    fake = bindir / "mqbedrock"
+    fake.write_text(script)
+    fake.chmod(0o755)
+    return bindir / "mqsub-broker"
+
+
+def test_broker_restages_bedrock_credentials_after_a_refresh(tmp_path):
+    # The point of routing mqbedrock through the broker: after the host mints new
+    # keys, the LIVE session must pick them up (Claude re-resolves static keys
+    # periodically) instead of needing a relaunch.
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home)
+    dest = tmp_path / "chome" / ".aws"
+    assert _stage_bedrock(home, "bedrock", dest).returncode == 0
+    assert "AKIA_BEDROCK" in (dest / "credentials").read_text()
+
+    # Stand in for the real refresh: rotate the host's static keys.
+    rotated = BEDROCK_CREDENTIALS.replace("AKIA_BEDROCK", "AKIA_ROTATED")
+    broker_path = _broker_with_fake_mqbedrock(
+        tmp_path,
+        "#!/bin/sh\ncat > %s <<'EOF'\n%s\nEOF\necho refreshed\n"
+        % (shlex.quote(str(home / ".aws" / "credentials")), rotated.rstrip("\n")),
+    )
+
+    env_home = os.environ.get("HOME")
+    try:
+        # sandbox_stage_bedrock_credentials reads $HOME/.aws in the broker.
+        os.environ["HOME"] = str(home)
+        with running_broker(bedrock=("bedrock", dest),
+                            broker_path=broker_path) as (spool, shim, *_):
+            mqbedrock = _stub_as(shim, "mqbedrock")
+            rc, out = _run_stub(mqbedrock, spool)
+            assert rc == 0, out
+            assert "refreshed" in out
+    finally:
+        if env_home is not None:
+            os.environ["HOME"] = env_home
+
+    assert "AKIA_ROTATED" in (dest / "credentials").read_text()
+
+
+def test_broker_rejects_extra_mqbedrock_arguments(tmp_path):
+    # mqbedrock takes no arguments from the container: --no-login is forced, and
+    # anything else could steer the host-side refresh.
+    dest = tmp_path / "chome" / ".aws"
+    dest.mkdir(parents=True)
+    with running_broker(bedrock=("bedrock", dest)) as (spool, shim, *_):
+        mqbedrock = _stub_as(shim, "mqbedrock")
+        rc, out = _run_stub(mqbedrock, spool, "--profile", "somethingelse")
+        assert rc == 126, out
+        assert "accepts no arguments" in out
 
 
 @requires_container
