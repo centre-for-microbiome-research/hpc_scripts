@@ -11,22 +11,30 @@ if [ -n "$CONDA_PREFIX" ]; then
     echo "source activate $CONDA_PREFIX" >> ~/.hpc_scripts/mqinteractive_scripts/latest.sh
 fi
 
-# if "a" or "attach" is the first argument, attach to the latest interactive session
-if [ "$1" == "a" ] || [ "$1" == "attach" ]; then
-    JOB_ID=`qstat -u $USER cpu_inter_exec | tail -n 1 | awk '{print $1}'`
-    # if exists, attach
-    if [ -n "$JOB_ID" ]; then
-        /pkg/hpc/scripts/ssh-to-job $JOB_ID
-        exit
-    else
-        echo "No interactive session to attach to, starting a new one .."
+# Warn when the request busts the per-user quota of the interactive queue (job
+# count, CPUs, RAM, GPUs). PBS leaves such a job queued rather than rejecting it,
+# so without this mqinteractive just appears to hang.
+quota_check() { # queue ncpus mem_gb ngpus
+    quota_checker=`dirname "$(readlink -f "$0")"`/mqinteractive-quota-check
+    if [ ! -x "$quota_checker" ]; then
+        quota_checker=mqinteractive-quota-check
     fi
+    "$quota_checker" --queue "$1" --ncpus "$2" --mem-gb "$3" --ngpus "$4" || true
+}
+
+# Attaching to a running interactive job (previously "mqinteractive a", via
+# ssh-to-job) is no longer permitted by the HPC admins.
+if [ "$1" == "a" ] || [ "$1" == "attach" ]; then
+    echo "Attaching to a running interactive job is no longer allowed by the HPC admins. Start a new session with plain 'mqinteractive'." >&2
+    exit 1
 
 elif [ "$1" == "gpu" ]; then
     # NOTE: keep in sync with usual invocation below
+    quota_check gpu_inter_exec 8 32 1
     qsub -I -m n -l select=1:ncpus=8:mem=32GB:ngpus=1,walltime=12:00:00
 
 elif [ "$1" == "half" ]; then
+    quota_check cpu_inter_exec 4 16 0
     qsub -I -m n -l select=1:ncpus=4:mem=16GB,walltime=12:00:00
 
 elif [ -n "$1" ]; then
@@ -35,5 +43,6 @@ elif [ -n "$1" ]; then
 
 else
     # NOTE: keep in sync with gpu invocation above
+    quota_check cpu_inter_exec 8 32 0
     qsub -I -m n -l select=1:ncpus=8:mem=32GB,walltime=12:00:00
 fi

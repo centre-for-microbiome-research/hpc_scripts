@@ -1,0 +1,55 @@
+{
+    "timestamp": 1788761325,
+    "pbs_version": "2026.0.0.20250926080934",
+    "pbs_server": "aqua",
+    "Jobs": {
+        "25226997.aqua": {
+            "Job_Name": "STDIN",
+            "Job_Owner": "testuser@aquarius01.ib0.hpc.qut.edu.au",
+            "job_state": "R",
+            "queue": "cpu_inter_exec",
+            "interactive": "True",
+            "Resource_List": {
+                "mem": "16gb",
+                "ncpus": 4,
+                "ngpus": 0,
+                "nodect": 1,
+                "place": "pack",
+                "select": "1:ncpus=4:mem=16GB",
+                "walltime": "12:00:00"
+            }
+        },
+        "25230242.aqua": {
+            "Job_Name": "STDIN",
+            "Job_Owner": "testuser@aquarius01.ib0.hpc.qut.edu.au",
+            "job_state": "R",
+            "queue": "cpu_inter_exec",
+            "interactive": "True",
+            "Resource_List": {
+                "mem": "16gb",
+                "ncpus": 4,
+                "ngpus": 0,
+                "nodect": 1,
+                "place": "pack",
+                "select": "1:ncpus=4:mem=16GB",
+                "walltime": "12:00:00"
+            }
+        },
+        "25230999.aqua": {
+            "Job_Name": "STDIN",
+            "Job_Owner": "someoneelse@aquarius01.ib0.hpc.qut.edu.au",
+            "job_state": "R",
+            "queue": "cpu_inter_exec",
+            "interactive": "True",
+            "Resource_List": {
+                "mem": "32gb",
+                "ncpus": 8,
+                "ngpus": 0,
+                "nodect": 1,
+                "place": "pack",
+                "select": "1:ncpus=8:mem=32GB",
+                "walltime": "12:00:00"
+            }
+        }
+    }
+}

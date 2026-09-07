@@ -1,0 +1,23 @@
+{
+    "timestamp": 1788761407,
+    "pbs_version": "2026.0.0.20250926080934",
+    "pbs_server": "aqua",
+    "Jobs": {
+        "25231500.aqua": {
+            "Job_Name": "STDIN",
+            "Job_Owner": "testuser@aquarius01.ib0.hpc.qut.edu.au",
+            "job_state": "R",
+            "queue": "gpu_inter_exec",
+            "interactive": "True",
+            "Resource_List": {
+                "mem": "32gb",
+                "ncpus": 8,
+                "ngpus": 1,
+                "nodect": 1,
+                "place": "pack",
+                "select": "1:ncpus=8:mem=32GB:ngpus=1",
+                "walltime": "12:00:00"
+            }
+        }
+    }
+}

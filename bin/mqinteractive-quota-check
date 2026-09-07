@@ -1,0 +1,277 @@
+#!/usr/bin/env python3
+"""Warn before submitting an interactive job that cannot fit the user's quota.
+
+The interactive queues cap both the number of jobs and the total CPUs / RAM /
+GPUs one user may have running at once (e.g. cpu_inter_exec allows 8 CPUs and
+34GB summed over all of a user's running jobs, gpu_inter_exec allows 2 jobs).
+PBS does not reject a job that busts those per-user caps - it just leaves it
+sitting in the queue - so `mqinteractive` looks like it has hung. This script is
+called by real-mqinteractive to explain that up front.
+
+The limits are read from the queue itself (`qstat -Qf <queue>`) rather than
+hardcoded, so per-user overrides and any future changes to the caps are picked
+up. Nothing here should ever stop a submission: any trouble reading the queue or
+the job list just means no warning is printed.
+
+Usage:
+    mqinteractive-quota-check --queue cpu_inter_exec --ncpus 8 --mem-gb 32
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+
+# Job states that hold onto their resources, so count towards max_run/max_run_res.
+RUNNING_STATES = ("R", "E", "S", "U", "B")
+
+MEM_UNITS = {
+    "b": 1,
+    "kb": 1024,
+    "mb": 1024**2,
+    "gb": 1024**3,
+    "tb": 1024**4,
+    "pb": 1024**5,
+}
+
+# e.g. "[u:PBS_GENERIC=34gb]" or "[u:bob=1]"
+LIMIT_ENTRY = re.compile(r"\[([ugop]):([^=\]]+)=([^\]]+)\]")
+
+GB = 1024**3
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--queue", required=True, help="execution queue the job will land in")
+    parser.add_argument("--ncpus", type=int, required=True, help="CPUs being requested")
+    parser.add_argument("--mem-gb", type=float, required=True, help="RAM being requested, in GB")
+    parser.add_argument("--ngpus", type=int, default=0, help="GPUs being requested")
+    parser.add_argument("--user", help="user to check (default: $USER)")
+    parser.add_argument(
+        "--queue-file", help="read 'qstat -Qf <queue>' output from this file instead of running qstat"
+    )
+    parser.add_argument(
+        "--jobs-file", help="read 'qstat -f -F json <queue>' output from this file instead of running qstat"
+    )
+    return parser.parse_args()
+
+
+def run_qstat(args):
+    return subprocess.run(
+        ["qstat"] + args, text=True, capture_output=True, timeout=30
+    ).stdout
+
+
+def parse_mem(value):
+    """Parse a PBS size like '34gb' or '266232kb' into bytes."""
+    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]*)\s*", str(value))
+    if not match:
+        raise ValueError("not a size: %s" % value)
+    number, unit = match.groups()
+    return int(float(number) * MEM_UNITS[unit.lower() or "b"])
+
+
+def format_gb(num_bytes):
+    gigabytes = num_bytes / GB
+    if abs(gigabytes - round(gigabytes)) < 0.05:
+        return "%dGB" % round(gigabytes)
+    return "%.1fGB" % gigabytes
+
+
+def parse_queue_attributes(text):
+    """Flatten 'qstat -Qf' output into {attribute: [values]}.
+
+    Values are lists because a limit can be set more than once for the same
+    resource - one entry per user - and each of those is its own line. Long
+    values are wrapped by qstat onto continuation lines starting with a tab.
+    """
+    attributes = {}
+    name = None
+    for raw_line in text.splitlines():
+        if raw_line.startswith(("\t", "        ")) and name is not None:
+            attributes[name][-1] += raw_line.strip()
+            continue
+        if "=" not in raw_line:
+            continue
+        name, _, value = raw_line.partition("=")
+        name = name.strip()
+        attributes.setdefault(name, []).append(value.strip())
+    return attributes
+
+
+def user_limit(attributes, name, user):
+    """Value of a per-user limit like max_run, preferring an entry for this user."""
+    generic = None
+    for spec in attributes.get(name, []):
+        for kind, who, value in LIMIT_ENTRY.findall(spec):
+            if kind != "u":
+                continue
+            if who == user:
+                return value
+            if who == "PBS_GENERIC":
+                generic = value
+    return generic
+
+
+def limit_int(attributes, name, user):
+    value = user_limit(attributes, name, user)
+    return None if value is None else int(value)
+
+
+def limit_mem(attributes, name, user):
+    value = user_limit(attributes, name, user)
+    return None if value is None else parse_mem(value)
+
+
+def plain_int(attributes, name):
+    """A non per-user integer attribute, e.g. resources_max.ncpus."""
+    values = attributes.get(name)
+    return int(values[0]) if values else None
+
+
+def plain_mem(attributes, name):
+    values = attributes.get(name)
+    return parse_mem(values[0]) if values else None
+
+
+def my_jobs(jobs_json, user, queue):
+    """The user's jobs in this queue, as (id, state, ncpus, mem_bytes, ngpus)."""
+    jobs = []
+    for job_id, job in (json.loads(jobs_json).get("Jobs") or {}).items():
+        if job.get("Job_Owner", "").split("@")[0] != user:
+            continue
+        if job.get("queue") != queue:
+            continue
+        requested = job.get("Resource_List") or {}
+        jobs.append(
+            (
+                job_id.split(".")[0],
+                job.get("job_state", "?"),
+                int(requested.get("ncpus", 0)),
+                parse_mem(requested.get("mem", "0b")),
+                int(requested.get("ngpus", 0)),
+            )
+        )
+    return jobs
+
+
+def collect_warnings(attributes, jobs, user, queue, want_cpus, want_mem, want_gpus):
+    """Reasons this request will not fit, as human readable strings."""
+    warnings = []
+
+    # Per-job caps. Busting these gets the submission refused outright.
+    for label, wanted, cap, fmt in (
+        ("CPUs", want_cpus, plain_int(attributes, "resources_max.ncpus"), str),
+        ("RAM", want_mem, plain_mem(attributes, "resources_max.mem"), format_gb),
+        ("GPUs", want_gpus, plain_int(attributes, "resources_max.ngpus"), str),
+    ):
+        if cap is not None and wanted > cap:
+            warnings.append(
+                "%s: asking for %s, but a single %s job may not exceed %s - "
+                "PBS will refuse this submission"
+                % (label, fmt(wanted), queue, fmt(cap))
+            )
+
+    running = [job for job in jobs if job[1] in RUNNING_STATES]
+
+    # Per-user caps on what may run at once. Busting these leaves the job queued.
+    for label, wanted, in_use, cap, fmt in (
+        ("CPUs", want_cpus, sum(j[2] for j in running), limit_int(attributes, "max_run_res.ncpus", user), str),
+        ("RAM", want_mem, sum(j[3] for j in running), limit_mem(attributes, "max_run_res.mem", user), format_gb),
+        ("GPUs", want_gpus, sum(j[4] for j in running), limit_int(attributes, "max_run_res.ngpus", user), str),
+    ):
+        if cap is not None and wanted and in_use + wanted > cap:
+            warnings.append(
+                "%s: %s already in use by your running %s job(s) + %s requested = %s, "
+                "over your limit of %s"
+                % (label, fmt(in_use), queue, fmt(wanted), fmt(in_use + wanted), fmt(cap))
+            )
+
+    max_run = limit_int(attributes, "max_run", user)
+    if max_run is not None and len(running) + 1 > max_run:
+        warnings.append(
+            "Jobs: you already have %d job(s) running in %s, the most you may run is %d"
+            % (len(running), queue, max_run)
+        )
+
+    max_queued = limit_int(attributes, "max_queued", user)
+    if max_queued is not None and len(jobs) + 1 > max_queued:
+        warnings.append(
+            "Jobs: you already have %d job(s) in %s, the most you may have there is %d"
+            % (len(jobs), queue, max_queued)
+        )
+
+    return warnings
+
+
+def describe_jobs(jobs):
+    return ", ".join(
+        "%s (%s, %d CPUs, %s%s)"
+        % (job_id, state, ncpus, format_gb(mem), ", %d GPUs" % ngpus if ngpus else "")
+        for job_id, state, ncpus, mem, ngpus in jobs
+    )
+
+
+def report(warnings, jobs, want_cpus, want_mem, want_gpus, suggest_half):
+    request = "%d CPUs, %s" % (want_cpus, format_gb(want_mem))
+    if want_gpus:
+        request += ", %d GPUs" % want_gpus
+    print("", file=sys.stderr)
+    print(
+        "WARNING: this interactive job (%s) does not fit within your quota:" % request,
+        file=sys.stderr,
+    )
+    for warning in warnings:
+        print("  * %s" % warning, file=sys.stderr)
+    if jobs:
+        print("  Your jobs there now: %s" % describe_jobs(jobs), file=sys.stderr)
+    print("  Unless a limit frees up, the job will sit in the queue rather than start. Options:", file=sys.stderr)
+    if suggest_half:
+        print("    mqinteractive half  ask for half as much (4 CPUs, 16GB)", file=sys.stderr)
+    print("    exit an interactive session you no longer need, then try again", file=sys.stderr)
+    print("    mqsub ...           run the work as a batch job instead", file=sys.stderr)
+    print("", file=sys.stderr)
+
+
+def main():
+    args = parse_args()
+    user = args.user or os.environ.get("USER") or subprocess.run(
+        ["id", "-un"], text=True, capture_output=True
+    ).stdout.strip()
+    if not user:
+        return 0
+
+    try:
+        if args.queue_file:
+            with open(args.queue_file) as handle:
+                queue_text = handle.read()
+        else:
+            # The text form, not JSON: qstat's JSON collapses the repeated per-user
+            # limit entries for one resource into a single key, losing all but the last.
+            queue_text = run_qstat(["-Qf", args.queue])
+        if args.jobs_file:
+            with open(args.jobs_file) as handle:
+                jobs_json = handle.read()
+        else:
+            jobs_json = run_qstat(["-f", "-F", "json", args.queue])
+
+        attributes = parse_queue_attributes(queue_text)
+        jobs = my_jobs(jobs_json, user, args.queue)
+        want_mem = int(args.mem_gb * GB)
+        warnings = collect_warnings(
+            attributes, jobs, user, args.queue, args.ncpus, want_mem, args.ngpus
+        )
+    except Exception:
+        # Never get in the way of submitting a job just because the check broke.
+        return 0
+
+    if not warnings:
+        return 0
+    report(warnings, jobs, args.ncpus, want_mem, args.ngpus, suggest_half=args.ncpus > 4)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

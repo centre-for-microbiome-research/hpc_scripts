@@ -1,0 +1,27 @@
+Queue: gpu_inter_exec
+    queue_type = Execution
+    total_jobs = 18
+    state_count = Transit:0 Queued:0 Held:0 Waiting:0 Running:18 Exiting:0 Begu
+	n:0
+    max_queued = [u:PBS_GENERIC=2]
+    from_route_only = True
+    resources_max.mem = 68gb
+    resources_max.ncpus = 12
+    resources_max.ngpus = 2
+    resources_max.walltime = 12:00:00
+    resources_min.mem = 1gb
+    resources_min.ncpus = 1
+    resources_min.ngpus = 1
+    default_chunk.qlist = gpu_inter_exec
+    resources_assigned.mem = 731gb
+    resources_assigned.ncpus = 102
+    resources_assigned.nodect = 18
+    max_run = [u:PBS_GENERIC=2]
+    max_run_res.mem = [u:PBS_GENERIC=68gb]
+    max_run_res.ncpus = [u:PBS_GENERIC=12]
+    max_run_res.ngpus = [u:PBS_GENERIC=2]
+    max_run_res.ngpus = [u:testuser=1]
+    backfill_depth = 1
+    enabled = True
+    started = True
+    partition = gpu_inter
