@@ -19,7 +19,7 @@
 # bound read-write — this limits accidental exposure of unrelated data.
 #
 # Usage:
-#   mqyolo [claude|codex|copilot|opencode|<bin-executable>] [--rw-paths PATH...] [--ro-paths PATH...] [args...]
+#   mqyolo [claude|codex|copilot|opencode|<bin-executable>] [--rw-paths PATH...] [--ro-paths PATH...] [--no-bedrock] [args...]
 #   Run `mqyolo --help` for the full FILESYSTEM/option reference.
 #
 # Environment variables:
@@ -151,6 +151,45 @@ use = use or str(env.get("CLAUDE_CODE_USE_BEDROCK", ""))
 profile = profile or str(env.get("AWS_PROFILE", ""))
 if use.lower() not in ("", "0", "false"):
     print(profile or "default")
+PY
+}
+
+# --no-bedrock: write a copy of SRC (the real ~/.claude/settings.json) to DEST with
+# env.CLAUDE_CODE_USE_BEDROCK forced to "0", so `claude --settings DEST` disables
+# Bedrock for this session without ever touching the real settings.json (which is
+# bound read-write and would otherwise carry the change into every future session).
+# A missing/unreadable/malformed SRC is treated as {} rather than an error, so the
+# override still applies even when there is no settings.json yet. Returns non-zero
+# (writing nothing) if python3 is unavailable.
+#
+# A Bedrock-backed settings.json also routinely carries Bedrock-only model
+# identifiers — a region-prefixed inference-profile ID like
+# "au.anthropic.claude-sonnet-5" (optionally with a "[1m]" long-context suffix,
+# e.g. "au.anthropic.claude-sonnet-5[1m]") in the top-level "model" key and/or the
+# ANTHROPIC_MODEL / ANTHROPIC_DEFAULT_OPUS_MODEL / ANTHROPIC_DEFAULT_SONNET_MODEL /
+# ANTHROPIC_DEFAULT_HAIKU_MODEL env vars. None of those IDs are valid once the
+# session talks to the direct Anthropic API instead of Bedrock, so strip them and
+# pin a known-good direct-API model (Opus with the 1M-context beta) instead.
+_mqyolo_write_no_bedrock_settings() {
+    local src="$1" dest="$2"
+    command -v python3 &>/dev/null || return 1
+    python3 - "$src" "$dest" <<'PY'
+import json, sys
+
+src, dest = sys.argv[1], sys.argv[2]
+try:
+    with open(src) as f:
+        settings = json.load(f) or {}
+except Exception:
+    settings = {}                 # no/unreadable/malformed settings.json is not an error
+env = settings.setdefault("env", {})
+env["CLAUDE_CODE_USE_BEDROCK"] = "0"
+for _k in ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",
+           "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"):
+    env.pop(_k, None)
+settings["model"] = "opus[1m]"
+with open(dest, "w") as f:
+    json.dump(settings, f, indent=2)
 PY
 }
 
@@ -382,6 +421,7 @@ TOOL_SET=0        # 1 once the tool has been chosen (built-in name or repo execu
 REPO_TOOL=0       # 1 if TOOL names an executable shipped alongside this script in bin/
 DEBUG=0
 NO_BROKER=0
+NO_BEDROCK=0
 RW_PATHS=()
 RO_PATHS=()
 
@@ -398,6 +438,7 @@ while [[ $# -gt 0 ]]; do
         claude|codex|copilot|opencode) TOOL="$1"; TOOL_SET=1; shift ;;
         --debug)      DEBUG=1;   shift ;;
         --no-broker)  NO_BROKER=1; shift ;;
+        --no-bedrock) NO_BEDROCK=1; shift ;;
         --print-guidance) _mqyolo_guidance_text; exit 0 ;;
         --rw-paths)
             shift
@@ -418,7 +459,7 @@ while [[ $# -gt 0 ]]; do
 mqyolo - run an AI coding tool inside a sandboxed Apptainer/Singularity container
 
 USAGE
-  mqyolo [claude|codex|copilot|opencode|<bin-executable>] [--debug] [--rw-paths PATH...] [--ro-paths PATH...] [--no-broker] [args...]
+  mqyolo [claude|codex|copilot|opencode|<bin-executable>] [--debug] [--rw-paths PATH...] [--ro-paths PATH...] [--no-broker] [--no-bedrock] [args...]
 
 TOOLS
   claude   (default) Claude Code — passes --dangerously-skip-permissions
@@ -444,6 +485,17 @@ OPTIONS
                        jobs submitted via the broker inherit exactly these read-only
                        paths; the AI inside the container cannot change them.
   --no-broker          Do not start the mqsub broker (mqsub will be unavailable inside the container)
+  --no-bedrock         claude only: force Bedrock off for this session, regardless of
+                       ~/.claude/settings.json or the environment. Copies the real
+                       settings.json (or {} if absent/unreadable) into the ephemeral
+                       container home with env.CLAUDE_CODE_USE_BEDROCK set to "0",
+                       strips any Bedrock-only model env vars (ANTHROPIC_MODEL,
+                       ANTHROPIC_DEFAULT_OPUS_MODEL/_SONNET_MODEL/_HAIKU_MODEL) and
+                       forces "model": "opus[1m]" (Bedrock model IDs like
+                       "au.anthropic.claude-sonnet-5" are not valid on the direct
+                       API), then passes it to claude via --settings; the real
+                       settings.json is never modified. Also skips staging Bedrock
+                       AWS credentials.
   --print-guidance     Print the mqsub guidance injected into the AI tool, then exit
   help, -h, --help     Show this help text
 
@@ -553,6 +605,15 @@ BEDROCK
   - Instance-metadata credential lookups are disabled in the container
     (AWS_EC2_METADATA_DISABLED), so a missing credential fails immediately with
     an error instead of hanging on a blackholed address.
+  - Pass --no-bedrock (claude only) to force Bedrock off for one session instead,
+    regardless of ~/.claude/settings.json or the environment: mqyolo copies the
+    real settings.json into the ephemeral container home with
+    env.CLAUDE_CODE_USE_BEDROCK set to "0", strips any Bedrock-only model env vars,
+    and forces "model": "opus[1m]" — a Bedrock settings.json routinely pins a
+    region-prefixed inference-profile ID (e.g. "au.anthropic.claude-sonnet-5",
+    sometimes with a "[1m]" long-context suffix) that the direct API rejects — then
+    passes the copy to claude via --settings, leaving the real settings.json
+    untouched. No Bedrock AWS credentials are staged in this case.
 
 CLAUDE SETTINGS
   ~/.cache/           bound read-write so tools can read and write the
@@ -765,9 +826,14 @@ sandbox_home_dotfiles "${RO_PATHS[@]+"${RO_PATHS[@]}"}" "${RW_PATHS[@]+"${RW_PAT
 # ~/.aws as a symlink to the real dir rather than shadowing it.
 # ---------------------------------------------------------------------------
 # `|| true`: a failing probe (unreadable settings.json, python3 blowing up) means
-# "no Bedrock", never a dead mqyolo — this runs under `set -e`.
-BEDROCK_PROFILE="$(_mqyolo_bedrock_profile || true)"
+# "no Bedrock", never a dead mqyolo — this runs under `set -e`. --no-bedrock skips
+# the probe entirely: there is nothing to stage credentials for once Bedrock is
+# forced off.
+BEDROCK_PROFILE=""
 BEDROCK_AWS_DIR=""
+if [[ "$NO_BEDROCK" -eq 0 ]]; then
+    BEDROCK_PROFILE="$(_mqyolo_bedrock_profile || true)"
+fi
 if [[ -n "$BEDROCK_PROFILE" && ! -L "${CONTAINER_HOME}/.aws" ]]; then
     if sandbox_stage_bedrock_credentials "$BEDROCK_PROFILE" "${CONTAINER_HOME}/.aws"; then
         BEDROCK_AWS_DIR="${CONTAINER_HOME}/.aws"
@@ -916,13 +982,25 @@ SANDBOX_SHIM_EXPORTS=()
 # ---------------------------------------------------------------------------
 # Environment variables (PATH honours SANDBOX_PATH_PREFIX set above)
 # ---------------------------------------------------------------------------
-sandbox_build_env ANTHROPIC_API_KEY OPENAI_API_KEY GITHUB_TOKEN OPENCODE_API_KEY \
-                  OPENAI_BASE_URL ANTHROPIC_BASE_URL CLAUDE_CODE_USE_BEDROCK \
+# CLAUDE_CODE_USE_BEDROCK is forwarded from the host env normally, but under
+# --no-bedrock that would let an already-exported "1" win over the "0" baked into
+# the --settings copy below (apptainer forwards the environment regardless of the
+# --settings file, and an explicit env var can outrank settings.json). So exclude
+# it from the host forward and force it off directly instead.
+_MQYOLO_ENV_VARS=(ANTHROPIC_API_KEY OPENAI_API_KEY GITHUB_TOKEN OPENCODE_API_KEY \
+                  OPENAI_BASE_URL ANTHROPIC_BASE_URL \
                   AWS_REGION AWS_DEFAULT_REGION AWS_BEARER_TOKEN_BEDROCK \
                   PIXI_CACHE_DIR RATTLER_CACHE_DIR \
                   TERM COLORTERM NO_COLOR \
                   CUDA_VISIBLE_DEVICES NVIDIA_VISIBLE_DEVICES CUDA_DEVICE_ORDER \
-                  GPU_DEVICE_ORDINAL
+                  GPU_DEVICE_ORDINAL)
+if [[ "$NO_BEDROCK" -eq 1 ]]; then
+    ENV_ARGS+=(--env "CLAUDE_CODE_USE_BEDROCK=0")
+else
+    _MQYOLO_ENV_VARS+=(CLAUDE_CODE_USE_BEDROCK)
+fi
+sandbox_build_env "${_MQYOLO_ENV_VARS[@]}"
+unset _MQYOLO_ENV_VARS
 
 # ---------------------------------------------------------------------------
 # Tool-specific flags
@@ -934,6 +1012,19 @@ case "$TOOL" in
         # Tell Claude to offload heavy commands to mqsub.
         [[ -n "$MQYOLO_GUIDANCE_FILE" ]] && \
             YOLO_ARGS+=("--append-system-prompt-file" "$MQYOLO_GUIDANCE_FILE")
+        # --no-bedrock: hand claude a settings copy with Bedrock forced off instead
+        # of touching the real ~/.claude/settings.json (which is bound read-write
+        # and would otherwise carry the change into every future session).
+        if [[ "$NO_BEDROCK" -eq 1 ]]; then
+            mkdir -p "${CONTAINER_HOME}/.mqyolo"
+            if _mqyolo_write_no_bedrock_settings "${HOME}/.claude/settings.json" \
+                    "${CONTAINER_HOME}/.mqyolo/settings-no-bedrock.json"; then
+                YOLO_ARGS+=("--settings" "/container_home/.mqyolo/settings-no-bedrock.json")
+            else
+                echo "mqyolo: WARNING: --no-bedrock needs python3, which is unavailable in this" >&2
+                echo "mqyolo:          environment; Bedrock is not being overridden." >&2
+            fi
+        fi
         ;;
     codex)
         # Run without Codex's own prompts/sandbox inside the mqyolo container,
