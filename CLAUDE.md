@@ -96,6 +96,45 @@ Key invariants the tests guard (keep them true):
   never saw it, and the symptom was an empty `Authentication` panel — no device
   code, no error, nothing — until Claude SIGTERMed the hook at its 3-minute
   timeout. Guarded by `test_stub_does_not_block_on_an_idle_stdin_pipe`.
+- **`mqbedrock --setup-claude` / `--setup-codex` write the client-side config; the
+  refresh path writes credentials.** Keep the two separable: the `--setup-*` options
+  make no AWS call (so they work on a machine that has never logged in), are exempt
+  from the broker forwarding, and never silently replace a user file — settings are
+  compared as JSON (key order and whitespace irrelevant, `jq` or `python3`), the
+  Codex profile file by its generated-by marker, and `--force` is what overwrites,
+  always keeping a `<file>.mqbedrock-<timestamp>.bak`. `--setup-claude` also writes
+  `~/.claude.json` with just `hasCompletedOnboarding`: the first-run walkthrough has
+  nothing to log into when the credential is an AWS profile, and in a sandbox it is a
+  dead end. That file accumulates real state (projects, MCP approvals), which is why
+  the backup matters. `--force` without a `--setup-*`, and `--codex-*` without
+  `--setup-codex`, are errors rather than silent no-ops.
+- **Codex on Bedrock is a different backend from Claude on Bedrock.** Codex speaks
+  only the OpenAI protocol, so it cannot reach Claude there at all; its built-in
+  `amazon-bedrock-runtime` provider is Bedrock's OpenAI-compatible endpoint
+  (`bedrock-runtime.<region>.amazonaws.com/openai/v1`) serving the OpenAI models,
+  and it signs with SigV4 — so the same static `[bedrock]` profile `mqbedrock`
+  maintains works for both. `mqbedrock --setup-codex` writes that configuration as
+  a Codex *profile file* (`$CODEX_HOME/bedrock.config.toml`, selected by
+  `codex --profile bedrock`) rather than into `config.toml`: the file is then
+  entirely ours (no mangling a `config.toml` full of `[projects."..."]` trust
+  entries), it changes nothing until selected, and — unlike a project-local config,
+  which is denylisted from provider/auth keys — a profile layer may set
+  `model_provider`/`model_providers`. It is exempt from mqbedrock's
+  broker-forwarding (it makes no AWS call and `~/.codex` is bound read-write, so it
+  works from either side). mqyolo reads the AWS profile out of that file
+  (`_mqyolo_codex_aws_profile`) and stages it — for codex that file is
+  authoritative even over `AWS_BEARER_TOKEN_BEDROCK`, because Codex's own auth
+  precedence puts a configured `aws.profile` first — then passes
+  `--profile bedrock` unless the caller passed their own `--profile`/`-p` or
+  `--no-bedrock` (which for codex is exactly "leave the profile unselected"; the
+  claude-only settings.json rewrite is unchanged). `aws.auth_refresh` in the file
+  is Codex's equivalent of `awsAuthRefresh`, and pointing it at bare `mqbedrock`
+  makes the expiry path work on both sides via the existing broker stub.
+  Not currently usable at QUT: that endpoint authorizes `bedrock:InvokeModel`
+  against `arn:aws:bedrock:<region>:<account>:project/default`, not a model ARN,
+  and the `DFAZCB7230-BedrockUserAccess` role has no such grant — every model
+  (including `au.anthropic.*`) returns AccessDenied there, while per-model
+  `Converse`, which Claude Code uses, succeeds. `--setup-codex` prints that.
 - mqyolo refuses to launch unless the working directory is within `/work/microbiome`,
   `$HOME`, `/scratch/microbiome/$USER`, or `/tmp` (anti-leakage; the CWD is bound
   read-write). Checked before the runtime/image checks.

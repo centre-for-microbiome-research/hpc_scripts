@@ -18,6 +18,7 @@ login node without a built image.
 """
 
 import contextlib
+import json
 import os
 import re
 import shlex
@@ -1649,13 +1650,21 @@ def _mqyolo_dry_run(tmp_path, home, args=("--no-broker",), extra_env=None):
     fake_apptainer = fakebin / "apptainer"
     # Find the /container_home bind and snapshot its source before mqyolo's EXIT
     # trap removes it. (No %-formatting here: the script is full of ${a%%...}.)
+    # Fallback via the /etc/passwd workaround's bind, whose source is a file
+    # inside the same ephemeral home: when the suite itself runs inside an mqyolo
+    # sandbox, /container_home is already a mount, so mqyolo re-binds it read-only
+    # from /proc/mounts and the dedupe drops the ephemeral home's own rw bind.
     script = """\
 #!/bin/sh
+rw= ; pw=
 for a in "$@"; do
   case "$a" in
-    *:/container_home:rw) cp -a "${a%%:*}" @SAVED@ ;;
+    *:/container_home:rw) rw="${a%%:*}" ;;
+    *:/container_home/sandbox_passwd:ro) pw="$(dirname "${a%%:*}")" ;;
   esac
 done
+chome="${rw:-$pw}"
+[ -n "$chome" ] && cp -a "$chome" @SAVED@
 printf '%s\\n' "$@"
 """
     fake_apptainer.write_text(script.replace("@SAVED@", shlex.quote(str(saved))))
@@ -1936,6 +1945,299 @@ def test_broker_rejects_extra_mqbedrock_arguments(tmp_path):
         rc, out = _run_stub(mqbedrock, spool, "--profile", "somethingelse")
         assert rc == 126, out
         assert "accepts no arguments" in out
+
+
+# ---------------------------------------------------------------------------
+# Codex on Bedrock: `mqbedrock --setup-codex` writes a Codex profile file on the
+# host naming the static AWS profile, and mqyolo selects it and stages that
+# profile's keys. Codex speaks only the OpenAI protocol, so this runs the OpenAI
+# models on Bedrock's OpenAI-compatible endpoint, not Claude.
+# ---------------------------------------------------------------------------
+def _setup_codex(home, *extra):
+    """Run `mqbedrock --setup-codex` against a fake HOME."""
+    env = {**os.environ, "HOME": str(home)}
+    # Whoever runs the suite may be inside an mqyolo sandbox; the setup must be
+    # tested as it behaves on the host (it does not forward to the broker).
+    env.pop("MQBROKER_SPOOL", None)
+    env.pop("CODEX_HOME", None)
+    return subprocess.run([str(MQBEDROCK), "--setup-codex", *extra],
+                          text=True, capture_output=True, env=env)
+
+
+def _setup_claude(home, *extra):
+    """Run `mqbedrock --setup-claude` against a fake HOME."""
+    env = {**os.environ, "HOME": str(home)}
+    env.pop("MQBROKER_SPOOL", None)
+    return subprocess.run([str(MQBEDROCK), "--setup-claude", *extra],
+                          text=True, capture_output=True, env=env)
+
+
+def test_mqbedrock_setup_claude_writes_both_settings_files(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+
+    p = _setup_claude(home)
+    assert p.returncode == 0, p.stdout + p.stderr
+
+    settings = json.loads((home / ".claude" / "settings.json").read_text())
+    # The refresh hook is this same script, which works on the host and (via the
+    # broker stub) inside a sandbox.
+    assert settings["awsAuthRefresh"] == "mqbedrock"
+    env = settings["env"]
+    assert env["CLAUDE_CODE_USE_BEDROCK"] == "1"
+    assert env["AWS_REGION"] == "ap-southeast-2"
+    # The profile mqbedrock keeps topped up, and the au.* inference profiles that
+    # keep inference in Australia.
+    assert env["AWS_PROFILE"] == "bedrock"
+    assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "au.anthropic.claude-sonnet-5"
+    assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "au.anthropic.claude-opus-5[1m]"
+    assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == \
+        "au.anthropic.claude-haiku-4-5-20251001-v1:0"
+    # Onboarding is pre-answered: its interactive walkthrough has nothing to log
+    # into when the credential is an AWS profile.
+    assert json.loads((home / ".claude.json").read_text()) == \
+        {"hasCompletedOnboarding": True}
+    # Writing config needs no credentials, so it works before the first refresh.
+    assert not (home / ".aws").exists()
+
+
+def test_mqbedrock_setup_claude_accepts_an_equivalent_file(tmp_path):
+    # Same JSON, different key order and whitespace: nothing to do, no complaint.
+    home = tmp_path / "home"
+    home.mkdir()
+    assert _setup_claude(home).returncode == 0
+    settings = home / ".claude" / "settings.json"
+    reordered = json.loads(settings.read_text())
+    reordered["env"] = dict(reversed(list(reordered["env"].items())))
+    settings.write_text(json.dumps(reordered, separators=(",", ":")))
+
+    p = _setup_claude(home)
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "already holds these settings" in p.stdout
+    # Left byte-for-byte alone, not rewritten.
+    assert settings.read_text() == json.dumps(reordered, separators=(",", ":"))
+
+
+def test_mqbedrock_setup_claude_refuses_to_clobber_different_settings(tmp_path):
+    # ~/.claude/settings.json and ~/.claude.json are the user's own files and
+    # ~/.claude.json accumulates real state, so a mismatch must stop.
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".claude").mkdir()
+    (home / ".claude" / "settings.json").write_text('{"model": "opus"}')
+    (home / ".claude.json").write_text('{"projects": {"/tmp": {}}}')
+
+    p = _setup_claude(home)
+    assert p.returncode == 1
+    assert "differs from what --setup-claude" in p.stderr
+    assert "--force" in p.stderr
+    assert json.loads((home / ".claude" / "settings.json").read_text()) == \
+        {"model": "opus"}
+    assert json.loads((home / ".claude.json").read_text()) == \
+        {"projects": {"/tmp": {}}}
+
+
+def test_mqbedrock_setup_claude_force_overwrites_and_keeps_a_backup(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".claude").mkdir()
+    (home / ".claude" / "settings.json").write_text('{"model": "opus"}')
+    (home / ".claude.json").write_text('{"projects": {"/tmp": {}}}')
+
+    p = _setup_claude(home, "--force")
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert json.loads((home / ".claude" / "settings.json").read_text())["env"][
+        "CLAUDE_CODE_USE_BEDROCK"] == "1"
+    assert json.loads((home / ".claude.json").read_text()) == \
+        {"hasCompletedOnboarding": True}
+    # The replaced state is recoverable.
+    backups = sorted(f.name for f in (home / ".claude").iterdir()
+                     if f.name.startswith("settings.json.mqbedrock-"))
+    assert len(backups) == 1, list((home / ".claude").iterdir())
+    assert json.loads((home / ".claude" / backups[0]).read_text()) == {"model": "opus"}
+    assert any(f.name.startswith(".claude.json.mqbedrock-") for f in home.iterdir())
+
+
+def test_mqbedrock_force_without_a_setup_option_is_rejected(tmp_path):
+    # --force on a plain refresh would silently mean nothing.
+    env = {**os.environ, "HOME": str(tmp_path)}
+    env.pop("MQBROKER_SPOOL", None)
+    p = subprocess.run([str(MQBEDROCK), "--force"], text=True, capture_output=True,
+                       env=env)
+    assert p.returncode == 2
+    assert "--force only applies" in p.stderr
+
+
+def test_mqbedrock_setup_codex_writes_a_codex_profile_file(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home)
+
+    p = _setup_codex(home)
+    assert p.returncode == 0, p.stdout + p.stderr
+
+    toml = (home / ".codex" / "bedrock.config.toml").read_text()
+    # The OpenAI-compatible endpoint that exists in every region, not the
+    # region-limited bedrock-mantle one (`amazon-bedrock`).
+    assert 'model_provider = "amazon-bedrock-runtime"' in toml
+    assert 'model = "openai.gpt-5.6-sol"' in toml
+    # Signed with the same static profile mqbedrock keeps topped up for Claude,
+    # in that profile's own region.
+    assert "[model_providers.amazon-bedrock-runtime.aws]" in toml
+    assert 'profile = "bedrock"' in toml
+    assert 'region = "ap-southeast-2"' in toml
+    # Codex's equivalent of Claude's awsAuthRefresh hook, so an expiring key is
+    # renewed on the host (via the broker stub) rather than ending the session.
+    assert "[model_providers.amazon-bedrock-runtime.aws.auth_refresh]" in toml
+    assert 'command = "mqbedrock"' in toml
+    # It is a profile layer, so it does nothing until `codex --profile bedrock`:
+    # the user's own config.toml must not be touched.
+    assert not (home / ".codex" / "config.toml").exists()
+    # Writing config needs no credentials, so it works before the first refresh.
+    assert not (home / ".aws" / "credentials.new").exists()
+
+    # Idempotent: a second run leaves the file alone.
+    again = _setup_codex(home)
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert "already up to date" in again.stdout
+    assert (home / ".codex" / "bedrock.config.toml").read_text() == toml
+
+
+def test_mqbedrock_setup_codex_needs_no_aws_config_or_credentials(tmp_path):
+    # A fresh machine: no ~/.aws at all. The Codex profile is still written (with
+    # the default region) and no AWS call is made, so the two setup steps —
+    # config now, credentials later — are independent.
+    home = tmp_path / "home"
+    home.mkdir()
+
+    p = _setup_codex(home, "--codex-model", "global.openai.gpt-6-astra")
+    assert p.returncode == 0, p.stdout + p.stderr
+
+    toml = (home / ".codex" / "bedrock.config.toml").read_text()
+    assert 'model = "global.openai.gpt-6-astra"' in toml
+    assert 'region = "ap-southeast-2"' in toml
+    assert not (home / ".aws").exists()
+
+
+def test_mqbedrock_setup_codex_refuses_a_file_it_did_not_write(tmp_path):
+    # Codex profile files are hand-written by users too; only ones carrying our
+    # marker may be replaced.
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".codex").mkdir()
+    mine = home / ".codex" / "bedrock.config.toml"
+    mine.write_text('model = "gpt-5.5"\n')
+
+    p = _setup_codex(home)
+    assert p.returncode == 1
+    assert "was not written by --setup-codex" in p.stderr
+    assert "--codex-profile" in p.stderr
+    assert mine.read_text() == 'model = "gpt-5.5"\n'
+
+
+def test_mqyolo_codex_selects_the_bedrock_profile_and_stages_its_aws_profile(tmp_path):
+    # No Claude settings.json here: for codex the Bedrock decision is recorded in
+    # the Codex profile file, and mqyolo has to read the AWS profile out of it.
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home)
+    assert _setup_codex(home).returncode == 0
+
+    p, argv, saved = _mqyolo_dry_run(tmp_path, home, args=("--no-broker", "codex"))
+    assert p.returncode == 0, p.stderr
+
+    assert "--profile" in argv, argv
+    assert argv[argv.index("--profile") + 1] == "bedrock", argv
+    # Codex prefers a configured aws.profile over every other credential, so that
+    # profile — and only it — has to be in the sandbox.
+    assert "AWS_PROFILE=bedrock" in argv
+    creds = (saved / ".aws" / "credentials").read_text()
+    assert "AKIA_BEDROCK" in creds
+    assert "AKIA_OTHER_IDENTITY" not in creds
+
+
+def test_mqyolo_codex_stages_the_aws_profile_named_in_the_codex_file(tmp_path):
+    # The name is read from the file, not assumed: a profile file written with a
+    # different AWS profile must stage that one.
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(
+        home,
+        credentials=BEDROCK_CREDENTIALS + "\n[bedrock-alt]\n"
+        "aws_access_key_id = AKIA_ALT\naws_secret_access_key = alt-secret\n",
+    )
+    assert _setup_codex(home).returncode == 0
+    profile_file = home / ".codex" / "bedrock.config.toml"
+    profile_file.write_text(
+        profile_file.read_text().replace('profile = "bedrock"', 'profile = "bedrock-alt"')
+    )
+
+    p, argv, saved = _mqyolo_dry_run(tmp_path, home, args=("--no-broker", "codex"))
+    assert p.returncode == 0, p.stderr
+    assert "AWS_PROFILE=bedrock-alt" in argv, argv
+    creds = (saved / ".aws" / "credentials").read_text()
+    assert "AKIA_ALT" in creds
+    assert "AKIA_BEDROCK" not in creds
+
+
+def test_mqyolo_codex_no_bedrock_leaves_the_profile_unselected(tmp_path):
+    # --no-bedrock for codex: the file stays on disk but is never activated, and
+    # no AWS credentials are staged.
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home)
+    assert _setup_codex(home).returncode == 0
+
+    p, argv, saved = _mqyolo_dry_run(
+        tmp_path, home, args=("--no-broker", "--no-bedrock", "codex")
+    )
+    assert p.returncode == 0, p.stderr
+    assert "--profile" not in argv, argv
+    assert not any(a.startswith("AWS_PROFILE=") for a in argv), argv
+    assert not (saved / ".aws").exists()
+
+
+def test_mqyolo_codex_does_not_override_a_caller_supplied_profile(tmp_path):
+    # Two --profile flags would be an error, and the caller's choice wins.
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home)
+    assert _setup_codex(home).returncode == 0
+
+    p, argv, saved = _mqyolo_dry_run(
+        tmp_path, home, args=("--no-broker", "codex", "--profile", "mine")
+    )
+    assert p.returncode == 0, p.stderr
+    assert argv.count("--profile") == 1, argv
+    assert argv[argv.index("--profile") + 1] == "mine", argv
+
+
+def test_mqyolo_codex_points_at_the_setup_command_when_unauthenticated(tmp_path):
+    # Bedrock is configured for Claude but codex has not been set up for it and
+    # has no other credential: say so at launch instead of opening on a login
+    # prompt that cannot be completed in the sandbox.
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home)
+    _bedrock_settings(home)
+
+    p, argv, saved = _mqyolo_dry_run(
+        tmp_path, home, args=("--no-broker", "codex"),
+        extra_env={"OPENAI_API_KEY": ""},
+    )
+    assert p.returncode == 0, p.stderr
+    assert "mqbedrock --setup-codex" in p.stderr
+    assert "--profile" not in argv, argv
+
+    # Quiet once codex has its own credentials.
+    (home / ".codex").mkdir(exist_ok=True)
+    (home / ".codex" / "auth.json").write_text('{"OPENAI_API_KEY": "sk-test"}')
+    p, argv, saved = _mqyolo_dry_run(
+        tmp_path, home, args=("--no-broker", "codex"),
+        extra_env={"OPENAI_API_KEY": ""},
+    )
+    assert p.returncode == 0, p.stderr
+    assert "--setup-codex" not in p.stderr
 
 
 @requires_container
