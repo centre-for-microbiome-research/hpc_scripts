@@ -4,6 +4,7 @@ export PATH="/mnt/hpccs01/work/microbiome/sw/hpc_scripts/bin:$PATH"
 export PATH="/work/microbiome/sw/zellij:$PATH"
 # Add general software from pixi
 # export PATH="/pkg/cmr/sw/pixi_central/.pixi/envs/default/bin:$PATH"
+alias aws='pixi run --manifest-path /pkg/cmr/sw/pixi_central/pixi.toml aws'
 
 # function for command prompt and email notification of job completion
 function notify { command "$@" && success || fail; }
