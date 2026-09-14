@@ -113,7 +113,9 @@ Key invariants the tests guard (keep them true):
   `amazon-bedrock-runtime` provider is Bedrock's OpenAI-compatible endpoint
   (`bedrock-runtime.<region>.amazonaws.com/openai/v1`) serving the OpenAI models,
   and it signs with SigV4 — so the same static `[bedrock]` profile `mqbedrock`
-  maintains works for both. `mqbedrock --setup-codex` writes that configuration as
+  maintains works for both. The generated default is the Australian endpoint's
+  `global.openai.gpt-5.6-sol` inference profile with high reasoning effort, following
+  AWS's documented Codex configuration. `mqbedrock --setup-codex` writes it as
   a Codex *profile file* (`$CODEX_HOME/bedrock.config.toml`, selected by
   `codex --profile bedrock`) rather than into `config.toml`: the file is then
   entirely ours (no mangling a `config.toml` full of `[projects."..."]` trust
@@ -127,14 +129,25 @@ Key invariants the tests guard (keep them true):
   precedence puts a configured `aws.profile` first — then passes
   `--profile bedrock` unless the caller passed their own `--profile`/`-p` or
   `--no-bedrock` (which for codex is exactly "leave the profile unselected"; the
-  claude-only settings.json rewrite is unchanged). `aws.auth_refresh` in the file
-  is Codex's equivalent of `awsAuthRefresh`, and pointing it at bare `mqbedrock`
-  makes the expiry path work on both sides via the existing broker stub.
-  Not currently usable at QUT: that endpoint authorizes `bedrock:InvokeModel`
-  against `arn:aws:bedrock:<region>:<account>:project/default`, not a model ARN,
-  and the `DFAZCB7230-BedrockUserAccess` role has no such grant — every model
-  (including `au.anthropic.*`) returns AccessDenied there, while per-model
-  `Converse`, which Claude Code uses, succeeds. `--setup-codex` prints that.
+  claude-only settings.json rewrite is unchanged). Resolve caller-selected profile
+  arguments before staging credentials, including `--profile=NAME` and `-pNAME`;
+  if that profile configures Bedrock, stage the AWS profile it names, otherwise do
+  not expose the default Bedrock role. Codex restricts `aws.auth_refresh.command`
+  to `aws`, so the generated file has no invalid `mqbedrock` refresh hook. If the
+  staged keys expire during a session, running `mqbedrock` inside the sandbox uses
+  the existing broker stub to refresh them on the host and restage them.
+  The native Runtime provider was validated by AWS with Codex 0.149.1; setup warns
+  when an older host Codex is on PATH, while remaining usable when Codex is absent.
+  QUT's `DFAZCB7230-BedrockUserAccess` role still needs the four-part global CRIS
+  policy from AWS's [GPT-5.6 cross-Region inference guide](https://aws.amazon.com/blogs/machine-learning/introducing-cross-region-inference-for-openai-gpt-5-6-models-on-amazon-bedrock/#setting-up-iam-permissions-for-cross-region-inference):
+  access to the Sydney `global.openai.gpt-5.6-sol` inference profile and
+  `project/default`, the in-Region and global foundation-model ARNs, and
+  `bedrock:CallWithBearerToken`. Without that administrator-side grant, SigV4
+  authentication succeeds but Bedrock returns 401 Unauthorized for
+  `bedrock:InvokeModel` on `project/default`. The ready-to-review policy for the
+  QUT account, Sydney source Region, and Sol profile is
+  `docs/codex-bedrock-gpt-5.6-sol-iam-policy.json`; an AWS administrator still has
+  to attach its permissions to the role (and ensure no SCP denies global CRIS).
 - mqyolo refuses to launch unless the working directory is within `/work/microbiome`,
   `$HOME`, `/scratch/microbiome/$USER`, or `/tmp` (anti-leakage; the CWD is bound
   read-write). Checked before the runtime/image checks.
