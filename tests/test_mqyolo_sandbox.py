@@ -1961,7 +1961,7 @@ region = ap-southeast-2
     rotated = alt_credentials.replace("AKIA_ALT", "AKIA_ALT_ROTATED")
     broker_path = _broker_with_fake_mqbedrock(
         tmp_path,
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > %s\ncat > %s <<'EOF'\n%s\nEOF\necho refreshed\n"
+        "#!/bin/sh\nprintf '%%s\\n' \"$@\" > %s\ncat > %s <<'EOF'\n%s\nEOF\necho refreshed\n"
         % (
             shlex.quote(str(arg_log)),
             shlex.quote(str(home / ".aws" / "credentials")),
@@ -2039,7 +2039,7 @@ def test_mqbedrock_setup_claude_writes_both_settings_files(tmp_path):
     settings = json.loads((home / ".claude" / "settings.json").read_text())
     # The refresh hook is this same script, which works on the host and (via the
     # broker stub) inside a sandbox.
-    assert settings["awsAuthRefresh"] == "mqbedrock"
+    assert settings["awsAuthRefresh"] == "mqbedrock --static-profile bedrock"
     env = settings["env"]
     assert env["CLAUDE_CODE_USE_BEDROCK"] == "1"
     assert env["AWS_REGION"] == "ap-southeast-2"
@@ -2073,6 +2073,22 @@ def test_mqbedrock_setup_claude_accepts_an_equivalent_file(tmp_path):
     assert "already holds these settings" in p.stdout
     # Left byte-for-byte alone, not rewritten.
     assert settings.read_text() == json.dumps(reordered, separators=(",", ":"))
+
+
+def test_mqbedrock_setup_claude_propagates_static_profile_and_runtime_region(tmp_path):
+    home = tmp_path / "home"
+    (home / ".aws").mkdir(parents=True)
+    (home / ".aws" / "config").write_text(
+        "[profile bedrock-alt]\nregion = us-east-1\n"
+    )
+
+    p = _setup_claude(home, "--static-profile", "bedrock-alt")
+    assert p.returncode == 0, p.stdout + p.stderr
+    settings = json.loads((home / ".claude" / "settings.json").read_text())
+    assert settings["awsAuthRefresh"] == \
+        "mqbedrock --static-profile bedrock-alt"
+    assert settings["env"]["AWS_PROFILE"] == "bedrock-alt"
+    assert settings["env"]["AWS_REGION"] == "us-east-1"
 
 
 def test_mqbedrock_setup_claude_refuses_to_clobber_different_settings(tmp_path):
@@ -2123,6 +2139,57 @@ def test_mqbedrock_force_without_a_setup_option_is_rejected(tmp_path):
                        env=env)
     assert p.returncode == 2
     assert "--force only applies" in p.stderr
+
+
+def test_mqbedrock_refresh_accepts_a_static_profile_in_another_region(tmp_path):
+    home = tmp_path / "home"
+    aws_dir = home / ".aws"
+    aws_dir.mkdir(parents=True)
+    (aws_dir / "config").write_text("""\
+[profile bedrock-sso]
+sso_session = my-sso-bedrock
+sso_account_id = 267451755618
+sso_role_name = DFAZCB7230-BedrockUserAccess
+
+[sso-session my-sso-bedrock]
+sso_start_url = https://d-97671c4bd0.awsapps.com/start
+sso_region = ap-southeast-2
+sso_registration_scopes = sso:account:access
+
+[profile bedrock-alt]
+region = us-east-1
+""")
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    calls = tmp_path / "aws.calls"
+    fake_aws = fakebin / "aws"
+    fake_aws.write_text("""\
+#!/bin/sh
+if [ "$1 $2" = "configure export-credentials" ]; then
+  printf '%s\\n' '{"AccessKeyId":"AKIA_NEW","SecretAccessKey":"new-secret","SessionToken":"new-token","Expiration":"tomorrow"}'
+  exit 0
+fi
+printf '%s\\n' "$*" >> @CALLS@
+""".replace("@CALLS@", shlex.quote(str(calls))))
+    fake_aws.chmod(0o755)
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{fakebin}:{os.environ['PATH']}",
+    }
+    env.pop("MQBROKER_SPOOL", None)
+
+    p = subprocess.run(
+        [str(MQBEDROCK), "--no-login", "--static-profile", "bedrock-alt"],
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "bedrock-alt profile refreshed" in p.stdout
+    written = calls.read_text().splitlines()
+    assert len(written) == 3
+    assert all(line.endswith("--profile bedrock-alt") for line in written)
 
 
 def test_mqbedrock_setup_codex_writes_a_codex_profile_file(tmp_path):

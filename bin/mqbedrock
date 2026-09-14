@@ -10,7 +10,7 @@
 # [bedrock] profile with static keys, which Claude Code can read all day.
 #
 # Wire it up in ~/.claude/settings.json:
-#   "awsAuthRefresh": "mqbedrock",
+#   "awsAuthRefresh": "mqbedrock --static-profile bedrock",
 #   "env": { "CLAUDE_CODE_USE_BEDROCK": "1", "AWS_PROFILE": "bedrock", ... }
 # `mqbedrock --setup-claude` writes exactly that (plus the au.* model IDs and the
 # onboarding flag in ~/.claude.json) — see setup_claude() below.
@@ -87,6 +87,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ ! $STATIC_PROFILE =~ ^[A-Za-z0-9_.-]+$ ]]; then
+  echo "mqbedrock: --static-profile must contain only letters, digits, '.', '_', or '-'" >&2
+  exit 2
+fi
+
 # The --codex-* options only shape what --setup-codex writes, so on their own they
 # would silently do nothing.
 if [[ $CODEX_OPTS -eq 1 && $SETUP_CODEX -eq 0 ]]; then
@@ -151,12 +156,26 @@ cfg_get() {
   ' "$1"
 }
 
+# The Bedrock Runtime region belongs to the static profile tools actually use.
+# It need not match the IAM Identity Center region used to obtain credentials.
+static_region() {
+  local r; r=$(cfg_get "$CFG" "$(sec "$STATIC_PROFILE")" region || true)
+  echo "${r:-$REGION}"
+}
+
 # want SECTION KEY VALUE — assert a $CFG entry, reporting what was found.
 # Checks values, not just presence: a stale sso_role_name otherwise fails much
 # later, during the credential fetch, with an error that doesn't point back here.
 want() {
   local got; got=$(cfg_get "$CFG" "$1" "$2" || true)
   [[ $got == "$3" ]] || { echo "  [$1] $2 = $3   (found: ${got:-missing})" >&2; return 1; }
+}
+
+# Assert that a config key exists while allowing its value to differ from the
+# bootstrap default (for example, a Bedrock Runtime profile in another region).
+want_present() {
+  local got; got=$(cfg_get "$CFG" "$1" "$2" || true)
+  [[ -n $got ]] || { echo "  [$1] $2 = <value>   (found: missing)" >&2; return 1; }
 }
 
 # Append the stanzas needed for Bedrock. Only ever called on an empty config,
@@ -192,8 +211,9 @@ check() {
   want "sso-session $SSO_SESSION" sso_region   "$REGION"                      || ok=1
   # Without this scope Identity Center issues no refresh token at all.
   want "sso-session $SSO_SESSION" sso_registration_scopes sso:account:access || ok=1
-  # Claude Code needs a region on the profile it actually reads.
-  want "$(sec "$STATIC_PROFILE")" region "$REGION"                           || ok=1
+  # Tools need a Runtime region on the static profile they actually read. It is
+  # independent of the SSO session region above.
+  want_present "$(sec "$STATIC_PROFILE")" region                              || ok=1
   return $ok
 }
 
@@ -217,10 +237,10 @@ check() {
 # onboarding answers, MCP approvals — so overwriting keeps a backup.
 CLAUDE_SETTINGS_JSON=$(cat <<EOF
 {
-  "awsAuthRefresh": "mqbedrock",
+  "awsAuthRefresh": "mqbedrock --static-profile $STATIC_PROFILE",
   "env": {
     "CLAUDE_CODE_USE_BEDROCK": "1",
-    "AWS_REGION": "$REGION",
+    "AWS_REGION": "$(static_region)",
     "AWS_PROFILE": "$STATIC_PROFILE",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "au.anthropic.claude-sonnet-5",
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "au.anthropic.claude-opus-5[1m]",
@@ -287,7 +307,7 @@ setup_claude() {
   write_json "$HOME/.claude/settings.json" "$CLAUDE_SETTINGS_JSON" || ok=1
   write_json "$HOME/.claude.json"          "$CLAUDE_JSON"          || ok=1
   [[ $ok -eq 0 ]] || return 1
-  echo "  Bedrock via the [$STATIC_PROFILE] profile in $REGION; run 'mqbedrock' to fill"
+  echo "  Bedrock via the [$STATIC_PROFILE] profile in $(static_region); run 'mqbedrock' to fill"
   echo "  it in (Claude Code then refreshes it itself via awsAuthRefresh)."
   echo "  'mqbedrock' must be on PATH for that hook — the CMR bashrc extras do this."
 }
@@ -320,13 +340,6 @@ codex_profile_file() {
   echo "${CODEX_HOME:-$HOME/.codex}/${CODEX_PROFILE}.config.toml"
 }
 
-# The region to sign for: whatever the static profile actually uses, falling
-# back to the one bootstrap writes.
-codex_region() {
-  local r; r=$(cfg_get "$CFG" "$(sec "$STATIC_PROFILE")" region || true)
-  echo "${r:-$REGION}"
-}
-
 codex_profile_toml() {
   cat <<EOF
 $CODEX_MARKER
@@ -341,7 +354,7 @@ model_reasoning_effort = "high"
 
 [model_providers.amazon-bedrock-runtime.aws]
 profile = "${STATIC_PROFILE}"
-region = "$(codex_region)"
+region = "$(static_region)"
 EOF
 }
 
@@ -385,7 +398,7 @@ setup_codex() {
     printf '%s\n' "$new" > "$file"
     echo "wrote $file"
   fi
-  current_region=$(codex_region)
+  current_region=$(static_region)
   echo "  provider amazon-bedrock-runtime, model $CODEX_MODEL, region $current_region,"
   echo "  signing with the [$STATIC_PROFILE] profile (run 'mqbedrock' to fill it in)."
   echo "  Use it with 'codex --profile $CODEX_PROFILE'; mqyolo codex selects it for you."

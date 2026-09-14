@@ -84,7 +84,12 @@ Key invariants the tests guard (keep them true):
   the broker stub when `MQBROKER_SPOOL` is set — so one `awsAuthRefresh` entry in
   settings.json works on both sides — and the broker restages the credentials after
   a successful run, atomically, so a live session picks them up without relaunch.
-  The broker forces `--no-login` and rejects every other argument: an interactive
+  The generated hook includes `--static-profile NAME`, so a host-side refresh writes
+  the profile Claude actually uses. Inside a sandbox mqbedrock forwards without
+  that choice, and the broker supplies the profile fixed at session launch. The
+  profile's Bedrock Runtime region is independent of the SSO session region used to
+  obtain its credentials. The broker forces `--no-login` and rejects every other
+  request argument: an interactive
   `aws sso login` would block it polling for a device code the container can never
   display, since the stub only replays output once the command has finished. Past
   the SSO session's own expiry the re-login is therefore a `mqbedrock` run on the
