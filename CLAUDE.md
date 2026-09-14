@@ -135,7 +135,9 @@ Key invariants the tests guard (keep them true):
   not expose the default Bedrock role. Codex restricts `aws.auth_refresh.command`
   to `aws`, so the generated file has no invalid `mqbedrock` refresh hook. If the
   staged keys expire during a session, running `mqbedrock` inside the sandbox uses
-  the existing broker stub to refresh them on the host and restage them.
+  the existing broker stub to refresh the selected static profile on the host and
+  restage it. The broker supplies `--static-profile` from its launch configuration;
+  container arguments cannot choose a different host profile.
   The native Runtime provider was validated by AWS with Codex 0.149.1; setup warns
   when an older host Codex is on PATH, while remaining usable when Codex is absent.
   QUT's `DFAZCB7230-BedrockUserAccess` role still needs the four-part global CRIS
@@ -146,7 +148,10 @@ Key invariants the tests guard (keep them true):
   authentication succeeds but Bedrock returns 401 Unauthorized for
   `bedrock:InvokeModel` on `project/default`. The ready-to-review policy for the
   QUT account, Sydney source Region, and Sol profile is
-  `docs/codex-bedrock-gpt-5.6-sol-iam-policy.json`; an AWS administrator still has
+  `docs/codex-bedrock-gpt-5.6-sol-iam-policy.json`; setup labels it as ready to
+  attach only for that exact model and Region. If `--codex-model` or the static
+  profile's Region differs, setup requires the administrator to edit every model
+  and Region ARN/condition in the example first. An AWS administrator still has
   to attach its permissions to the role (and ensure no SCP denies global CRIS).
 - mqyolo refuses to launch unless the working directory is within `/work/microbiome`,
   `$HOME`, `/scratch/microbiome/$USER`, or `/tmp` (anti-leakage; the CWD is bound

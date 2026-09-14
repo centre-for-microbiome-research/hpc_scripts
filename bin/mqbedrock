@@ -50,6 +50,7 @@ SETUP_CLAUDE=0
 SETUP_CODEX=0
 CODEX_OPTS=0                     # --codex-* seen, so a missing --setup-codex can be caught
 CODEX_PROFILE=bedrock            # -> $CODEX_HOME/<name>.config.toml
+STATIC_PROFILE=bedrock           # plain profile receiving the exported static keys
 # The Australian Bedrock Runtime endpoint accepts the global inference profile
 # and routes it to a supported commercial region, as documented by AWS.
 CODEX_MODEL=global.openai.gpt-5.6-sol
@@ -59,12 +60,13 @@ while [[ $# -gt 0 ]]; do
     --force) FORCE=1; shift ;;
     --setup-claude) SETUP_CLAUDE=1; shift ;;
     --setup-codex) SETUP_CODEX=1; shift ;;
+    --static-profile) STATIC_PROFILE="${2:?--static-profile needs a name}"; shift 2 ;;
     --codex-model) CODEX_MODEL="${2:?--codex-model needs a Bedrock model id}"; CODEX_OPTS=1; shift 2 ;;
     --codex-profile) CODEX_PROFILE="${2:?--codex-profile needs a name}"; CODEX_OPTS=1; shift 2 ;;
     -h|--help)
-      echo "usage: mqbedrock [--no-login]"
-      echo "       mqbedrock --setup-claude [--force]"
-      echo "       mqbedrock --setup-codex [--codex-model ID] [--codex-profile NAME] [--force]"
+      echo "usage: mqbedrock [--no-login] [--static-profile NAME]"
+      echo "       mqbedrock --setup-claude [--static-profile NAME] [--force]"
+      echo "       mqbedrock --setup-codex [--codex-model ID] [--codex-profile NAME] [--static-profile NAME] [--force]"
       echo "  Top up the static [bedrock] AWS profile Claude Code reads."
       echo "  --no-login       fail with instructions instead of starting an SSO login"
       echo "  --setup-claude   write ~/.claude/settings.json (Bedrock models + this"
@@ -76,6 +78,8 @@ while [[ $# -gt 0 ]]; do
       echo "  --codex-profile  Codex profile name to write (default: $CODEX_PROFILE);"
       echo "                   a non-default name needs MQYOLO_CODEX_PROFILE set for"
       echo "                   mqyolo to select it"
+      echo "  --static-profile AWS profile receiving static keys (default: $STATIC_PROFILE);"
+      echo "                   mqyolo's broker supplies the staged profile automatically"
       echo "  --force          overwrite existing files the --setup-* options would"
       echo "                   otherwise refuse to touch, keeping a timestamped backup"
       exit 0 ;;
@@ -127,7 +131,6 @@ SSO_PROFILE=bedrock-sso          # profile holding the SSO settings.
                                  # Set to "default" to reuse an existing stanza
                                  # instead of adding a second copy.
 SSO_SESSION=my-sso-bedrock
-STATIC_PROFILE=bedrock           # the plain profile with the static keys tools read
 REGION=ap-southeast-2
 
 # Section header for a profile: "default" has no prefix, everything else does.
@@ -362,7 +365,7 @@ warn_old_host_codex() {
 }
 
 setup_codex() {
-  local file new
+  local file new current_region policy_path
   file=$(codex_profile_file)
   mkdir -p "$(dirname "$file")"
   # Never clobber a file we did not write: an unmarked one is the user's own.
@@ -382,17 +385,27 @@ setup_codex() {
     printf '%s\n' "$new" > "$file"
     echo "wrote $file"
   fi
-  echo "  provider amazon-bedrock-runtime, model $CODEX_MODEL, region $(codex_region),"
+  current_region=$(codex_region)
+  echo "  provider amazon-bedrock-runtime, model $CODEX_MODEL, region $current_region,"
   echo "  signing with the [$STATIC_PROFILE] profile (run 'mqbedrock' to fill it in)."
   echo "  Use it with 'codex --profile $CODEX_PROFILE'; mqyolo codex selects it for you."
   warn_old_host_codex
   echo
   echo "IAM prerequisite: QUT's BedrockUserAccess role must allow bedrock:InvokeModel on"
-  echo "  arn:aws:bedrock:$(codex_region):267451755618:project/default"
+  echo "  arn:aws:bedrock:${current_region}:267451755618:project/default"
   echo "and the $CODEX_MODEL inference profile and foundation-model resources."
   echo "Without that administrator-side grant, Codex reaches Bedrock but receives 401"
-  echo "Unauthorized. Policy template:"
-  echo "  $(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../docs/codex-bedrock-gpt-5.6-sol-iam-policy.json"
+  policy_path="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../docs/codex-bedrock-gpt-5.6-sol-iam-policy.json"
+  if [[ $CODEX_MODEL == global.openai.gpt-5.6-sol && $current_region == ap-southeast-2 ]]; then
+    echo "Ready-to-attach policy for this model and Region:"
+  else
+    echo "Policy example (written for global.openai.gpt-5.6-sol in ap-southeast-2):"
+  fi
+  echo "  $policy_path"
+  if [[ $CODEX_MODEL != global.openai.gpt-5.6-sol || $current_region != ap-southeast-2 ]]; then
+    echo "Edit every model and Region ARN/condition in that example to match this"
+    echo "profile before an administrator attaches it."
+  fi
 }
 
 # The --setup-* options only write config files: no AWS config check, no

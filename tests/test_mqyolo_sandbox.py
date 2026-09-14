@@ -1935,6 +1935,63 @@ def test_broker_restages_bedrock_credentials_after_a_refresh(tmp_path):
     assert "AKIA_ROTATED" in (dest / "credentials").read_text()
 
 
+def test_broker_refreshes_the_profile_staged_for_the_session(tmp_path):
+    # A caller-selected Codex profile can name a different static AWS profile.
+    # The broker must refresh that same profile on the host before restaging it,
+    # while still rejecting any profile choice sent from inside the container.
+    home = tmp_path / "home"
+    home.mkdir()
+    alt_credentials = BEDROCK_CREDENTIALS + """\
+
+[bedrock-alt]
+aws_access_key_id = AKIA_ALT
+aws_secret_access_key = alt-secret
+aws_session_token = alt-token
+"""
+    alt_config = BEDROCK_CONFIG + """\
+
+[profile bedrock-alt]
+region = ap-southeast-2
+"""
+    _fake_aws_home(home, credentials=alt_credentials, config=alt_config)
+    dest = tmp_path / "chome" / ".aws"
+    assert _stage_bedrock(home, "bedrock-alt", dest).returncode == 0
+
+    arg_log = tmp_path / "mqbedrock.args"
+    rotated = alt_credentials.replace("AKIA_ALT", "AKIA_ALT_ROTATED")
+    broker_path = _broker_with_fake_mqbedrock(
+        tmp_path,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > %s\ncat > %s <<'EOF'\n%s\nEOF\necho refreshed\n"
+        % (
+            shlex.quote(str(arg_log)),
+            shlex.quote(str(home / ".aws" / "credentials")),
+            rotated.rstrip("\n"),
+        ),
+    )
+
+    env_home = os.environ.get("HOME")
+    try:
+        os.environ["HOME"] = str(home)
+        with running_broker(
+            bedrock=("bedrock-alt", dest), broker_path=broker_path
+        ) as (spool, shim, *_):
+            mqbedrock = _stub_as(shim, "mqbedrock")
+            rc, out = _run_stub(mqbedrock, spool)
+            assert rc == 0, out
+    finally:
+        if env_home is not None:
+            os.environ["HOME"] = env_home
+
+    assert arg_log.read_text().splitlines() == [
+        "--no-login",
+        "--static-profile",
+        "bedrock-alt",
+    ]
+    staged = (dest / "credentials").read_text()
+    assert "AKIA_ALT_ROTATED" in staged
+    assert "AKIA_BEDROCK" not in staged
+
+
 def test_broker_rejects_extra_mqbedrock_arguments(tmp_path):
     # mqbedrock takes no arguments from the container: --no-login is forced, and
     # anything else could steer the host-side refresh.
@@ -2098,6 +2155,7 @@ def test_mqbedrock_setup_codex_writes_a_codex_profile_file(tmp_path):
     # succeed without the QUT role being authorized to invoke project/default.
     assert "IAM prerequisite" in p.stdout
     assert "arn:aws:bedrock:ap-southeast-2:267451755618:project/default" in p.stdout
+    assert "Ready-to-attach policy for this model and Region" in p.stdout
 
     # Idempotent: a second run leaves the file alone.
     again = _setup_codex(home)
@@ -2120,6 +2178,31 @@ def test_mqbedrock_setup_codex_needs_no_aws_config_or_credentials(tmp_path):
     assert 'model = "global.openai.gpt-6-astra"' in toml
     assert 'region = "ap-southeast-2"' in toml
     assert not (home / ".aws").exists()
+
+
+def test_mqbedrock_setup_codex_can_name_an_alternate_static_profile(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+
+    p = _setup_codex(home, "--static-profile", "bedrock-alt")
+    assert p.returncode == 0, p.stdout + p.stderr
+    toml = (home / ".codex" / "bedrock.config.toml").read_text()
+    assert 'profile = "bedrock-alt"' in toml
+    assert "signing with the [bedrock-alt] profile" in p.stdout
+
+
+def test_mqbedrock_setup_requires_editing_policy_for_model_or_region_overrides(tmp_path):
+    home = tmp_path / "home"
+    (home / ".aws").mkdir(parents=True)
+    (home / ".aws" / "config").write_text(
+        "[profile bedrock]\nregion = us-east-1\n"
+    )
+
+    p = _setup_codex(home, "--codex-model", "global.openai.gpt-5.6")
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "Policy example (written for global.openai.gpt-5.6-sol in ap-southeast-2)" in p.stdout
+    assert "Edit every model and Region ARN/condition" in p.stdout
+    assert "to match this\nprofile before" in p.stdout
 
 
 @pytest.mark.parametrize("setup_option", ["--setup-codex", "--setup-claude"])

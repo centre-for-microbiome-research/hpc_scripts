@@ -173,7 +173,10 @@ process_request() {
                 return 0
             fi
         done
-        runargs+=("--no-login")
+        # Refresh the profile that this session actually staged. The value is
+        # fixed by mqyolo at broker launch; the container cannot steer this to a
+        # different host profile through request arguments.
+        runargs+=("--no-login" "--static-profile" "$BEDROCK_PROFILE")
         argv=()
     fi
     runargs+=("${argv[@]+"${argv[@]}"}")

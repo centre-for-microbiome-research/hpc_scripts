@@ -684,8 +684,8 @@ BEDROCK
     as above, and launches codex with `--profile bedrock`. The default model is
     the `global.openai.gpt-5.6-sol` inference profile invoked through the Sydney
     Bedrock Runtime endpoint. If the staged static credentials expire during a
-    session, run `mqbedrock` inside the sandbox; the broker refreshes them on the
-    host and restages the live session.
+    session, run `mqbedrock` inside the sandbox; the broker refreshes the AWS
+    profile selected for that session on the host and restages the live keys.
     The QUT BedrockUserAccess role must separately allow `bedrock:InvokeModel`
     on the global inference profile, its foundation models, and the source
     Region's `project/default`; without that administrator-side grant the signed
