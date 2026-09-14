@@ -2451,6 +2451,52 @@ def test_mqyolo_codex_does_not_override_a_caller_supplied_profile(tmp_path):
     assert not (saved / ".aws").exists()
 
 
+def test_mqyolo_codex_profile_inherits_bedrock_from_base_config(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home)
+    codex = home / ".codex"
+    codex.mkdir()
+    (codex / "config.toml").write_text(
+        'model_provider = "amazon-bedrock-runtime"\n'
+        '[model_providers.amazon-bedrock-runtime.aws]\n'
+        'profile = "bedrock"\nregion = "ap-southeast-2"\n'
+    )
+    (codex / "mine.config.toml").write_text(
+        'model_reasoning_effort = "high"\n'
+    )
+
+    p, argv, saved = _mqyolo_dry_run(
+        tmp_path, home, args=("--no-broker", "codex", "--profile", "mine")
+    )
+    assert p.returncode == 0, p.stderr
+    assert "AWS_PROFILE=bedrock" in argv, argv
+    assert "AKIA_BEDROCK" in (saved / ".aws" / "credentials").read_text()
+
+
+def test_mqyolo_codex_profile_can_override_base_bedrock_provider(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home)
+    codex = home / ".codex"
+    codex.mkdir()
+    (codex / "config.toml").write_text(
+        'model_provider = "amazon-bedrock-runtime"\n'
+        '[model_providers.amazon-bedrock-runtime.aws]\n'
+        'profile = "bedrock"\nregion = "ap-southeast-2"\n'
+    )
+    (codex / "mine.config.toml").write_text(
+        'model_provider = "openai"\nmodel_reasoning_effort = "high"\n'
+    )
+
+    p, argv, saved = _mqyolo_dry_run(
+        tmp_path, home, args=("--no-broker", "codex", "--profile=mine")
+    )
+    assert p.returncode == 0, p.stderr
+    assert not any(a.startswith("AWS_PROFILE=") for a in argv), argv
+    assert not (saved / ".aws").exists()
+
+
 def test_mqyolo_codex_recognizes_an_attached_short_profile(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
