@@ -199,14 +199,15 @@ _mqyolo_codex_requested_profile() {
     [[ "$need_value" -eq 1 ]]
 }
 
-# Print the AWS profile selected by Codex's effective layered configuration.
+# Print the provider and AWS profile selected by Codex's effective layered
+# configuration, separated by a tab.
 # Files are passed in precedence order (base config, then selected profile); root
 # model_provider and per-provider aws.profile values in later files override
 # earlier ones. This covers a profile layer that changes only reasoning effort
 # while inheriting Bedrock from config.toml, without staging Bedrock when the
 # layer explicitly switches to another provider. Read with awk because the
 # relevant TOML is limited to root scalars and flat provider tables.
-_mqyolo_codex_aws_profile() {
+_mqyolo_codex_provider_and_aws_profile() {
     local f
     local -a files=()
     for f in "$@"; do
@@ -246,10 +247,7 @@ _mqyolo_codex_aws_profile() {
             v = scalar($0)
             if (v != "") profiles[aws_provider] = v
         }
-        END {
-            if (provider ~ /bedrock/ && profiles[provider] != "")
-                print profiles[provider]
-        }
+        END { if (provider != "") print provider "\t" profiles[provider] }
     ' "${files[@]}"
 }
 
@@ -965,7 +963,10 @@ BEDROCK_AWS_DIR=""
 CODEX_BEDROCK_FILE=""     # host path of the Codex Bedrock profile file, when used
 CODEX_BASE_CONFIG="${HOME}/.codex/config.toml"
 CODEX_HAS_OWN_PROFILE=0
+CODEX_CONFIGURES_BEDROCK=0
+CODEX_CONFIGURES_OTHER_PROVIDER=0
 CODEX_REQUESTED_PROFILE=""
+CODEX_EFFECTIVE_SETTINGS=""
 if [[ "$NO_BEDROCK" -eq 0 && "$TOOL" == "codex" ]]; then
     # Resolve an explicit profile before staging credentials. Its file, when it
     # configures Bedrock, is authoritative; a non-Bedrock profile must not cause
@@ -977,12 +978,27 @@ if [[ "$NO_BEDROCK" -eq 0 && "$TOOL" == "codex" ]]; then
     else
         CODEX_BEDROCK_FILE="$(_mqyolo_codex_bedrock_profile_file)"
     fi
-    [[ -n "$CODEX_BEDROCK_FILE" ]] && \
-        BEDROCK_PROFILE="$(_mqyolo_codex_aws_profile \
+    # With no explicit profile, base config.toml is itself effective even when
+    # the mqbedrock-generated default layer does not exist. For an explicit
+    # profile, require its layer file to exist before staging inherited settings;
+    # Codex will diagnose a missing layer itself.
+    if [[ "$CODEX_HAS_OWN_PROFILE" -eq 0 || -n "$CODEX_BEDROCK_FILE" ]]; then
+        CODEX_EFFECTIVE_SETTINGS="$(_mqyolo_codex_provider_and_aws_profile \
             "$CODEX_BASE_CONFIG" "$CODEX_BEDROCK_FILE" || true)"
+        if [[ -n "$CODEX_EFFECTIVE_SETTINGS" ]]; then
+            CODEX_EFFECTIVE_PROVIDER="${CODEX_EFFECTIVE_SETTINGS%%$'\t'*}"
+            if [[ "$CODEX_EFFECTIVE_PROVIDER" == *bedrock* ]]; then
+                CODEX_CONFIGURES_BEDROCK=1
+                BEDROCK_PROFILE="${CODEX_EFFECTIVE_SETTINGS#*$'\t'}"
+            else
+                CODEX_CONFIGURES_OTHER_PROVIDER=1
+            fi
+        fi
+    fi
 fi
 if [[ "$NO_BEDROCK" -eq 0 && -z "$BEDROCK_PROFILE" ]] \
-        && [[ "$TOOL" != "codex" || "$CODEX_HAS_OWN_PROFILE" -eq 0 ]]; then
+        && [[ "$TOOL" != "codex" || \
+              ( "$CODEX_HAS_OWN_PROFILE" -eq 0 && "$CODEX_CONFIGURES_OTHER_PROVIDER" -eq 0 ) ]]; then
     BEDROCK_PROFILE="$(_mqyolo_bedrock_profile || true)"
 fi
 if [[ -n "$BEDROCK_PROFILE" && ! -L "${CONTAINER_HOME}/.aws" ]]; then
@@ -1205,6 +1221,7 @@ case "$TOOL" in
         if [[ -n "$CODEX_BEDROCK_FILE" && "$CODEX_HAS_OWN_PROFILE" -eq 0 ]]; then
             YOLO_ARGS+=("--profile" "$(_mqyolo_codex_bedrock_profile_name)")
         elif [[ -n "$BEDROCK_AWS_DIR" && "$CODEX_HAS_OWN_PROFILE" -eq 0 ]] \
+             && [[ "$CODEX_CONFIGURES_BEDROCK" -eq 0 ]] \
              && [[ -z "${OPENAI_API_KEY:-}" && ! -s "${HOME}/.codex/auth.json" ]]; then
             # Bedrock credentials are staged (Claude is set up for it) and codex
             # has no other way to authenticate, so point at the one-off setup

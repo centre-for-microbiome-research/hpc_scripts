@@ -130,10 +130,12 @@ Key invariants the tests guard (keep them true):
   `model_provider`/`model_providers`. It is exempt from mqbedrock's
   broker-forwarding (it makes no AWS call and `~/.codex` is bound read-write, so it
   works from either side). mqyolo reads the AWS profile out of that file
-  (`_mqyolo_codex_aws_profile`) and stages it. The resolver applies
+  (`_mqyolo_codex_provider_and_aws_profile`) and stages it. The resolver applies
   `~/.codex/config.toml` first and the selected profile file second, so a profile
   that only changes reasoning effort inherits base Bedrock credentials, while an
-  explicit non-Bedrock `model_provider` suppresses them. For codex that file is
+  explicit non-Bedrock `model_provider` suppresses them. A base-only Bedrock
+  configuration is also staged without requiring a generated profile file. For
+  codex that file is
   authoritative even over `AWS_BEARER_TOKEN_BEDROCK`, because Codex's own auth
   precedence puts a configured `aws.profile` first — then passes
   `--profile bedrock` unless the caller passed their own `--profile`/`-p` or
