@@ -88,8 +88,9 @@ Key invariants the tests guard (keep them true):
   the profile Claude actually uses. Inside a sandbox mqbedrock forwards without
   that choice, and the broker supplies the profile fixed at session launch. The
   profile's Bedrock Runtime region is independent of the SSO session region used to
-  obtain its credentials. The broker forces `--no-login` and rejects every other
-  request argument: an interactive
+  obtain its credentials. The broker accepts `--static-profile` only when it equals
+  that launch-time profile, forces `--no-login`, and rejects every other request
+  argument: an interactive
   `aws sso login` would block it polling for a device code the container can never
   display, since the stub only replays output once the command has finished. Past
   the SSO session's own expiry the re-login is therefore a `mqbedrock` run on the

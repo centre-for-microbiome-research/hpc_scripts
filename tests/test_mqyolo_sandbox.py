@@ -1976,7 +1976,11 @@ region = ap-southeast-2
             bedrock=("bedrock-alt", dest), broker_path=broker_path
         ) as (spool, shim, *_):
             mqbedrock = _stub_as(shim, "mqbedrock")
-            rc, out = _run_stub(mqbedrock, spool)
+            # This is the generated Claude hook. mqyolo places the broker shim
+            # first on PATH, so these arguments reach mqbroker-stub directly.
+            rc, out = _run_stub(
+                mqbedrock, spool, "--static-profile", "bedrock-alt"
+            )
             assert rc == 0, out
     finally:
         if env_home is not None:
@@ -2001,7 +2005,19 @@ def test_broker_rejects_extra_mqbedrock_arguments(tmp_path):
         mqbedrock = _stub_as(shim, "mqbedrock")
         rc, out = _run_stub(mqbedrock, spool, "--profile", "somethingelse")
         assert rc == 126, out
-        assert "accepts no arguments" in out
+        assert "not permitted" in out
+
+
+def test_broker_rejects_a_different_static_profile_from_the_container(tmp_path):
+    dest = tmp_path / "chome" / ".aws"
+    dest.mkdir(parents=True)
+    with running_broker(bedrock=("bedrock", dest)) as (spool, shim, *_):
+        mqbedrock = _stub_as(shim, "mqbedrock")
+        rc, out = _run_stub(
+            mqbedrock, spool, "--static-profile", "bedrock-alt"
+        )
+        assert rc == 126, out
+        assert "only selectable static profile is bedrock" in out
 
 
 # ---------------------------------------------------------------------------

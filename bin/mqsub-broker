@@ -162,16 +162,26 @@ process_request() {
         # broker polling for a device code the container can never display (the
         # stub only replays output once the command has finished), so the host-side
         # run must fail fast and tell the user to run mqbedrock themselves. The
-        # only argument the container may pass is that same flag.
-        local a
-        for a in "${argv[@]+"${argv[@]}"}"; do
-            if [[ "$a" != "--no-login" ]]; then
-                printf 'mqsub-broker: mqbedrock accepts no arguments from the container (got %q)\n' "$a" \
-                    > "${reqdir}/stderr"
-                echo 126 > "${reqdir}/exit"
-                touch "${reqdir}/done"
-                return 0
+        # generated Claude hooks may also name the staged static profile. Accept
+        # it only when it exactly matches the profile fixed at broker launch; the
+        # container still cannot steer the host refresh to another identity.
+        local a i=0
+        while [[ $i -lt ${#argv[@]} ]]; do
+            a="${argv[$i]}"
+            if [[ $a == "--no-login" ]]; then
+                i=$((i + 1))
+                continue
             fi
+            if [[ $a == "--static-profile" && $((i + 1)) -lt ${#argv[@]} ]] \
+                    && [[ ${argv[$((i + 1))]} == "$BEDROCK_PROFILE" ]]; then
+                i=$((i + 2))
+                continue
+            fi
+            printf 'mqsub-broker: mqbedrock argument %q is not permitted from the container; the only selectable static profile is %q\n' \
+                "$a" "$BEDROCK_PROFILE" > "${reqdir}/stderr"
+            echo 126 > "${reqdir}/exit"
+            touch "${reqdir}/done"
+            return 0
         done
         # Refresh the profile that this session actually staged. The value is
         # fixed by mqyolo at broker launch; the container cannot steer this to a
