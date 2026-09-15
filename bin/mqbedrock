@@ -377,6 +377,15 @@ warn_old_host_codex() {
   fi
 }
 
+# The bundled IAM policy grants these global inference profiles from Sydney.
+codex_model_in_bundled_policy() {
+  case "$CODEX_MODEL" in
+    global.openai.gpt-5.6-sol|global.openai.gpt-5.6-terra|\
+    global.openai.gpt-5.6-luna|global.openai.gpt-6-astra) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 setup_codex() {
   local file new current_region policy_path
   file=$(codex_profile_file)
@@ -408,14 +417,15 @@ setup_codex() {
   echo "  arn:aws:bedrock:${current_region}:267451755618:project/default"
   echo "and the $CODEX_MODEL inference profile and foundation-model resources."
   echo "Without that administrator-side grant, Codex reaches Bedrock but receives 401"
-  policy_path="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../docs/codex-bedrock-gpt-5.6-sol-iam-policy.json"
-  if [[ $CODEX_MODEL == global.openai.gpt-5.6-sol && $current_region == ap-southeast-2 ]]; then
+  policy_path=$(readlink -f \
+    "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../docs/codex-bedrock-global-openai-iam-policy.json")
+  if [[ $current_region == ap-southeast-2 ]] && codex_model_in_bundled_policy; then
     echo "Ready-to-attach policy for this model and Region:"
   else
-    echo "Policy example (written for global.openai.gpt-5.6-sol in ap-southeast-2):"
+    echo "Policy example (written for the bundled global OpenAI models in ap-southeast-2):"
   fi
   echo "  $policy_path"
-  if [[ $CODEX_MODEL != global.openai.gpt-5.6-sol || $current_region != ap-southeast-2 ]]; then
+  if [[ $current_region != ap-southeast-2 ]] || ! codex_model_in_bundled_policy; then
     echo "Edit every model and Region ARN/condition in that example to match this"
     echo "profile before an administrator attaches it."
   fi

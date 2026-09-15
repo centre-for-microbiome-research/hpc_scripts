@@ -153,16 +153,18 @@ Key invariants the tests guard (keep them true):
   when an older host Codex is on PATH, while remaining usable when Codex is absent.
   QUT's `DFAZCB7230-BedrockUserAccess` role still needs the four-part global CRIS
   policy from AWS's [GPT-5.6 cross-Region inference guide](https://aws.amazon.com/blogs/machine-learning/introducing-cross-region-inference-for-openai-gpt-5-6-models-on-amazon-bedrock/#setting-up-iam-permissions-for-cross-region-inference):
-  access to the Sydney `global.openai.gpt-5.6-sol` inference profile and
-  `project/default`, the in-Region and global foundation-model ARNs, and
-  `bedrock:CallWithBearerToken`. Without that administrator-side grant, SigV4
+  access to the Sydney global inference profiles and `project/default`, the
+  in-Region and global foundation-model ARNs, and
+  `bedrock:CallWithBearerToken`. The bundled policy grants the Sol, Terra, Luna,
+  and GPT-6 Astra global profiles. Without that administrator-side grant, SigV4
   authentication succeeds but Bedrock returns 401 Unauthorized for
   `bedrock:InvokeModel` on `project/default`. The ready-to-review policy for the
-  QUT account, Sydney source Region, and Sol profile is
-  `docs/codex-bedrock-gpt-5.6-sol-iam-policy.json`; setup labels it as ready to
-  attach only for that exact model and Region. If `--codex-model` or the static
-  profile's Region differs, setup requires the administrator to edit every model
-  and Region ARN/condition in the example first. An AWS administrator still has
+  QUT account, Sydney source Region, and those four profiles is
+  `docs/codex-bedrock-global-openai-iam-policy.json`; setup labels it as ready to
+  attach only for a model in that set and the Sydney Region. If `--codex-model`
+  selects another model or the static profile's Region differs, setup requires
+  the administrator to edit every model and Region ARN/condition in the example
+  first. An AWS administrator still has
   to attach its permissions to the role (and ensure no SCP denies global CRIS).
 - mqyolo refuses to launch unless the working directory is within `/work/microbiome`,
   `$HOME`, `/scratch/microbiome/$USER`, or `/tmp` (anti-leakage; the CWD is bound

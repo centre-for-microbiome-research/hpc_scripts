@@ -1,0 +1,80 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "GrantGlobalCrisProfileAndProjectAccess",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:ap-southeast-2:267451755618:inference-profile/global.openai.gpt-5.6-sol",
+        "arn:aws:bedrock:ap-southeast-2:267451755618:inference-profile/global.openai.gpt-5.6-terra",
+        "arn:aws:bedrock:ap-southeast-2:267451755618:inference-profile/global.openai.gpt-5.6-luna",
+        "arn:aws:bedrock:ap-southeast-2:267451755618:inference-profile/global.openai.gpt-6-astra",
+        "arn:aws:bedrock:ap-southeast-2:267451755618:project/default"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2"
+        }
+      }
+    },
+    {
+      "Sid": "GrantGlobalCrisInRegionModelAccess",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:ap-southeast-2::foundation-model/openai.gpt-5.6-sol",
+        "arn:aws:bedrock:ap-southeast-2::foundation-model/openai.gpt-5.6-terra",
+        "arn:aws:bedrock:ap-southeast-2::foundation-model/openai.gpt-5.6-luna",
+        "arn:aws:bedrock:ap-southeast-2::foundation-model/openai.gpt-6-astra"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2",
+          "bedrock:InferenceProfileArn": [
+            "arn:aws:bedrock:ap-southeast-2:267451755618:inference-profile/global.openai.gpt-5.6-sol",
+            "arn:aws:bedrock:ap-southeast-2:267451755618:inference-profile/global.openai.gpt-5.6-terra",
+            "arn:aws:bedrock:ap-southeast-2:267451755618:inference-profile/global.openai.gpt-5.6-luna",
+            "arn:aws:bedrock:ap-southeast-2:267451755618:inference-profile/global.openai.gpt-6-astra"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "GrantGlobalCrisGlobalModelAccess",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:::foundation-model/openai.gpt-5.6-sol",
+        "arn:aws:bedrock:::foundation-model/openai.gpt-5.6-terra",
+        "arn:aws:bedrock:::foundation-model/openai.gpt-5.6-luna",
+        "arn:aws:bedrock:::foundation-model/openai.gpt-6-astra"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "unspecified",
+          "bedrock:InferenceProfileArn": [
+            "arn:aws:bedrock:ap-southeast-2:267451755618:inference-profile/global.openai.gpt-5.6-sol",
+            "arn:aws:bedrock:ap-southeast-2:267451755618:inference-profile/global.openai.gpt-5.6-terra",
+            "arn:aws:bedrock:ap-southeast-2:267451755618:inference-profile/global.openai.gpt-5.6-luna",
+            "arn:aws:bedrock:ap-southeast-2:267451755618:inference-profile/global.openai.gpt-6-astra"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "AllowBearerTokenAuth",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:CallWithBearerToken"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

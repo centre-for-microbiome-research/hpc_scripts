@@ -37,6 +37,7 @@ MQSUB = BIN / "mqsub"
 MQSANDBOX = BIN / "mqsandbox"
 BROKER = BIN / "mqsub-broker"
 STUB = BIN / "mqbroker-stub"
+CODEX_BEDROCK_IAM_POLICY = REPO / "docs" / "codex-bedrock-global-openai-iam-policy.json"
 
 # Local-only: skip the entire module on CI / GitHub Actions.
 pytestmark = pytest.mark.skipif(
@@ -2283,9 +2284,63 @@ def test_mqbedrock_setup_requires_editing_policy_for_model_or_region_overrides(t
 
     p = _setup_codex(home, "--codex-model", "global.openai.gpt-5.6")
     assert p.returncode == 0, p.stdout + p.stderr
-    assert "Policy example (written for global.openai.gpt-5.6-sol in ap-southeast-2)" in p.stdout
+    assert "Policy example (written for the bundled global OpenAI models in ap-southeast-2)" in p.stdout
     assert "Edit every model and Region ARN/condition" in p.stdout
     assert "to match this\nprofile before" in p.stdout
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "global.openai.gpt-5.6-terra",
+        "global.openai.gpt-5.6-luna",
+        "global.openai.gpt-6-astra",
+    ],
+)
+def test_mqbedrock_bundled_policy_covers_supported_model_overrides(tmp_path, model):
+    home = tmp_path / "home"
+    home.mkdir()
+
+    p = _setup_codex(home, "--codex-model", model)
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "Ready-to-attach policy for this model and Region" in p.stdout
+    assert str(CODEX_BEDROCK_IAM_POLICY) in p.stdout
+
+
+def test_codex_bedrock_policy_grants_all_bundled_global_models():
+    policy = json.loads(CODEX_BEDROCK_IAM_POLICY.read_text())
+    statements = {s["Sid"]: s for s in policy["Statement"]}
+    model_ids = {
+        "openai.gpt-5.6-sol",
+        "openai.gpt-5.6-terra",
+        "openai.gpt-5.6-luna",
+        "openai.gpt-6-astra",
+    }
+    profile_arns = {
+        f"arn:aws:bedrock:ap-southeast-2:267451755618:inference-profile/global.{m}"
+        for m in model_ids
+    }
+    profile_resources = set(
+        statements["GrantGlobalCrisProfileAndProjectAccess"]["Resource"]
+    )
+    assert profile_resources == profile_arns | {
+        "arn:aws:bedrock:ap-southeast-2:267451755618:project/default"
+    }
+
+    in_region = statements["GrantGlobalCrisInRegionModelAccess"]
+    assert set(in_region["Resource"]) == {
+        f"arn:aws:bedrock:ap-southeast-2::foundation-model/{m}"
+        for m in model_ids
+    }
+    assert set(in_region["Condition"]["StringEquals"]["bedrock:InferenceProfileArn"]) == \
+        profile_arns
+
+    global_models = statements["GrantGlobalCrisGlobalModelAccess"]
+    assert set(global_models["Resource"]) == {
+        f"arn:aws:bedrock:::foundation-model/{m}" for m in model_ids
+    }
+    assert set(global_models["Condition"]["StringEquals"]["bedrock:InferenceProfileArn"]) == \
+        profile_arns
 
 
 @pytest.mark.parametrize("setup_option", ["--setup-codex", "--setup-claude"])
