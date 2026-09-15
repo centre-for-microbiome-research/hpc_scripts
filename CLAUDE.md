@@ -84,7 +84,13 @@ Key invariants the tests guard (keep them true):
   the broker stub when `MQBROKER_SPOOL` is set — so one `awsAuthRefresh` entry in
   settings.json works on both sides — and the broker restages the credentials after
   a successful run, atomically, so a live session picks them up without relaunch.
-  The broker forces `--no-login` and rejects every other argument: an interactive
+  The generated hook includes `--static-profile NAME`, so a host-side refresh writes
+  the profile Claude actually uses. Inside a sandbox mqbedrock forwards without
+  that choice, and the broker supplies the profile fixed at session launch. The
+  profile's Bedrock Runtime region is independent of the SSO session region used to
+  obtain its credentials. The broker accepts `--static-profile` only when it equals
+  that launch-time profile, forces `--no-login`, and rejects every other request
+  argument: an interactive
   `aws sso login` would block it polling for a device code the container can never
   display, since the stub only replays output once the command has finished. Past
   the SSO session's own expiry the re-login is therefore a `mqbedrock` run on the
@@ -113,7 +119,9 @@ Key invariants the tests guard (keep them true):
   `amazon-bedrock-runtime` provider is Bedrock's OpenAI-compatible endpoint
   (`bedrock-runtime.<region>.amazonaws.com/openai/v1`) serving the OpenAI models,
   and it signs with SigV4 — so the same static `[bedrock]` profile `mqbedrock`
-  maintains works for both. `mqbedrock --setup-codex` writes that configuration as
+  maintains works for both. The generated default is the Australian endpoint's
+  `global.openai.gpt-5.6-sol` inference profile with high reasoning effort, following
+  AWS's documented Codex configuration. `mqbedrock --setup-codex` writes it as
   a Codex *profile file* (`$CODEX_HOME/bedrock.config.toml`, selected by
   `codex --profile bedrock`) rather than into `config.toml`: the file is then
   entirely ours (no mangling a `config.toml` full of `[projects."..."]` trust
@@ -122,19 +130,42 @@ Key invariants the tests guard (keep them true):
   `model_provider`/`model_providers`. It is exempt from mqbedrock's
   broker-forwarding (it makes no AWS call and `~/.codex` is bound read-write, so it
   works from either side). mqyolo reads the AWS profile out of that file
-  (`_mqyolo_codex_aws_profile`) and stages it — for codex that file is
+  (`_mqyolo_codex_provider_and_aws_profile`) and stages it. The resolver applies
+  `~/.codex/config.toml` first and the selected profile file second, so a profile
+  that only changes reasoning effort inherits base Bedrock credentials, while an
+  explicit non-Bedrock `model_provider` suppresses them. A base-only Bedrock
+  configuration is also staged without requiring a generated profile file. For
+  codex that file is
   authoritative even over `AWS_BEARER_TOKEN_BEDROCK`, because Codex's own auth
   precedence puts a configured `aws.profile` first — then passes
   `--profile bedrock` unless the caller passed their own `--profile`/`-p` or
   `--no-bedrock` (which for codex is exactly "leave the profile unselected"; the
-  claude-only settings.json rewrite is unchanged). `aws.auth_refresh` in the file
-  is Codex's equivalent of `awsAuthRefresh`, and pointing it at bare `mqbedrock`
-  makes the expiry path work on both sides via the existing broker stub.
-  Not currently usable at QUT: that endpoint authorizes `bedrock:InvokeModel`
-  against `arn:aws:bedrock:<region>:<account>:project/default`, not a model ARN,
-  and the `DFAZCB7230-BedrockUserAccess` role has no such grant — every model
-  (including `au.anthropic.*`) returns AccessDenied there, while per-model
-  `Converse`, which Claude Code uses, succeeds. `--setup-codex` prints that.
+  claude-only settings.json rewrite is unchanged). Resolve caller-selected profile
+  arguments before staging credentials, including `--profile=NAME` and `-pNAME`;
+  if that profile configures Bedrock, stage the AWS profile it names, otherwise do
+  not expose the default Bedrock role. Codex restricts `aws.auth_refresh.command`
+  to `aws`, so the generated file has no invalid `mqbedrock` refresh hook. If the
+  staged keys expire during a session, running `mqbedrock` inside the sandbox uses
+  the existing broker stub to refresh the selected static profile on the host and
+  restage it. The broker supplies `--static-profile` from its launch configuration;
+  container arguments cannot choose a different host profile.
+  The native Runtime provider was validated by AWS with Codex 0.149.1; setup warns
+  when an older host Codex is on PATH, while remaining usable when Codex is absent.
+  QUT's `DFAZCB7230-BedrockUserAccess` role still needs the four-part global CRIS
+  policy from AWS's [GPT-5.6 cross-Region inference guide](https://aws.amazon.com/blogs/machine-learning/introducing-cross-region-inference-for-openai-gpt-5-6-models-on-amazon-bedrock/#setting-up-iam-permissions-for-cross-region-inference):
+  access to the Sydney global inference profiles and `project/default`, the
+  in-Region and global foundation-model ARNs, and
+  `bedrock:CallWithBearerToken`. The bundled policy grants the Sol, Terra, Luna,
+  and GPT-6 Astra global profiles. Without that administrator-side grant, SigV4
+  authentication succeeds but Bedrock returns 401 Unauthorized for
+  `bedrock:InvokeModel` on `project/default`. The ready-to-review policy for the
+  QUT account, Sydney source Region, and those four profiles is
+  `docs/codex-bedrock-global-openai-iam-policy.json`; setup labels it as ready to
+  attach only for a model in that set and the Sydney Region. If `--codex-model`
+  selects another model or the static profile's Region differs, setup requires
+  the administrator to edit every model and Region ARN/condition in the example
+  first. An AWS administrator still has
+  to attach its permissions to the role (and ensure no SCP denies global CRIS).
 - mqyolo refuses to launch unless the working directory is within `/work/microbiome`,
   `$HOME`, `/scratch/microbiome/$USER`, or `/tmp` (anti-leakage; the CWD is bound
   read-write). Checked before the runtime/image checks.
