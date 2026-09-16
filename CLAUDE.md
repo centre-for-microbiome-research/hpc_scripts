@@ -96,18 +96,21 @@ Key invariants the tests guard (keep them true):
   never saw it, and the symptom was an empty `Authentication` panel — no device
   code, no error, nothing — until Claude SIGTERMed the hook at its 3-minute
   timeout. Guarded by `test_stub_does_not_block_on_an_idle_stdin_pipe`.
-- **`mqbedrock --setup-claude` / `--setup-codex` write the client-side config; the
+- **`mqbedrock --setup-claude` / `--setup-codex` / `--setup-opencode` write the
+  client-side config; the
   refresh path writes credentials.** Keep the two separable: the `--setup-*` options
   make no AWS call (so they work on a machine that has never logged in), are exempt
   from the broker forwarding, and never silently replace a user file — settings are
-  compared as JSON (key order and whitespace irrelevant, `jq` or `python3`), the
+  compared as JSON (key order and whitespace irrelevant, `jq` or `python3`; the
+  opencode config the same way), the
   Codex profile file by its generated-by marker, and `--force` is what overwrites,
   always keeping a `<file>.mqbedrock-<timestamp>.bak`. `--setup-claude` also writes
   `~/.claude.json` with just `hasCompletedOnboarding`: the first-run walkthrough has
   nothing to log into when the credential is an AWS profile, and in a sandbox it is a
   dead end. That file accumulates real state (projects, MCP approvals), which is why
-  the backup matters. `--force` without a `--setup-*`, and `--codex-*` without
-  `--setup-codex`, are errors rather than silent no-ops.
+  the backup matters. `--force` without a `--setup-*`, `--codex-*` without
+  `--setup-codex` and `--opencode-*` without `--setup-opencode` are errors rather
+  than silent no-ops.
 - **Codex on Bedrock is a different backend from Claude on Bedrock.** Codex speaks
   only the OpenAI protocol, so it cannot reach Claude there at all; its built-in
   `amazon-bedrock-runtime` provider is Bedrock's OpenAI-compatible endpoint
@@ -135,6 +138,46 @@ Key invariants the tests guard (keep them true):
   and the `DFAZCB7230-BedrockUserAccess` role has no such grant — every model
   (including `au.anthropic.*`) returns AccessDenied there, while per-model
   `Converse`, which Claude Code uses, succeeds. `--setup-codex` prints that.
+- **opencode on Bedrock is the one that does reach Claude there**, because its
+  built-in `amazon-bedrock` provider (`@ai-sdk/amazon-bedrock`) calls the per-model
+  `Converse`/`ConverseStream` API — the same one Claude Code uses, i.e. the one QUT
+  grants — so the `au.anthropic.*` inference profiles work and it signs with the
+  same static `[bedrock]` profile. `mqbedrock --setup-opencode` writes
+  `~/.config/opencode/bedrock.json` (`--opencode-config NAME` for another name):
+  `provider.amazon-bedrock.options.{profile,region}` plus `model`
+  (`amazon-bedrock/au.anthropic.claude-sonnet-5` — **Sonnet is the default**) and
+  `small_model` (Haiku, for titles and other cheap side-tasks). It is a whole
+  config *file* rather than an edit to `opencode.json`, selected with
+  `OPENCODE_CONFIG=<file>`, which opencode loads as an **additional layer over**
+  the global config (winning only on the keys it sets) — so the file is entirely
+  ours, the user's own config still applies, and nothing changes until it is
+  selected. Written as plain JSON with no JSONC comments (opencode's loader accepts
+  them, and silently drops unknown keys such as the `"//"` note) so that
+  `_mqyolo_opencode_aws_profile` can read the profile back out with a JSON parser
+  and `write_json` can compare an existing file as JSON — the same
+  never-clobber-a-user-file rule as `--setup-claude`, with `--force` + backup.
+  mqyolo reads that profile, stages it, and pins `OPENCODE_CONFIG` at the
+  in-container path via `--env` **and** `SANDBOX_SHIM_EXPORTS` (a user bashrc would
+  otherwise win, as for the XDG vars). Skipped when the caller set
+  `OPENCODE_CONFIG` themselves or passed `--no-bedrock` (for opencode that is all
+  the flag does). Unlike codex, `AWS_BEARER_TOKEN_BEDROCK` wins over a configured
+  profile in opencode's own credential order, so with one set nothing is staged
+  while the config is still selected. opencode has **no** auth-refresh hook
+  (nothing like `awsAuthRefresh`/`aws.auth_refresh` exists in it), so an expired
+  key means running `mqbedrock` again — from inside the sandbox that is the broker
+  stub, which restages the credentials live.
+- **opencode's `--auto` is declared per command, so mqyolo cannot just prefix it.**
+  Both the default interactive command and `run` declare it, other subcommands do
+  not, and the parser is strict about unknown options — so `opencode --auto run ...`
+  printed opencode's top-level help and ran nothing, and `opencode --auto models`
+  would print the `models` help. The tool case therefore chooses the position: no
+  args or a leading option/path-ish first argument (the interactive command's
+  optional `project` positional) keeps the prefix; a first argument of `run` becomes
+  `run --auto <message...>`; any other bare word is assumed to be a subcommand and
+  gets no `--auto` (none of them run tools). Inserting it right after `run` rather
+  than appending it also keeps it out of `run`'s variadic message — appended after a
+  `--` separator it would become part of the prompt instead of a flag. Guarded by
+  `test_mqyolo_opencode_run_puts_auto_after_the_subcommand` and friends.
 - mqyolo refuses to launch unless the working directory is within `/work/microbiome`,
   `$HOME`, `/scratch/microbiome/$USER`, or `/tmp` (anti-leakage; the CWD is bound
   read-write). Checked before the runtime/image checks.

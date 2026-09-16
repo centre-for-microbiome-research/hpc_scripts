@@ -28,7 +28,8 @@
 #                       Bedrock (`mqbedrock --setup-codex`)
 #   GITHUB_TOKEN        Required for copilot
 #   OPENCODE_API_KEY    opencode zen key (opencode also uses ANTHROPIC_API_KEY /
-#                       OPENAI_API_KEY, or the credentials it stored via `opencode auth login`)
+#                       OPENAI_API_KEY, the credentials it stored via
+#                       `opencode auth login`, or Bedrock — `mqbedrock --setup-opencode`)
 #   AI_TOOL_SIF         Override path to .sif file (default: same dir as this script)
 #
 # When the host has the PBS batch queue (i.e. `qsub` exists — the aqua login/head
@@ -195,6 +196,52 @@ _mqyolo_codex_aws_profile() {
             if (v != "") { print v; exit }
         }
     ' "$1"
+}
+
+# --- opencode on Bedrock ---------------------------------------------------
+# opencode DOES reach Claude on Bedrock (unlike codex): its built-in
+# `amazon-bedrock` provider calls the per-model Converse API, the same one Claude
+# Code uses. `mqbedrock --setup-opencode` records that in its own opencode config
+# file, ~/.config/opencode/<name>.json, which opencode loads as an additional
+# layer over the global config when OPENCODE_CONFIG points at it — so it changes
+# nothing until selected, and mqyolo selects it when launching opencode.
+#
+# The name matches mqbedrock's default; MQYOLO_OPENCODE_CONFIG covers a file
+# written with a different --opencode-config.
+_mqyolo_opencode_bedrock_config_name() { echo "${MQYOLO_OPENCODE_CONFIG:-bedrock}"; }
+
+# Print the path of that file if it exists, nothing otherwise. ~/.config/opencode,
+# not $XDG_CONFIG_HOME/opencode: that is the directory mqyolo binds into the
+# container (at /container_home/.config/opencode), so it is the only one opencode
+# can read there.
+_mqyolo_opencode_bedrock_config_file() {
+    local f
+    f="${HOME}/.config/opencode/$(_mqyolo_opencode_bedrock_config_name).json"
+    [[ -f "$f" ]] && echo "$f"
+    return 0
+}
+
+# Print the AWS profile an opencode Bedrock config signs with: the `profile` key
+# of provider["amazon-bedrock"].options. That profile is what has to be staged
+# into the sandbox, exactly as for Claude Code and codex — the difference is only
+# where the choice is written down. mqbedrock writes plain JSON (no JSONC
+# comments) precisely so this can be a JSON parse; anything unparseable is
+# treated as "no profile" rather than an error.
+_mqyolo_opencode_aws_profile() {
+    [[ -s "$1" ]] || return 0
+    command -v python3 &>/dev/null || return 0
+    python3 - "$1" <<'PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        cfg = json.load(f) or {}
+except Exception:
+    sys.exit(0)          # unreadable/hand-edited into JSONC: no profile to stage
+opts = (((cfg.get("provider") or {}).get("amazon-bedrock") or {}).get("options") or {})
+profile = opts.get("profile")
+if isinstance(profile, str) and profile.strip():
+    print(profile.strip())
+PY
 }
 
 # --no-bedrock: write a copy of SRC (the real ~/.claude/settings.json) to DEST with
@@ -509,7 +556,13 @@ TOOLS
   codex              OpenAI Codex — bypasses Codex's own prompts/sandbox, enables search,
                      and disables update checks
   copilot            GitHub Copilot CLI — no auto-mode flag; use Shift+Tab inside session for Autopilot mode
-  opencode           opencode — passes --auto to auto-approve permission prompts
+  opencode           opencode — passes --auto to auto-approve permission prompts, and
+                     selects the Bedrock config from `mqbedrock --setup-opencode` if present.
+                     --auto is only valid on opencode's interactive command and on
+                     `opencode run`, so mqyolo places it accordingly and omits it for
+                     other subcommands (`mqyolo opencode models`, `... debug paths`, ...).
+                     A first argument that is a bare word is taken to be a subcommand;
+                     write `./dir` to open the interactive session on a directory.
   <bin-executable>   Any executable file shipped in this script's own bin/ directory
                      (given as a bare name, e.g. `mqyolo claude_science`). It is run
                      by its canonical path inside the container, as-is — no wrapper
@@ -529,9 +582,9 @@ OPTIONS
                        paths; the AI inside the container cannot change them.
   --no-broker          Do not start the mqsub broker (mqsub will be unavailable inside the container)
   --no-bedrock         Force Bedrock off for this session, regardless of
-                       ~/.claude/settings.json or the environment. For codex this
-                       just leaves its Bedrock profile file unselected (see BEDROCK);
-                       for claude it goes further. Copies the real
+                       ~/.claude/settings.json or the environment. For codex and
+                       opencode this just leaves their Bedrock config unselected
+                       (see BEDROCK); for claude it goes further. Copies the real
                        settings.json (or {} if absent/unreadable) into the ephemeral
                        container home with env.CLAUDE_CODE_USE_BEDROCK set to "0",
                        strips any Bedrock-only model env vars (ANTHROPIC_MODEL,
@@ -665,8 +718,16 @@ BEDROCK
     Note that endpoint authorizes InvokeModel against
     `arn:aws:bedrock:<region>:<account>:project/default` rather than a model ARN,
     so a role that can Converse with Claude may still be denied here.
-  - Pass --no-bedrock to force Bedrock off for one session instead (for codex
-    that is all it does: the profile file is simply not selected). For claude,
+  - opencode runs Claude on Bedrock properly: its `amazon-bedrock` provider uses
+    the same per-model Converse API Claude Code does. `mqbedrock --setup-opencode`
+    writes ~/.config/opencode/bedrock.json — an additional opencode config layer
+    naming the same static AWS profile, with au.anthropic.claude-sonnet-5 as the
+    default model (Haiku for its cheap side-tasks) — and mqyolo stages that
+    profile's keys and points OPENCODE_CONFIG at the file. opencode has no
+    auth-refresh hook, so when the keys expire run `mqbedrock` again (from inside
+    the sandbox it is forwarded to the host, which restages them live).
+  - Pass --no-bedrock to force Bedrock off for one session instead (for codex and
+    opencode that is all it does: their config is simply not selected). For claude,
     regardless of ~/.claude/settings.json or the environment: mqyolo copies the
     real settings.json into the ephemeral container home with
     env.CLAUDE_CODE_USE_BEDROCK set to "0", strips any Bedrock-only model env vars,
@@ -718,6 +779,14 @@ OPENCODE SETTINGS
                       mqyolo's generated guidance is mounted read-only over
                       ~/.config/opencode/AGENTS.md (opencode's global rules file)
                       inside the container.
+  ~/.config/opencode/bedrock.json
+                      written by `mqbedrock --setup-opencode` on the host: an
+                      additional opencode config layer that runs opencode on
+                      Claude via Bedrock (see BEDROCK below). When it exists,
+                      mqyolo launches opencode with OPENCODE_CONFIG pointing at
+                      it, unless you set OPENCODE_CONFIG yourself or passed
+                      --no-bedrock. MQYOLO_OPENCODE_CONFIG selects a differently
+                      named one.
 
 ENVIRONMENT VARIABLES
   ANTHROPIC_API_KEY   Required for claude
@@ -728,8 +797,17 @@ ENVIRONMENT VARIABLES
                       `mqbedrock --setup-codex --codex-profile NAME` used another
   GITHUB_TOKEN        Required for copilot
   OPENCODE_API_KEY    opencode zen key for opencode (it also picks up
-                      ANTHROPIC_API_KEY / OPENAI_API_KEY, or whatever
-                      `opencode auth login` stored in ~/.local/share/opencode)
+                      ANTHROPIC_API_KEY / OPENAI_API_KEY, whatever
+                      `opencode auth login` stored in ~/.local/share/opencode, or
+                      Bedrock — see BEDROCK)
+  OPENCODE_CONFIG     Optional — path to an additional opencode config file. Set
+                      it yourself and mqyolo leaves it alone; otherwise mqyolo
+                      points it at the Bedrock config written by
+                      `mqbedrock --setup-opencode`, when that exists.
+  MQYOLO_OPENCODE_CONFIG  Optional — name of the opencode Bedrock config file to
+                      select for opencode (default "bedrock", i.e.
+                      ~/.config/opencode/bedrock.json); needed only if
+                      `mqbedrock --setup-opencode --opencode-config NAME` used another
   OPENAI_BASE_URL     Optional — override OpenAI endpoint
   ANTHROPIC_BASE_URL  Optional — override Anthropic endpoint
   CLAUDE_CODE_USE_BEDROCK  Optional — use AWS Bedrock for Claude
@@ -904,6 +982,7 @@ sandbox_home_dotfiles "${RO_PATHS[@]+"${RO_PATHS[@]}"}" "${RW_PATHS[@]+"${RW_PAT
 BEDROCK_PROFILE=""
 BEDROCK_AWS_DIR=""
 CODEX_BEDROCK_FILE=""     # host path of the Codex Bedrock profile file, when used
+OPENCODE_BEDROCK_FILE=""  # host path of the opencode Bedrock config file, when used
 if [[ "$NO_BEDROCK" -eq 0 && "$TOOL" == "codex" ]]; then
     # Codex says which AWS profile it signs with in its own profile file, and it
     # is authoritative for codex: Codex prefers a configured `aws.profile` over
@@ -911,6 +990,16 @@ if [[ "$NO_BEDROCK" -eq 0 && "$TOOL" == "codex" ]]; then
     CODEX_BEDROCK_FILE="$(_mqyolo_codex_bedrock_profile_file)"
     [[ -n "$CODEX_BEDROCK_FILE" ]] && \
         BEDROCK_PROFILE="$(_mqyolo_codex_aws_profile "$CODEX_BEDROCK_FILE" || true)"
+fi
+if [[ "$NO_BEDROCK" -eq 0 && "$TOOL" == "opencode" && -z "${OPENCODE_CONFIG:-}" ]]; then
+    # Same idea for opencode, except its own credential precedence puts
+    # AWS_BEARER_TOKEN_BEDROCK FIRST, ahead of a configured profile — so with a
+    # bearer token set there is nothing to stage (the fallback below short-circuits
+    # on it too). A caller-supplied OPENCODE_CONFIG means they chose their own
+    # config, so ours is neither read nor selected.
+    OPENCODE_BEDROCK_FILE="$(_mqyolo_opencode_bedrock_config_file)"
+    [[ -n "$OPENCODE_BEDROCK_FILE" && -z "${AWS_BEARER_TOKEN_BEDROCK:-}" ]] && \
+        BEDROCK_PROFILE="$(_mqyolo_opencode_aws_profile "$OPENCODE_BEDROCK_FILE" || true)"
 fi
 if [[ "$NO_BEDROCK" -eq 0 && -z "$BEDROCK_PROFILE" ]]; then
     BEDROCK_PROFILE="$(_mqyolo_bedrock_profile || true)"
@@ -1157,7 +1246,28 @@ case "$TOOL" in
     opencode)
         # Auto-approve permissions that are not explicitly denied — the container
         # is the sandbox, so opencode's own prompts add nothing here.
-        YOLO_ARGS=("--auto")
+        #
+        # --auto is declared per COMMAND (by the default interactive command and by
+        # `run`), and opencode's parser is strict about unknown options, so the flag
+        # cannot simply be prefixed: `opencode --auto run ...` is an unknown
+        # top-level option and opencode prints its help text instead of running
+        # anything. Put the flag where the chosen command accepts it, and leave it
+        # off the subcommands that do not declare it (`models`, `debug`, `stats`,
+        # ... — which run no tools, so there is nothing to auto-approve; passing it
+        # there prints that subcommand's help instead of doing the work).
+        #
+        # A leading option, or a path-ish first argument (the default command's
+        # optional `project` positional), still means the interactive command. A
+        # bare word is assumed to be a subcommand, exactly as opencode's own parser
+        # resolves it — write `./dir` to open a project directory of that name.
+        if [[ $# -eq 0 || "$1" == -* || "$1" == /* || "$1" == .* ]]; then
+            YOLO_ARGS=("--auto")
+        elif [[ "$1" == run ]]; then
+            YOLO_ARGS=("run" "--auto")   # -> opencode run --auto <message...>
+            shift
+        else
+            YOLO_ARGS=()
+        fi
         # opencode spreads itself over four XDG dirs and mkdirs ALL of them at
         # startup, so every one must be writable or it dies before the TUI opens:
         # config + its global rules file (AGENTS.md) in ~/.config/opencode,
@@ -1192,6 +1302,32 @@ case "$TOOL" in
                                "XDG_DATA_HOME=/container_home/.local/share" \
                                "XDG_STATE_HOME=/container_home/.local/state" \
                                "XDG_CACHE_HOME=/container_home/.cache")
+        # Select the Bedrock config `mqbedrock --setup-opencode` wrote, so opencode
+        # runs Claude on Bedrock with the staged AWS credentials instead of needing
+        # an API key or an `opencode auth login` inside the sandbox. OPENCODE_CONFIG
+        # names an ADDITIONAL config layer, so the user's own opencode.json still
+        # applies — this only wins on the keys it sets (provider/model). Pinned via
+        # the shim bashrc as well as --env, same reason as the XDG_* vars above.
+        # Skipped when the caller set OPENCODE_CONFIG themselves, and under
+        # --no-bedrock, which is what makes that flag work for opencode: the file
+        # stays on disk but is never selected.
+        if [[ -n "$OPENCODE_BEDROCK_FILE" ]]; then
+            _oc_bedrock_cfg="/container_home/.config/opencode/$(_mqyolo_opencode_bedrock_config_name).json"
+            ENV_ARGS+=(--env "OPENCODE_CONFIG=${_oc_bedrock_cfg}")
+            SANDBOX_SHIM_EXPORTS+=("OPENCODE_CONFIG=${_oc_bedrock_cfg}")
+            unset _oc_bedrock_cfg
+        elif [[ -n "$BEDROCK_AWS_DIR" && -z "${OPENCODE_CONFIG:-}" ]] \
+             && [[ -z "${OPENCODE_API_KEY:-}" && -z "${ANTHROPIC_API_KEY:-}" \
+                   && -z "${OPENAI_API_KEY:-}" \
+                   && ! -s "${HOME}/.local/share/opencode/auth.json" ]]; then
+            # Bedrock credentials are staged (Claude is set up for it) but opencode
+            # has no config naming them and no other credential, so it would open on
+            # a login prompt that cannot be completed in the sandbox — or guess a
+            # region. Point at the one-off setup instead.
+            echo "mqyolo: NOTE: opencode has no credentials here (no OPENCODE_API_KEY/ANTHROPIC_API_KEY," >&2
+            echo "mqyolo:       no ~/.local/share/opencode/auth.json)." >&2
+            echo "mqyolo:       To run it on Bedrock like Claude: mqbedrock --setup-opencode" >&2
+        fi
         ;;
     *)
         # A repo executable (see arg parsing): run it as-is with no wrapper flags and

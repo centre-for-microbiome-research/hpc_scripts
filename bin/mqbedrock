@@ -23,6 +23,11 @@
 # the OpenAI models hosted there, not Claude): `mqbedrock --setup-codex` writes
 # the Codex profile that points at it — see setup_codex() below.
 #
+# ...and opencode, which does reach Claude on Bedrock (its `amazon-bedrock`
+# provider calls the same per-model Converse API Claude Code uses):
+# `mqbedrock --setup-opencode` writes the opencode config that points at it —
+# see setup_opencode() below.
+#
 # Inside an mqyolo sandbox this script cannot do its job — ~/.aws there is a
 # generated Bedrock-only credential dir, and the SSO token plus its cache live on
 # the host — so it forwards itself to the host broker, which runs the real thing
@@ -39,6 +44,10 @@
 #   --setup-codex
 #                Write a Codex profile that points Codex at Bedrock, then exit
 #                without touching any credential. See setup_codex() below.
+#   --setup-opencode
+#                Write an opencode config that points opencode at Claude on
+#                Bedrock, then exit without touching any credential. See
+#                setup_opencode() below.
 #   --force      Let the --setup-* options overwrite existing files (a timestamped
 #                backup is kept).
 
@@ -53,6 +62,14 @@ CODEX_PROFILE=bedrock            # -> $CODEX_HOME/<name>.config.toml
 # Codex's own highest-priority Bedrock model. Unprefixed rather than `global.`
 # or `us.`, so inference stays in REGION the way the au.* Claude models do.
 CODEX_MODEL=openai.gpt-5.6-sol
+SETUP_OPENCODE=0
+OPENCODE_OPTS=0                  # --opencode-* seen, so a missing --setup-opencode can be caught
+OPENCODE_CONFIG_NAME=bedrock     # -> $XDG_CONFIG_HOME/opencode/<name>.json
+# Sonnet as opencode's default: the everyday coding model, and the au.* prefix
+# keeps inference in Australia like the Claude Code settings above. Titles and
+# other cheap side-tasks go to Haiku (opencode's `small_model`).
+OPENCODE_MODEL=au.anthropic.claude-sonnet-5
+OPENCODE_SMALL_MODEL=au.anthropic.claude-haiku-4-5-20251001-v1:0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-login) NO_LOGIN=1; shift ;;
@@ -61,10 +78,14 @@ while [[ $# -gt 0 ]]; do
     --setup-codex) SETUP_CODEX=1; shift ;;
     --codex-model) CODEX_MODEL="${2:?--codex-model needs a Bedrock model id}"; CODEX_OPTS=1; shift 2 ;;
     --codex-profile) CODEX_PROFILE="${2:?--codex-profile needs a name}"; CODEX_OPTS=1; shift 2 ;;
+    --setup-opencode) SETUP_OPENCODE=1; shift ;;
+    --opencode-model) OPENCODE_MODEL="${2:?--opencode-model needs a Bedrock model id}"; OPENCODE_OPTS=1; shift 2 ;;
+    --opencode-config) OPENCODE_CONFIG_NAME="${2:?--opencode-config needs a name}"; OPENCODE_OPTS=1; shift 2 ;;
     -h|--help)
       echo "usage: mqbedrock [--no-login]"
       echo "       mqbedrock --setup-claude [--force]"
       echo "       mqbedrock --setup-codex [--codex-model ID] [--codex-profile NAME] [--force]"
+      echo "       mqbedrock --setup-opencode [--opencode-model ID] [--opencode-config NAME] [--force]"
       echo "  Top up the static [bedrock] AWS profile Claude Code reads."
       echo "  --no-login       fail with instructions instead of starting an SSO login"
       echo "  --setup-claude   write ~/.claude/settings.json (Bedrock models + this"
@@ -76,6 +97,13 @@ while [[ $# -gt 0 ]]; do
       echo "  --codex-profile  Codex profile name to write (default: $CODEX_PROFILE);"
       echo "                   a non-default name needs MQYOLO_CODEX_PROFILE set for"
       echo "                   mqyolo to select it"
+      echo "  --setup-opencode write \$XDG_CONFIG_HOME/opencode/<name>.json so"
+      echo "                   'OPENCODE_CONFIG=<that file> opencode' runs Claude on"
+      echo "                   Bedrock, then exit (no AWS calls)"
+      echo "  --opencode-model Bedrock model id it defaults to (default: $OPENCODE_MODEL)"
+      echo "  --opencode-config  opencode config file name to write (default:"
+      echo "                   $OPENCODE_CONFIG_NAME); a non-default name needs"
+      echo "                   MQYOLO_OPENCODE_CONFIG set for mqyolo to select it"
       echo "  --force          overwrite existing files the --setup-* options would"
       echo "                   otherwise refuse to touch, keeping a timestamped backup"
       exit 0 ;;
@@ -89,24 +117,28 @@ if [[ $CODEX_OPTS -eq 1 && $SETUP_CODEX -eq 0 ]]; then
   echo "mqbedrock: --codex-model/--codex-profile only apply with --setup-codex" >&2
   exit 2
 fi
-if [[ $FORCE -eq 1 && $SETUP_CLAUDE -eq 0 && $SETUP_CODEX -eq 0 ]]; then
-  echo "mqbedrock: --force only applies with --setup-claude/--setup-codex" >&2
+if [[ $OPENCODE_OPTS -eq 1 && $SETUP_OPENCODE -eq 0 ]]; then
+  echo "mqbedrock: --opencode-model/--opencode-config only apply with --setup-opencode" >&2
+  exit 2
+fi
+if [[ $FORCE -eq 1 && $SETUP_CLAUDE -eq 0 && $SETUP_CODEX -eq 0 && $SETUP_OPENCODE -eq 0 ]]; then
+  echo "mqbedrock: --force only applies with --setup-claude/--setup-codex/--setup-opencode" >&2
   exit 2
 fi
 
-# Both --setup-* options only write config files, so they are exempt from the
+# All three --setup-* options only write config files, so they are exempt from the
 # broker forwarding below and never need the refresh machinery.
-SETUP_ONLY=$(( SETUP_CLAUDE || SETUP_CODEX ))
+SETUP_ONLY=$(( SETUP_CLAUDE || SETUP_CODEX || SETUP_OPENCODE ))
 
 # --- Forward to the host when running inside an mqyolo sandbox ---
 # MQBROKER_SPOOL is set only in the container (by mqyolo), and the shim dir on
 # PATH holds an `mqbedrock` that is really mqbroker-stub. Guard against exec'ing
 # ourselves in case PATH resolves back to this file.
 #
-# The --setup-* options are exempt: they only write config files, and ~/.claude and
-# ~/.codex are bound read-write into the container, so they work from either side
-# (~/.claude.json is staged rather than bound, so a write from inside the sandbox
-# reaches the real file when mqyolo saves it back on exit).
+# The --setup-* options are exempt: they only write config files, and ~/.claude,
+# ~/.codex and ~/.config/opencode are bound read-write into the container, so they
+# work from either side (~/.claude.json is staged rather than bound, so a write
+# from inside the sandbox reaches the real file when mqyolo saves it back on exit).
 if [[ -n "${MQBROKER_SPOOL:-}" && $SETUP_ONLY -eq 0 ]]; then
   _self=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")
   _stub=$(command -v mqbedrock 2>/dev/null || true)
@@ -279,18 +311,18 @@ backup_file() {
   echo "backed up $1 -> $backup"
 }
 
-# write_json FILE JSON — write JSON to FILE unless FILE already exists with
-# different contents. Refuses in that case; --force overwrites, keeping a
-# timestamped backup.
+# write_json FILE JSON OPTION — write JSON to FILE unless FILE already exists with
+# different contents. Refuses in that case, naming the OPTION that wanted to write
+# it; --force overwrites, keeping a timestamped backup.
 write_json() {
-  local file="$1" want="$2"
+  local file="$1" want="$2" option="$3"
   if [[ -e $file ]]; then
     if json_equal "$file" "$want"; then
       echo "$file already holds these settings"
       return 0
     fi
     if [[ $FORCE -eq 0 ]]; then
-      echo "mqbedrock: $file already exists and differs from what --setup-claude" >&2
+      echo "mqbedrock: $file already exists and differs from what $option" >&2
       echo "mqbedrock: would write, so it is left alone. Merge the settings by hand," >&2
       echo "mqbedrock: or re-run with --force to overwrite it (a backup is kept)." >&2
       return 1
@@ -304,8 +336,8 @@ write_json() {
 
 setup_claude() {
   local ok=0
-  write_json "$HOME/.claude/settings.json" "$CLAUDE_SETTINGS_JSON" || ok=1
-  write_json "$HOME/.claude.json"          "$CLAUDE_JSON"          || ok=1
+  write_json "$HOME/.claude/settings.json" "$CLAUDE_SETTINGS_JSON" --setup-claude || ok=1
+  write_json "$HOME/.claude.json"          "$CLAUDE_JSON"          --setup-claude || ok=1
   [[ $ok -eq 0 ]] || return 1
   echo "  Bedrock via the [$STATIC_PROFILE] profile in $REGION; run 'mqbedrock' to fill"
   echo "  it in (Claude Code then refreshes it itself via awsAuthRefresh)."
@@ -342,7 +374,7 @@ codex_profile_file() {
 
 # The region to sign for: whatever the static profile actually uses, falling
 # back to the one bootstrap writes.
-codex_region() {
+profile_region() {
   local r; r=$(cfg_get "$CFG" "$(sec "$STATIC_PROFILE")" region || true)
   echo "${r:-$REGION}"
 }
@@ -360,7 +392,7 @@ model = "${CODEX_MODEL}"
 
 [model_providers.amazon-bedrock-runtime.aws]
 profile = "${STATIC_PROFILE}"
-region = "$(codex_region)"
+region = "$(profile_region)"
 
 # Codex's equivalent of Claude Code's awsAuthRefresh hook: the static keys in
 # the profile above expire (12h for an SSO-issued role), and this is run to mint
@@ -393,25 +425,85 @@ setup_codex() {
   fi
   printf '%s\n' "$new" > "$file"
   echo "wrote $file"
-  echo "  provider amazon-bedrock-runtime, model $CODEX_MODEL, region $(codex_region),"
+  echo "  provider amazon-bedrock-runtime, model $CODEX_MODEL, region $(profile_region),"
   echo "  signing with the [$STATIC_PROFILE] profile (run 'mqbedrock' to fill it in)."
   echo "  Use it with 'codex --profile $CODEX_PROFILE'; mqyolo codex selects it for you."
   echo
   echo "NOTE: the Bedrock OpenAI-compatible endpoint authorizes InvokeModel against"
-  echo "      arn:aws:bedrock:$(codex_region):<account>:project/default, which QUT's"
+  echo "      arn:aws:bedrock:$(profile_region):<account>:project/default, which QUT's"
   echo "      BedrockUserAccess role does not currently grant — Codex will fail with"
   echo "      AccessDeniedException until that permission is added. Claude on Bedrock"
   echo "      is unaffected: it uses the per-model Converse API, which is allowed."
 }
 
+# --- opencode on Bedrock (--setup-opencode) --------------------------------
+# opencode, unlike Codex, does reach Claude on Bedrock: its built-in
+# `amazon-bedrock` provider is the @ai-sdk/amazon-bedrock client, which calls the
+# per-model Converse API — the same one Claude Code uses, and the one QUT's
+# BedrockUserAccess role actually grants. So the au.* inference profiles from
+# setup_claude() work here too, signed with the same static [bedrock] profile.
+#
+# The settings go in their own opencode config file rather than into
+# opencode.json, selected with OPENCODE_CONFIG=<file> (which opencode loads as an
+# ADDITIONAL layer over the global config, winning on the keys it sets). Same
+# reasoning as the Codex profile file: the file is then entirely ours, and it
+# changes nothing until something points OPENCODE_CONFIG at it — which mqyolo
+# does when it launches opencode.
+#
+# Plain JSON with no comments even though opencode's loader accepts JSONC: mqyolo
+# reads the AWS profile back out of this file with a JSON parser, and write_json
+# below compares an existing file as JSON so a user's own (or a comment-carrying)
+# file is never silently replaced. The "//" key is the conventional JSON comment;
+# opencode ignores keys it does not know.
+#
+# XDG_CONFIG_HOME is honoured because that is where opencode itself looks. Note
+# mqyolo only ever reads ~/.config/opencode, since that is the directory it binds
+# into the container — so a config written elsewhere works for opencode on the
+# host but leaves mqyolo nothing to select.
+opencode_config_file() {
+  echo "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/${OPENCODE_CONFIG_NAME}.json"
+}
+
+opencode_config_json() {
+  cat <<EOF
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "//": "Generated by 'mqbedrock --setup-opencode'. Select it with OPENCODE_CONFIG=<this file>; mqyolo does that when it launches opencode. Re-running that command overwrites this file.",
+  "provider": {
+    "amazon-bedrock": {
+      "options": {
+        "profile": "$STATIC_PROFILE",
+        "region": "$(profile_region)"
+      }
+    }
+  },
+  "model": "amazon-bedrock/${OPENCODE_MODEL}",
+  "small_model": "amazon-bedrock/${OPENCODE_SMALL_MODEL}"
+}
+EOF
+}
+
+setup_opencode() {
+  local file
+  file=$(opencode_config_file)
+  write_json "$file" "$(opencode_config_json)" --setup-opencode || return 1
+  echo "  provider amazon-bedrock (Converse API), model $OPENCODE_MODEL,"
+  echo "  region $(profile_region), signing with the [$STATIC_PROFILE] profile"
+  echo "  (run 'mqbedrock' to fill it in). opencode has no auth-refresh hook of its"
+  echo "  own, so an expired key means running 'mqbedrock' again — on the host, or"
+  echo "  from inside an mqyolo sandbox, where it is forwarded to the host."
+  echo "  Use it with 'OPENCODE_CONFIG=$file opencode'; mqyolo opencode selects it for you."
+}
+
 # The --setup-* options only write config files: no AWS config check, no
 # credentials, no network — so they also work before the profile has ever been
-# filled in, and either order of the two setup steps is fine. Both may be given
-# at once; the exit status covers both.
+# filled in, and any order of the setup steps is fine. Several may be given at
+# once; the exit status covers all of them.
 if [[ $SETUP_ONLY -eq 1 ]]; then
   setup_rc=0
-  if [[ $SETUP_CLAUDE -eq 1 ]]; then setup_claude || setup_rc=1; fi
-  if [[ $SETUP_CODEX  -eq 1 ]]; then setup_codex  || setup_rc=1; fi
+  if [[ $SETUP_CLAUDE   -eq 1 ]]; then setup_claude   || setup_rc=1; fi
+  if [[ $SETUP_CODEX    -eq 1 ]]; then setup_codex    || setup_rc=1; fi
+  if [[ $SETUP_OPENCODE -eq 1 ]]; then setup_opencode || setup_rc=1; fi
   exit $setup_rc
 fi
 
