@@ -1,0 +1,24 @@
+[workspace]
+authors = ["Ben Woodcroft <benjwoodcroft@gmail.com>"]
+channels = ["conda-forge"]
+name = "model_comparison"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[dependencies]
+python = ">=3.10"
+matplotlib = ">=3.7"
+beautifulsoup4 = ">=4.12"
+
+[activation]
+# Keep matplotlib's font/cache dir inside the project instead of trying (and
+# failing) to write to the real home directory.
+env = { MPLCONFIGDIR = ".cache/matplotlib" }
+
+[tasks]
+# Re-fetches the Bedrock model catalog, live AWS Bedrock pricing, and
+# Artificial Analysis's Terminal-Bench dataset, then regenerates
+# tb21_scatter.png, tb40_scatter.png, and model_data.json in this directory.
+# Nothing about specific models/scores/prices is hardcoded -- see the
+# docstring in generate_charts.py for the exact data sources.
+generate = "python generate_charts.py"
