@@ -2686,7 +2686,8 @@ def test_canonical_path_of_rw_path_must_be_validated_against_deny(tmp_path):
     # The resolved path IS denied, so the literal path is not, generating a warning.
     # But the bind IS made (user asked for it explicitly).
     assert "WARNING" in p.stderr, "expected warning about symlink to denied path"
-    assert "resolves to denied path" in p.stderr, p.stderr
+    assert "is a symlink to denied path" in p.stderr, p.stderr
+    assert "not blocked" in p.stderr, p.stderr
     
     binds = p.stdout.splitlines()
     # The bind should exist (explicit opt-in).

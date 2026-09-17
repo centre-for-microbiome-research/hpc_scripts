@@ -454,7 +454,7 @@ sandbox_build_binds() {
         # This catches symlink escapes where the user may not realize they're
         # exposing a denied path. Still bind it (user asked for it), but loudly.
         if ! sandbox_path_denied "$_ro_path" && sandbox_path_denied "$_ro_src"; then
-            echo "WARNING: --ro-path '$_ro_path' resolves to denied path '$_ro_src'" >&2
+            echo "WARNING: --ro-path '$_ro_path' is a symlink to denied path '$_ro_src'; binding it read-only anyway (explicit opt-in, not blocked)" >&2
         fi
         BIND_ARGS+=(--bind "${_ro_src}:${_ro_src}:ro")
         _ro_dst="$(realpath -s "$_ro_path" 2>/dev/null || echo "$_ro_path")"
@@ -483,7 +483,7 @@ sandbox_build_binds() {
         # This catches symlink escapes where the user may not realize they're
         # exposing a denied path. Still bind it (user asked for it), but loudly.
         if ! sandbox_path_denied "$_rw_path" && sandbox_path_denied "$_rw_src"; then
-            echo "WARNING: --rw-path '$_rw_path' resolves to denied path '$_rw_src'" >&2
+            echo "WARNING: --rw-path '$_rw_path' is a symlink to denied path '$_rw_src'; binding it read-write anyway (explicit opt-in, not blocked)" >&2
         fi
         BIND_ARGS+=(--bind "${_rw_src}:${_rw_src}:rw")
         _rw_dst="$(realpath -s "$_rw_path" 2>/dev/null || echo "$_rw_path")"
