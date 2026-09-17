@@ -5,6 +5,8 @@ This tool combines running and recently finished jobs into a single table
 and allows selecting rows to inspect job logs.
 """
 
+from __future__ import annotations
+
 import argparse
 import importlib.util
 import os
