@@ -10,7 +10,7 @@
 # [bedrock] profile with static keys, which Claude Code can read all day.
 #
 # Wire it up in ~/.claude/settings.json:
-#   "awsAuthRefresh": "mqbedrock",
+#   "awsAuthRefresh": "mqbedrock --static-profile bedrock",
 #   "env": { "CLAUDE_CODE_USE_BEDROCK": "1", "AWS_PROFILE": "bedrock", ... }
 # `mqbedrock --setup-claude` writes exactly that (plus the au.* model IDs and the
 # onboarding flag in ~/.claude.json) — see setup_claude() below.
@@ -59,9 +59,10 @@ SETUP_CLAUDE=0
 SETUP_CODEX=0
 CODEX_OPTS=0                     # --codex-* seen, so a missing --setup-codex can be caught
 CODEX_PROFILE=bedrock            # -> $CODEX_HOME/<name>.config.toml
-# Codex's own highest-priority Bedrock model. Unprefixed rather than `global.`
-# or `us.`, so inference stays in REGION the way the au.* Claude models do.
-CODEX_MODEL=openai.gpt-5.6-sol
+STATIC_PROFILE=bedrock           # plain profile receiving the exported static keys
+# The Australian Bedrock Runtime endpoint accepts the global inference profile
+# and routes it to a supported commercial region, as documented by AWS.
+CODEX_MODEL=global.openai.gpt-5.6-sol
 SETUP_OPENCODE=0
 OPENCODE_OPTS=0                  # --opencode-* seen, so a missing --setup-opencode can be caught
 OPENCODE_CONFIG_NAME=bedrock     # -> $XDG_CONFIG_HOME/opencode/<name>.json
@@ -76,16 +77,17 @@ while [[ $# -gt 0 ]]; do
     --force) FORCE=1; shift ;;
     --setup-claude) SETUP_CLAUDE=1; shift ;;
     --setup-codex) SETUP_CODEX=1; shift ;;
+    --static-profile) STATIC_PROFILE="${2:?--static-profile needs a name}"; shift 2 ;;
     --codex-model) CODEX_MODEL="${2:?--codex-model needs a Bedrock model id}"; CODEX_OPTS=1; shift 2 ;;
     --codex-profile) CODEX_PROFILE="${2:?--codex-profile needs a name}"; CODEX_OPTS=1; shift 2 ;;
     --setup-opencode) SETUP_OPENCODE=1; shift ;;
     --opencode-model) OPENCODE_MODEL="${2:?--opencode-model needs a Bedrock model id}"; OPENCODE_OPTS=1; shift 2 ;;
     --opencode-config) OPENCODE_CONFIG_NAME="${2:?--opencode-config needs a name}"; OPENCODE_OPTS=1; shift 2 ;;
     -h|--help)
-      echo "usage: mqbedrock [--no-login]"
-      echo "       mqbedrock --setup-claude [--force]"
-      echo "       mqbedrock --setup-codex [--codex-model ID] [--codex-profile NAME] [--force]"
-      echo "       mqbedrock --setup-opencode [--opencode-model ID] [--opencode-config NAME] [--force]"
+      echo "usage: mqbedrock [--no-login] [--static-profile NAME]"
+      echo "       mqbedrock --setup-claude [--static-profile NAME] [--force]"
+      echo "       mqbedrock --setup-codex [--codex-model ID] [--codex-profile NAME] [--static-profile NAME] [--force]"
+      echo "       mqbedrock --setup-opencode [--opencode-model ID] [--opencode-config NAME] [--static-profile NAME] [--force]"
       echo "  Top up the static [bedrock] AWS profile Claude Code reads."
       echo "  --no-login       fail with instructions instead of starting an SSO login"
       echo "  --setup-claude   write ~/.claude/settings.json (Bedrock models + this"
@@ -104,12 +106,19 @@ while [[ $# -gt 0 ]]; do
       echo "  --opencode-config  opencode config file name to write (default:"
       echo "                   $OPENCODE_CONFIG_NAME); a non-default name needs"
       echo "                   MQYOLO_OPENCODE_CONFIG set for mqyolo to select it"
+      echo "  --static-profile AWS profile receiving static keys (default: $STATIC_PROFILE);"
+      echo "                   mqyolo's broker supplies the staged profile automatically"
       echo "  --force          overwrite existing files the --setup-* options would"
       echo "                   otherwise refuse to touch, keeping a timestamped backup"
       exit 0 ;;
     *) echo "mqbedrock: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+
+if [[ ! $STATIC_PROFILE =~ ^[A-Za-z0-9_.-]+$ ]]; then
+  echo "mqbedrock: --static-profile must contain only letters, digits, '.', '_', or '-'" >&2
+  exit 2
+fi
 
 # The --codex-* options only shape what --setup-codex writes, so on their own they
 # would silently do nothing.
@@ -159,31 +168,7 @@ SSO_PROFILE=bedrock-sso          # profile holding the SSO settings.
                                  # Set to "default" to reuse an existing stanza
                                  # instead of adding a second copy.
 SSO_SESSION=my-sso-bedrock
-STATIC_PROFILE=bedrock           # the plain profile with the static keys tools read
 REGION=ap-southeast-2
-
-# Locate the AWS CLI. It is not installed system-wide on this cluster —
-# interactive shells reach it through an alias onto the central pixi
-# environment, and aliases do not survive into scripts (this one normally runs
-# as a Claude Code hook, with no shell rc at all). So resolve it here: a real
-# aws on PATH wins, otherwise run the one from the pixi environment the alias
-# points at.
-PIXI_CENTRAL_TOML=${PIXI_CENTRAL_TOML:-/pkg/cmr/sw/pixi_central/pixi.toml}
-if ! command -v aws >/dev/null 2>&1; then
-  # pixi ships alongside this script in the deployed hpc_scripts bin directory,
-  # so fall back to that when running a git checkout that has no pixi next to it.
-  PIXI=$(command -v pixi || true)
-  for candidate in "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/pixi" \
-                   /work/microbiome/sw/hpc_scripts/bin/pixi; do
-    [[ -n $PIXI ]] && break
-    [[ -x $candidate ]] && PIXI=$candidate
-  done
-  if [[ ! -x $PIXI || ! -s $PIXI_CENTRAL_TOML ]]; then
-    echo "aws not on PATH, and no pixi + $PIXI_CENTRAL_TOML to run it from" >&2
-    exit 1
-  fi
-  aws() { "$PIXI" run --manifest-path "$PIXI_CENTRAL_TOML" aws "$@"; }
-fi
 
 # Section header for a profile: "default" has no prefix, everything else does.
 sec() { [[ $1 == default ]] && echo "default" || echo "profile $1"; }
@@ -203,12 +188,26 @@ cfg_get() {
   ' "$1"
 }
 
+# The Bedrock Runtime region belongs to the static profile tools actually use.
+# It need not match the IAM Identity Center region used to obtain credentials.
+static_region() {
+  local r; r=$(cfg_get "$CFG" "$(sec "$STATIC_PROFILE")" region || true)
+  echo "${r:-$REGION}"
+}
+
 # want SECTION KEY VALUE — assert a $CFG entry, reporting what was found.
 # Checks values, not just presence: a stale sso_role_name otherwise fails much
 # later, during the credential fetch, with an error that doesn't point back here.
 want() {
   local got; got=$(cfg_get "$CFG" "$1" "$2" || true)
   [[ $got == "$3" ]] || { echo "  [$1] $2 = $3   (found: ${got:-missing})" >&2; return 1; }
+}
+
+# Assert that a config key exists while allowing its value to differ from the
+# bootstrap default (for example, a Bedrock Runtime profile in another region).
+want_present() {
+  local got; got=$(cfg_get "$CFG" "$1" "$2" || true)
+  [[ -n $got ]] || { echo "  [$1] $2 = <value>   (found: missing)" >&2; return 1; }
 }
 
 # Append the stanzas needed for Bedrock. Only ever called on an empty config,
@@ -244,9 +243,24 @@ check() {
   want "sso-session $SSO_SESSION" sso_region   "$REGION"                      || ok=1
   # Without this scope Identity Center issues no refresh token at all.
   want "sso-session $SSO_SESSION" sso_registration_scopes sso:account:access || ok=1
-  # Claude Code needs a region on the profile it actually reads.
-  want "$(sec "$STATIC_PROFILE")" region "$REGION"                           || ok=1
+  # Tools need a Runtime region on the static profile they actually read. It is
+  # independent of the SSO session region above.
+  want_present "$(sec "$STATIC_PROFILE")" region                              || ok=1
   return $ok
+}
+
+# If ~/.aws/config already exists, a later refresh takes check() rather than
+# bootstrap(), so a --static-profile that has no region stanza would leave the
+# generated client config unusable. Create that stanza (only) when missing.
+# A missing config is left alone: setup must still work on a fresh machine, and
+# the first refresh will bootstrap.
+ensure_static_profile_region() {
+  local r
+  [[ -s $CFG ]] || return 0
+  r=$(cfg_get "$CFG" "$(sec "$STATIC_PROFILE")" region || true)
+  [[ -n $r ]] && return 0
+  printf '\n[%s]\nregion = %s\n' "$(sec "$STATIC_PROFILE")" "$REGION" >> "$CFG"
+  echo "added [$STATIC_PROFILE] region = $REGION to $CFG"
 }
 
 # --- Claude Code on Bedrock (--setup-claude) -------------------------------
@@ -267,12 +281,13 @@ check() {
 # already equivalent (same JSON, key order and whitespace irrelevant) or --force
 # says so. ~/.claude.json in particular accumulates real state — project history,
 # onboarding answers, MCP approvals — so overwriting keeps a backup.
-CLAUDE_SETTINGS_JSON=$(cat <<EOF
+claude_settings_json() {
+  cat <<EOF
 {
-  "awsAuthRefresh": "mqbedrock",
+  "awsAuthRefresh": "mqbedrock --static-profile $STATIC_PROFILE",
   "env": {
     "CLAUDE_CODE_USE_BEDROCK": "1",
-    "AWS_REGION": "$REGION",
+    "AWS_REGION": "$(static_region)",
     "AWS_PROFILE": "$STATIC_PROFILE",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "au.anthropic.claude-sonnet-5",
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "au.anthropic.claude-opus-5[1m]",
@@ -280,7 +295,7 @@ CLAUDE_SETTINGS_JSON=$(cat <<EOF
   }
 }
 EOF
-)
+}
 
 CLAUDE_JSON=$(cat <<'EOF'
 {
@@ -336,10 +351,11 @@ write_json() {
 
 setup_claude() {
   local ok=0
-  write_json "$HOME/.claude/settings.json" "$CLAUDE_SETTINGS_JSON" --setup-claude || ok=1
-  write_json "$HOME/.claude.json"          "$CLAUDE_JSON"          --setup-claude || ok=1
+  ensure_static_profile_region
+  write_json "$HOME/.claude/settings.json" "$(claude_settings_json)" --setup-claude || ok=1
+  write_json "$HOME/.claude.json"          "$CLAUDE_JSON"            --setup-claude || ok=1
   [[ $ok -eq 0 ]] || return 1
-  echo "  Bedrock via the [$STATIC_PROFILE] profile in $REGION; run 'mqbedrock' to fill"
+  echo "  Bedrock via the [$STATIC_PROFILE] profile in $(static_region); run 'mqbedrock' to fill"
   echo "  it in (Claude Code then refreshes it itself via awsAuthRefresh)."
   echo "  'mqbedrock' must be on PATH for that hook — the CMR bashrc extras do this."
 }
@@ -372,13 +388,6 @@ codex_profile_file() {
   echo "${CODEX_HOME:-$HOME/.codex}/${CODEX_PROFILE}.config.toml"
 }
 
-# The region to sign for: whatever the static profile actually uses, falling
-# back to the one bootstrap writes.
-profile_region() {
-  local r; r=$(cfg_get "$CFG" "$(sec "$STATIC_PROFILE")" region || true)
-  echo "${r:-$REGION}"
-}
-
 codex_profile_toml() {
   cat <<EOF
 $CODEX_MARKER
@@ -389,23 +398,45 @@ $CODEX_MARKER
 
 model_provider = "amazon-bedrock-runtime"
 model = "${CODEX_MODEL}"
+model_reasoning_effort = "high"
 
 [model_providers.amazon-bedrock-runtime.aws]
 profile = "${STATIC_PROFILE}"
-region = "$(profile_region)"
-
-# Codex's equivalent of Claude Code's awsAuthRefresh hook: the static keys in
-# the profile above expire (12h for an SSO-issued role), and this is run to mint
-# new ones when signing starts failing. Inside an mqyolo sandbox the mqbedrock
-# on PATH is the broker stub, so the refresh happens on the host — the only
-# place it can — and the sandbox credentials are restaged afterwards.
-[model_providers.amazon-bedrock-runtime.aws.auth_refresh]
-command = "mqbedrock"
+region = "$(static_region)"
 EOF
 }
 
+# The native Bedrock Runtime provider used by the AWS Australia guide was
+# validated there with Codex 0.149.1. Older clients reject its AWS settings
+# before making a request. This check is advisory: setup remains usable on a
+# fresh machine where Codex is not installed yet.
+warn_old_host_codex() {
+  local minimum=0.149.1 installed oldest
+  command -v codex >/dev/null 2>&1 || return 0
+  installed=$(codex --version 2>/dev/null | sed -n 's/.* \([0-9][0-9.]*\).*/\1/p')
+  [[ -n $installed ]] || return 0
+  oldest=$(printf '%s\n%s\n' "$minimum" "$installed" | sort -V | head -n 1)
+  if [[ $oldest != "$minimum" ]]; then
+    echo >&2
+    echo "mqbedrock: WARNING: host Codex $installed is too old for the" >&2
+    echo "mqbedrock:          amazon-bedrock-runtime provider used by this profile." >&2
+    echo "mqbedrock:          Use 'mqyolo codex' (whose image has current Codex), or" >&2
+    echo "mqbedrock:          upgrade the host Codex to at least $minimum." >&2
+  fi
+}
+
+# The bundled IAM policy grants these global inference profiles from Sydney.
+codex_model_in_bundled_policy() {
+  case "$CODEX_MODEL" in
+    global.openai.gpt-5.6-sol|global.openai.gpt-5.6-terra|\
+    global.openai.gpt-5.6-luna|global.openai.gpt-6-astra) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 setup_codex() {
-  local file new
+  local file new current_region policy_path
+  ensure_static_profile_region
   file=$(codex_profile_file)
   mkdir -p "$(dirname "$file")"
   # Never clobber a file we did not write: an unmarked one is the user's own.
@@ -421,19 +452,32 @@ setup_codex() {
   new=$(codex_profile_toml)
   if [[ -e $file && "$(cat "$file")" == "$new" ]]; then
     echo "codex profile $file already up to date (model $CODEX_MODEL)"
-    return 0
+  else
+    printf '%s\n' "$new" > "$file"
+    echo "wrote $file"
   fi
-  printf '%s\n' "$new" > "$file"
-  echo "wrote $file"
-  echo "  provider amazon-bedrock-runtime, model $CODEX_MODEL, region $(profile_region),"
+  current_region=$(static_region)
+  echo "  provider amazon-bedrock-runtime, model $CODEX_MODEL, region $current_region,"
   echo "  signing with the [$STATIC_PROFILE] profile (run 'mqbedrock' to fill it in)."
   echo "  Use it with 'codex --profile $CODEX_PROFILE'; mqyolo codex selects it for you."
+  warn_old_host_codex
   echo
-  echo "NOTE: the Bedrock OpenAI-compatible endpoint authorizes InvokeModel against"
-  echo "      arn:aws:bedrock:$(profile_region):<account>:project/default, which QUT's"
-  echo "      BedrockUserAccess role does not currently grant — Codex will fail with"
-  echo "      AccessDeniedException until that permission is added. Claude on Bedrock"
-  echo "      is unaffected: it uses the per-model Converse API, which is allowed."
+  echo "IAM prerequisite: QUT's BedrockUserAccess role must allow bedrock:InvokeModel on"
+  echo "  arn:aws:bedrock:${current_region}:267451755618:project/default"
+  echo "and the $CODEX_MODEL inference profile and foundation-model resources."
+  echo "Without that administrator-side grant, Codex reaches Bedrock but receives 401"
+  policy_path=$(readlink -f \
+    "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../docs/codex-bedrock-global-openai-iam-policy.json")
+  if [[ $current_region == ap-southeast-2 ]] && codex_model_in_bundled_policy; then
+    echo "Ready-to-attach policy for this model and Region:"
+  else
+    echo "Policy example (written for the bundled global OpenAI models in ap-southeast-2):"
+  fi
+  echo "  $policy_path"
+  if [[ $current_region != ap-southeast-2 ]] || ! codex_model_in_bundled_policy; then
+    echo "Edit every model and Region ARN/condition in that example to match this"
+    echo "profile before an administrator attaches it."
+  fi
 }
 
 # --- opencode on Bedrock (--setup-opencode) --------------------------------
@@ -473,7 +517,7 @@ opencode_config_json() {
     "amazon-bedrock": {
       "options": {
         "profile": "$STATIC_PROFILE",
-        "region": "$(profile_region)"
+        "region": "$(static_region)"
       }
     }
   },
@@ -485,10 +529,11 @@ EOF
 
 setup_opencode() {
   local file
+  ensure_static_profile_region
   file=$(opencode_config_file)
   write_json "$file" "$(opencode_config_json)" --setup-opencode || return 1
   echo "  provider amazon-bedrock (Converse API), model $OPENCODE_MODEL,"
-  echo "  region $(profile_region), signing with the [$STATIC_PROFILE] profile"
+  echo "  region $(static_region), signing with the [$STATIC_PROFILE] profile"
   echo "  (run 'mqbedrock' to fill it in). opencode has no auth-refresh hook of its"
   echo "  own, so an expired key means running 'mqbedrock' again — on the host, or"
   echo "  from inside an mqyolo sandbox, where it is forwarded to the host."
@@ -505,6 +550,26 @@ if [[ $SETUP_ONLY -eq 1 ]]; then
   if [[ $SETUP_CODEX    -eq 1 ]]; then setup_codex    || setup_rc=1; fi
   if [[ $SETUP_OPENCODE -eq 1 ]]; then setup_opencode || setup_rc=1; fi
   exit $setup_rc
+fi
+
+# Locate the AWS CLI only for credential refreshes. The setup modes above write
+# configuration without making an AWS call and must also work on machines that
+# have neither aws nor the cluster pixi environment installed.
+PIXI_CENTRAL_TOML=${PIXI_CENTRAL_TOML:-/pkg/cmr/sw/pixi_central/pixi.toml}
+if ! command -v aws >/dev/null 2>&1; then
+  # pixi ships alongside this script in the deployed hpc_scripts bin directory,
+  # so fall back to that when running a git checkout that has no pixi next to it.
+  PIXI=$(command -v pixi || true)
+  for candidate in "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/pixi" \
+                   /work/microbiome/sw/hpc_scripts/bin/pixi; do
+    [[ -n $PIXI ]] && break
+    [[ -x $candidate ]] && PIXI=$candidate
+  done
+  if [[ ! -x $PIXI || ! -s $PIXI_CENTRAL_TOML ]]; then
+    echo "aws not on PATH, and no pixi + $PIXI_CENTRAL_TOML to run it from" >&2
+    exit 1
+  fi
+  aws() { "$PIXI" run --manifest-path "$PIXI_CENTRAL_TOML" aws "$@"; }
 fi
 
 mkdir -p "$(dirname "$CFG")"
@@ -537,10 +602,10 @@ if ! creds=$(aws configure export-credentials --profile "$SSO_PROFILE" --format 
   creds=$(aws configure export-credentials --profile "$SSO_PROFILE" --format process)
 fi
 
-# Copy into [bedrock] as plain static keys. Claude Code re-resolves these about
-# hourly, but that is now a local file read rather than an Identity Center call.
-# Codex (see setup_codex) signs the Bedrock OpenAI-compatible endpoint with the
-# same profile.
+# Copy into the static profile as plain static keys. Claude Code re-resolves
+# these about hourly, but that is now a local file read rather than an Identity
+# Center call. Codex (see setup_codex) and opencode (see setup_opencode) sign
+# with the same profile.
 aws configure set aws_access_key_id     "$(jq -r .AccessKeyId     <<<"$creds")" --profile "$STATIC_PROFILE"
 aws configure set aws_secret_access_key "$(jq -r .SecretAccessKey <<<"$creds")" --profile "$STATIC_PROFILE"
 aws configure set aws_session_token     "$(jq -r .SessionToken    <<<"$creds")" --profile "$STATIC_PROFILE"

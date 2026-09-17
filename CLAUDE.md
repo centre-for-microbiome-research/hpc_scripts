@@ -124,20 +124,43 @@ Key invariants the tests guard (keep them true):
   which is denylisted from provider/auth keys — a profile layer may set
   `model_provider`/`model_providers`. It is exempt from mqbedrock's
   broker-forwarding (it makes no AWS call and `~/.codex` is bound read-write, so it
-  works from either side). mqyolo reads the AWS profile out of that file
-  (`_mqyolo_codex_aws_profile`) and stages it — for codex that file is
-  authoritative even over `AWS_BEARER_TOKEN_BEDROCK`, because Codex's own auth
-  precedence puts a configured `aws.profile` first — then passes
-  `--profile bedrock` unless the caller passed their own `--profile`/`-p` or
-  `--no-bedrock` (which for codex is exactly "leave the profile unselected"; the
-  claude-only settings.json rewrite is unchanged). `aws.auth_refresh` in the file
-  is Codex's equivalent of `awsAuthRefresh`, and pointing it at bare `mqbedrock`
-  makes the expiry path work on both sides via the existing broker stub.
-  Not currently usable at QUT: that endpoint authorizes `bedrock:InvokeModel`
-  against `arn:aws:bedrock:<region>:<account>:project/default`, not a model ARN,
-  and the `DFAZCB7230-BedrockUserAccess` role has no such grant — every model
-  (including `au.anthropic.*`) returns AccessDenied there, while per-model
-  `Converse`, which Claude Code uses, succeeds. `--setup-codex` prints that.
+   works from either side). mqyolo reads the AWS profile out of that file
+   (`_mqyolo_codex_provider_and_aws_profile`) and stages it. The resolver applies
+   `~/.codex/config.toml` first and the selected profile file second, so a profile
+   that only changes reasoning effort inherits base Bedrock credentials, while an
+   explicit non-Bedrock `model_provider` suppresses them. A base-only Bedrock
+   configuration is also staged without requiring a generated profile file. For
+   codex that file is
+   authoritative even over `AWS_BEARER_TOKEN_BEDROCK`, because Codex's own auth
+   precedence puts a configured `aws.profile` first — then passes
+   `--profile bedrock` unless the caller passed their own `--profile`/`-p` or
+   `--no-bedrock` (which for codex is exactly "leave the profile unselected"; the
+   claude-only settings.json rewrite is unchanged). Resolve caller-selected profile
+   arguments before staging credentials, including `--profile=NAME` and `-pNAME`;
+   if that profile configures Bedrock, stage the AWS profile it names, otherwise do
+   not expose the default Bedrock role. Codex restricts `aws.auth_refresh.command`
+   to `aws`, so the generated file has no invalid `mqbedrock` refresh hook. If the
+   staged keys expire during a session, running `mqbedrock` inside the sandbox uses
+   the existing broker stub to refresh the selected static profile on the host and
+   restage it. The broker supplies `--static-profile` from its launch configuration;
+   container arguments cannot choose a different host profile.
+   The native Runtime provider was validated by AWS with Codex 0.149.1; setup warns
+   when an older host Codex is on PATH, while remaining usable when Codex is absent.
+   The generated default is the Australian endpoint's `global.openai.gpt-5.6-sol`
+   inference profile with high reasoning effort. QUT's
+   `DFAZCB7230-BedrockUserAccess` role still needs the four-part global CRIS
+   policy from AWS's GPT-5.6 cross-Region inference guide: access to the Sydney
+   global inference profiles and `project/default`, the in-Region and global
+   foundation-model ARNs, and `bedrock:CallWithBearerToken`. The bundled policy
+   grants the Sol, Terra, Luna, and GPT-6 Astra global profiles. Without that
+   administrator-side grant, SigV4 authentication succeeds but Bedrock returns 401
+   Unauthorized for `bedrock:InvokeModel` on `project/default`. The
+   ready-to-review policy is `docs/codex-bedrock-global-openai-iam-policy.json`;
+   setup labels it as ready to attach only for a model in that set and the Sydney
+   Region. If `--codex-model` selects another model or the static profile's Region
+   differs, setup requires the administrator to edit every model and Region
+   ARN/condition in the example first. An AWS administrator still has to attach
+   its permissions to the role (and ensure no SCP denies global CRIS).
 - **opencode on Bedrock is the one that does reach Claude there**, because its
   built-in `amazon-bedrock` provider (`@ai-sdk/amazon-bedrock`) calls the per-model
   `Converse`/`ConverseStream` API — the same one Claude Code uses, i.e. the one QUT
