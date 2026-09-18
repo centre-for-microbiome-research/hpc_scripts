@@ -2228,6 +2228,23 @@ def test_mqbedrock_setup_creates_missing_static_profile_stanza(tmp_path):
     assert settings["env"]["AWS_REGION"] == "ap-southeast-2"
 
 
+def test_mqbedrock_setup_adds_region_to_an_existing_static_profile_stanza(tmp_path):
+    # A stanza that exists but has no region must not get a second header:
+    # AWS shared-config parsers reject duplicate sections.
+    home = tmp_path / "home"
+    (home / ".aws").mkdir(parents=True)
+    cfg = home / ".aws" / "config"
+    cfg.write_text("[profile bedrock-alt]\noutput = json\n")
+
+    p = _setup_claude(home, "--static-profile", "bedrock-alt")
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "added region = ap-southeast-2 to [bedrock-alt]" in p.stdout
+    text = cfg.read_text()
+    assert text.count("[profile bedrock-alt]") == 1
+    assert "region = ap-southeast-2" in text
+    assert text.index("[profile bedrock-alt]") < text.index("region = ap-southeast-2")
+
+
 def test_mqbedrock_force_without_a_setup_option_is_rejected(tmp_path):
     # --force on a plain refresh would silently mean nothing.
     env = {**os.environ, "HOME": str(tmp_path)}
@@ -2302,6 +2319,7 @@ def test_mqbedrock_setup_codex_can_name_an_alternate_static_profile(tmp_path):
     toml = (home / ".codex" / "bedrock.config.toml").read_text()
     assert 'profile = "bedrock-alt"' in toml
     assert "signing with the [bedrock-alt] profile" in p.stdout
+    assert "mqbedrock --static-profile bedrock-alt" in p.stdout
 
 
 def test_mqbedrock_setup_requires_editing_policy_for_model_or_region_overrides(tmp_path):
@@ -2546,6 +2564,30 @@ def test_mqyolo_codex_stages_the_aws_profile_named_in_the_codex_file(tmp_path):
     profile_file = home / ".codex" / "bedrock.config.toml"
     profile_file.write_text(
         profile_file.read_text().replace('profile = "bedrock"', 'profile = "bedrock-alt"')
+    )
+
+    p, argv, saved = _mqyolo_dry_run(tmp_path, home, args=("--no-broker", "codex"))
+    assert p.returncode == 0, p.stderr
+    assert "AWS_PROFILE=bedrock-alt" in argv, argv
+    creds = (saved / ".aws" / "credentials").read_text()
+    assert "AKIA_ALT" in creds
+    assert "AKIA_BEDROCK" not in creds
+
+
+def test_mqyolo_codex_stages_a_single_quoted_toml_aws_profile(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(
+        home,
+        credentials=BEDROCK_CREDENTIALS + "\n[bedrock-alt]\n"
+        "aws_access_key_id = AKIA_ALT\naws_secret_access_key = alt-secret\n",
+    )
+    assert _setup_codex(home).returncode == 0
+    profile_file = home / ".codex" / "bedrock.config.toml"
+    profile_file.write_text(
+        profile_file.read_text().replace(
+            'profile = "bedrock"', "profile = 'bedrock-alt'"
+        )
     )
 
     p, argv, saved = _mqyolo_dry_run(tmp_path, home, args=("--no-broker", "codex"))
@@ -2814,6 +2856,16 @@ def test_mqbedrock_setup_opencode_writes_an_opencode_config(tmp_path):
     again = _setup_opencode(home)
     assert again.returncode == 0, again.stdout + again.stderr
     assert "already holds these settings" in again.stdout
+
+
+def test_mqbedrock_setup_opencode_names_the_static_profile_in_refresh_instructions(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    p = _setup_opencode(home, "--static-profile", "bedrock-alt")
+    assert p.returncode == 0, p.stdout + p.stderr
+    cfg = json.loads(_opencode_config(home).read_text())
+    assert cfg["provider"]["amazon-bedrock"]["options"]["profile"] == "bedrock-alt"
+    assert "mqbedrock --static-profile bedrock-alt" in p.stdout
 
 
 def test_mqbedrock_setup_opencode_needs_no_aws_config_or_credentials(tmp_path):

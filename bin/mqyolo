@@ -220,8 +220,10 @@ _mqyolo_codex_provider_and_aws_profile() {
             v = line
             sub(/^[^=]*=/, "", v)
             sub(/[ \t]*#.*/, "", v)
-            gsub(/^[ \t"]+/, "", v)
-            gsub(/[ \t"]+$/, "", v)
+            gsub(/^[ \t]+/, "", v)
+            gsub(/[ \t]+$/, "", v)
+            if (v ~ /^".*"$/ || v ~ /^'\''.*'\''$/)
+                v = substr(v, 2, length(v) - 2)
             return v
         }
         FNR == 1 { inroot = 1; inaws = 0; aws_provider = "" }
@@ -236,7 +238,7 @@ _mqyolo_codex_provider_and_aws_profile() {
                 aws_provider = header
                 sub(/^[ \t]*\[model_providers\./, "", aws_provider)
                 sub(/\.aws\]$/, "", aws_provider)
-                gsub(/"/, "", aws_provider)
+                gsub(/["'\'']/, "", aws_provider)
             }
             next
         }
