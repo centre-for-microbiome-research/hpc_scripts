@@ -68,7 +68,7 @@ aviary = "==0.13.0"
 snakemake-executor-plugin-cluster-generic = ">=1"
 
 [feature.aviary-v0-13-0.tasks]
-postinstall-base = { cmd = ["aviary", "build", "--gpu"], depends-on = [{ task = "postinstall-aviary-config", environment = "default" }] }
+postinstall-base = { cmd = ["aviary", "build", "--gpu"], depends-on = [{ task = "postinstall-aviary-config-v0-13-0", environment = "default" }] }
 
 [feature.aviary-v0-13-0.activation]
 env = { PYTHONNOUSERSITE = "1", GTDBTK_DATA_PATH = "/work/microbiome/db/gtdb/gtdb_release232/auxillary_files/gtdbtk_package/full_package/release232", CHECKM2DB = "/work/microbiome/db/CheckM2_database/uniref100.KO.1.dmnd", EGGNOG_DATA_DIR = "/mnt/hpccs01/work/microbiome/db/eggnog-mapper/2.1.3", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S6.5.0.GTDB_r232.metapackage_20260319.smpkg.zb", METABULI_DB_PATH = "/work/microbiome/db/metabuli/2024-3-28-GTDB214.1+humanT2T" }
@@ -79,7 +79,7 @@ aviary = "==0.13.3"
 snakemake-executor-plugin-cluster-generic = ">=1"
 
 [feature.aviary-v0-13-3.tasks]
-postinstall-base = { cmd = ["aviary", "build", "--gpu"], depends-on = [{ task = "postinstall-aviary-config", environment = "default" }] }
+postinstall-base = { cmd = ["aviary", "build", "--gpu"], depends-on = [{ task = "postinstall-aviary-config-v0-13-3", environment = "default" }] }
 
 [feature.aviary-v0-13-3.activation]
 env = { PYTHONNOUSERSITE = "1", GTDBTK_DATA_PATH = "/work/microbiome/db/gtdb/gtdb_release232/auxillary_files/gtdbtk_package/full_package/release232", CHECKM2DB = "/work/microbiome/db/CheckM2_database/uniref100.KO.1.dmnd", EGGNOG_DATA_DIR = "/mnt/hpccs01/work/microbiome/db/eggnog-mapper/2.1.3", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S6.5.0.GTDB_r232.metapackage_20260319.smpkg.zb", METABULI_DB_PATH = "/work/microbiome/db/metabuli/2024-3-28-GTDB214.1+humanT2T" }
@@ -921,9 +921,16 @@ virsorter-v2-2-4 = { features = ["virsorter-v2-2-4"], no-default-feature = true 
 # environment's activate.d so they apply even when activated via `conda activate`
 cmd = "python write_activate_vars.py"
 
-[tasks.postinstall-aviary-config]
+# One task per aviary env: the script takes a single env, and the three-argument
+# form means "nested env" (as used by postinstall-binchicken-aviary-config), not
+# "second env".
+[tasks.postinstall-aviary-config-v0-13-0]
 # Write aviary's embedded .pixi/config.toml (detached-environments = false)
-cmd = ["python", "write_pixi_configs.py", "aviary-v0-13-0", "aviary-v0-13-3", "aviary"]
+cmd = ["python", "write_pixi_configs.py", "aviary-v0-13-0", "aviary"]
+
+[tasks.postinstall-aviary-config-v0-13-3]
+# Write aviary's embedded .pixi/config.toml (detached-environments = false)
+cmd = ["python", "write_pixi_configs.py", "aviary-v0-13-3", "aviary"]
 
 [tasks.postinstall-binchicken-config]
 # Write binchicken's embedded .pixi/config.toml (detached-environments = false)
