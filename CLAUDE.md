@@ -96,6 +96,32 @@ Key invariants the tests guard (keep them true):
   never saw it, and the symptom was an empty `Authentication` panel — no device
   code, no error, nothing — until Claude SIGTERMed the hook at its 3-minute
   timeout. Guarded by `test_stub_does_not_block_on_an_idle_stdin_pipe`.
+- **The credential write must be serialised, because `aws configure set` is an
+  unlocked read-modify-write.** It reads the whole file, rewrites it via
+  `open(..., 'w')` — leaving a window where the file is truncated — and when the
+  section is absent from what it read it *appends* a fresh `[bedrock]` header
+  instead of failing. Two overlapping writers therefore leave **two `[bedrock]`
+  sections**, and botocore then rejects the entire file (`Unable to parse config
+  file: ~/.aws/credentials`), which breaks every AWS call — including the ones
+  mqbedrock itself would need to repair it, so the only way out was moving the file
+  aside by hand. Overlapping writers are the *norm*, not a rare race: the 12h role
+  credential expires for every consumer at the same instant, so each session's
+  `awsAuthRefresh` (host sessions plus one per mqyolo broker forwarding it) fires
+  within seconds of the others and runs the three `aws configure set` calls in
+  lockstep. So the writes go through `with_creds_lock` (`flock` on
+  `~/.aws/.mqbedrock.lock` — its own file, not the credentials file, which gets its
+  contents replaced by awscli and its inode replaced by the repair;
+  `MQBEDROCK_LOCK_WAIT` seconds, then a clear error rather than a hang Claude
+  SIGTERMs at 3 minutes), and `repair_creds` collapses an already-duplicated
+  section on the next run. The repair runs **before the first AWS call**, not just
+  before our own write: every call reads that file, so a duplicate otherwise fails
+  the fetch and then the login it falls through to. It only ever rewrites
+  `[bedrock]`, keeps the last value per key (the freshest write), leaves comments,
+  blank lines and other profiles byte-for-byte, backs the file up, and `mv`s in
+  place; a duplicated section holding anything but flat `key = value` entries is
+  reported rather than merged, since this file can hold other profiles' long-lived
+  keys. Post-write it re-counts the sections, so a writer that does not take the
+  lock is named at the time rather than surfacing later as a parse error.
 - **`mqbedrock --setup-claude` / `--setup-codex` / `--setup-opencode` write the
   client-side config; the
   refresh path writes credentials.** Keep the two separable: the `--setup-*` options

@@ -2008,6 +2008,227 @@ def test_broker_rejects_extra_mqbedrock_arguments(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# The credential write is serialised, and a file corrupted by an unserialised one
+# is repaired. `aws configure set` is an unlocked read-modify-write that appends a
+# fresh `[bedrock]` header whenever it does not find one in what it read, so two
+# overlapping mqbedrock runs leave two of them behind and botocore then refuses
+# the whole file ("Unable to parse config file"), breaking every AWS call — which
+# is also every call mqbedrock would need to fix it. Concurrent runs are the norm
+# here: all sessions' credentials expire at the same instant, so all their
+# awsAuthRefresh hooks fire together.
+# ---------------------------------------------------------------------------
+# What bootstrap() writes, i.e. a config that passes mqbedrock's check().
+MQBEDROCK_FULL_CONFIG = """\
+[profile bedrock-sso]
+sso_session = my-sso-bedrock
+sso_account_id = 267451755618
+sso_role_name = DFAZCB7230-BedrockUserAccess
+region = ap-southeast-2
+output = json
+
+[sso-session my-sso-bedrock]
+sso_start_url = https://d-97671c4bd0.awsapps.com/start
+sso_region = ap-southeast-2
+sso_registration_scopes = sso:account:access
+
+[profile bedrock]
+region = ap-southeast-2
+"""
+
+# A credentials file in the state the race leaves it in: the section duplicated,
+# the second copy holding only the key whose write collided. Taken from a real
+# occurrence, with another profile (and a comment) around it that must survive.
+DUPLICATED_BEDROCK_CREDENTIALS = """\
+[bedrock]
+aws_access_key_id = AKIA_FIRST
+aws_secret_access_key = first-secret
+aws_session_token = first-token
+[bedrock]
+aws_secret_access_key = second-secret
+
+# hand-written, and none of mqbedrock's business
+[default]
+aws_access_key_id = AKIA_OTHER_IDENTITY
+"""
+
+
+def _mqbedrock_refresh_home(tmp_path, credentials, aws_script):
+    """A fake HOME plus a fake `aws` on PATH, ready to run the refresh path
+    against. aws_script is the body of the stub, which is called exactly as the
+    real CLI is (`configure export-credentials`, `configure set`)."""
+    home = tmp_path / "home"
+    (home / ".aws").mkdir(parents=True)
+    (home / ".aws" / "config").write_text(MQBEDROCK_FULL_CONFIG)
+    if credentials is not None:
+        (home / ".aws" / "credentials").write_text(credentials)
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    aws = fakebin / "aws"
+    aws.write_text(aws_script)
+    aws.chmod(0o755)
+    env = {**os.environ, "HOME": str(home),
+           "PATH": f"{fakebin}:{os.environ['PATH']}"}
+    # The suite may itself be running inside an mqyolo sandbox; the refresh must
+    # be tested as it behaves on the host, not forwarded to the broker.
+    env.pop("MQBROKER_SPOOL", None)
+    return home, env
+
+
+def _run_mqbedrock(env, *args):
+    return subprocess.run([str(MQBEDROCK), *args], text=True,
+                          capture_output=True, env=env)
+
+
+# A stub that serves the fetch and logs every `configure set` without touching
+# the credentials file, so a test sees exactly what mqbedrock asked for.
+AWS_STUB_LOGGING_SETS = """\
+#!/bin/bash
+if [[ "$1 $2" == "configure export-credentials" ]]; then
+  echo '{"AccessKeyId":"AKIA_NEW","SecretAccessKey":"new-secret","SessionToken":"new-token"}'
+  exit 0
+fi
+if [[ "$1 $2" == "configure set" ]]; then
+  echo "$3" >> "$MQBEDROCK_TEST_LOG"
+  exit 0
+fi
+exit 0
+"""
+
+
+def test_mqbedrock_repairs_a_duplicated_credentials_section(tmp_path):
+    # The state the user is left in today: mqbedrock cannot fix the file because
+    # every AWS call it would make first has to parse it. So it repairs the file
+    # itself, before the fetch, and the run then succeeds.
+    home, env = _mqbedrock_refresh_home(
+        tmp_path, DUPLICATED_BEDROCK_CREDENTIALS, AWS_STUB_LOGGING_SETS)
+    env["MQBEDROCK_TEST_LOG"] = str(tmp_path / "sets.log")
+
+    p = _run_mqbedrock(env)
+    assert p.returncode == 0, p.stderr
+
+    creds = (home / ".aws" / "credentials").read_text()
+    assert creds.count("[bedrock]") == 1, creds
+    # Merged, not truncated: every key survives, and the colliding write (the
+    # later one) is the value kept.
+    assert "aws_access_key_id = AKIA_FIRST" in creds
+    assert "aws_secret_access_key = second-secret" in creds
+    assert "first-secret" not in creds
+    assert "aws_session_token = first-token" in creds
+    # Nothing outside our own section is ours to touch.
+    assert "# hand-written, and none of mqbedrock's business" in creds
+    assert "[default]\naws_access_key_id = AKIA_OTHER_IDENTITY" in creds
+    # The file was rewritten, so keep the original next to it.
+    backups = [f for f in (home / ".aws").iterdir()
+               if f.name.startswith("credentials.mqbedrock-")]
+    assert len(backups) == 1, sorted(f.name for f in (home / ".aws").iterdir())
+    assert backups[0].read_text() == DUPLICATED_BEDROCK_CREDENTIALS
+    # And the refresh itself still happened.
+    assert (tmp_path / "sets.log").read_text().split() == [
+        "aws_access_key_id", "aws_secret_access_key", "aws_session_token"]
+
+
+def test_mqbedrock_leaves_a_healthy_credentials_file_alone(tmp_path):
+    # The repair is a repair, not a rewrite-on-every-run: an intact file keeps its
+    # formatting and gets no backup (which would otherwise accumulate a copy of
+    # the credentials every hour Claude Code refreshes).
+    home, env = _mqbedrock_refresh_home(
+        tmp_path, BEDROCK_CREDENTIALS, AWS_STUB_LOGGING_SETS)
+    env["MQBEDROCK_TEST_LOG"] = str(tmp_path / "sets.log")
+
+    p = _run_mqbedrock(env)
+    assert p.returncode == 0, p.stderr
+    assert (home / ".aws" / "credentials").read_text() == BEDROCK_CREDENTIALS
+    assert not [f for f in (home / ".aws").iterdir()
+                if f.name.startswith("credentials.mqbedrock-")]
+
+
+def test_mqbedrock_refuses_to_merge_a_section_it_does_not_recognise(tmp_path):
+    # Merging assumes the flat `key = value` entries mqbedrock itself writes. A
+    # duplicated section holding anything else (here awscli's nested form) is
+    # reported, not guessed at: this file can hold long-lived keys for other
+    # profiles, and a wrong merge silently loses credentials.
+    home, env = _mqbedrock_refresh_home(tmp_path, """\
+[bedrock]
+aws_access_key_id = AKIA_FIRST
+[bedrock]
+s3 =
+  max_concurrent_requests = 10
+""", AWS_STUB_LOGGING_SETS)
+    env["MQBEDROCK_TEST_LOG"] = str(tmp_path / "sets.log")
+
+    p = _run_mqbedrock(env)
+    assert p.returncode != 0
+    assert "not ours to rewrite" in p.stderr
+    # Untouched, and no write attempted on a file we just declared unsafe.
+    assert (home / ".aws" / "credentials").read_text().count("[bedrock]") == 2
+    assert not (tmp_path / "sets.log").exists()
+
+
+# A stub whose `configure set` brackets its work with markers, so interleaving is
+# visible in the log: serialised runs give start/end pairs, a race gives two
+# starts in a row.
+AWS_STUB_BRACKETING_SETS = """\
+#!/bin/bash
+if [[ "$1 $2" == "configure export-credentials" ]]; then
+  echo '{"AccessKeyId":"AKIA_NEW","SecretAccessKey":"new-secret","SessionToken":"new-token"}'
+  exit 0
+fi
+if [[ "$1 $2" == "configure set" ]]; then
+  echo "start $$ $3" >> "$MQBEDROCK_TEST_LOG"
+  sleep 0.2
+  echo "end $$ $3" >> "$MQBEDROCK_TEST_LOG"
+  exit 0
+fi
+exit 0
+"""
+
+
+def test_mqbedrock_serialises_concurrent_credential_writes(tmp_path):
+    # The fix for the race itself: two refreshes firing together (two Claude
+    # sessions, or a host session and a broker forwarding one) must not have their
+    # read-modify-writes overlap.
+    home, env = _mqbedrock_refresh_home(
+        tmp_path, BEDROCK_CREDENTIALS, AWS_STUB_BRACKETING_SETS)
+    log = tmp_path / "sets.log"
+    env["MQBEDROCK_TEST_LOG"] = str(log)
+
+    runs = [subprocess.Popen([str(MQBEDROCK)], text=True, env=env,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            for _ in range(2)]
+    for r in runs:
+        out, err = r.communicate(timeout=120)
+        assert r.returncode == 0, err
+
+    # Both runs did all three writes, and no write began while another was open.
+    events = [line.split() for line in log.read_text().splitlines()]
+    assert len(events) == 2 * 3 * 2
+    open_writes = 0
+    for kind, _pid, _key in events:
+        open_writes += 1 if kind == "start" else -1
+        assert 0 <= open_writes <= 1, log.read_text()
+
+
+def test_mqbedrock_reports_a_lock_it_cannot_take(tmp_path):
+    # A stale lock must not leave the refresh hanging until Claude Code SIGTERMs
+    # the hook at three minutes with nothing said.
+    home, env = _mqbedrock_refresh_home(
+        tmp_path, BEDROCK_CREDENTIALS, AWS_STUB_LOGGING_SETS)
+    env["MQBEDROCK_TEST_LOG"] = str(tmp_path / "sets.log")
+    lock = home / ".aws" / ".mqbedrock.lock"
+    lock.touch()
+
+    holder = subprocess.Popen(["flock", str(lock), "sleep", "60"])
+    try:
+        p = _run_mqbedrock({**env, "MQBEDROCK_LOCK_WAIT": "1"})
+    finally:
+        holder.kill()
+        holder.wait()
+    assert p.returncode == 4, p.stderr
+    assert "still holds" in p.stderr
+    assert not (tmp_path / "sets.log").exists()
+
+
+# ---------------------------------------------------------------------------
 # Codex on Bedrock: `mqbedrock --setup-codex` writes a Codex profile file on the
 # host naming the static AWS profile, and mqyolo selects it and stages that
 # profile's keys. Codex speaks only the OpenAI protocol, so this runs the OpenAI
