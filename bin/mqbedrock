@@ -18,6 +18,13 @@
 # Claude Code runs it only after an STS GetCallerIdentity shows the current
 # credentials are dead, so within the 12h window this costs one cheap STS call.
 #
+# Every session's credential dies at the same instant, so several copies of this
+# script routinely run at once — and `aws configure set` is an unlocked
+# read-modify-write that turns a collision into two `[bedrock]` sections and an
+# unparseable credentials file. The write is therefore serialised under a lock,
+# and a file already corrupted that way is repaired on the next run: see "the
+# static credential file" below.
+#
 # The same static profile also lets OpenAI Codex run on Bedrock (Codex speaks
 # only the OpenAI protocol, so it uses Bedrock's OpenAI-compatible endpoint and
 # the OpenAI models hosted there, not Claude): `mqbedrock --setup-codex` writes
@@ -155,6 +162,12 @@ fi
 umask 077                        # credentials get written; keep them 0600
 
 CFG=$HOME/.aws/config
+CREDS=$HOME/.aws/credentials     # where the static keys land (see the section on
+                                 # "the static credential file" below)
+CREDS_LOCK=$HOME/.aws/.mqbedrock.lock
+# Seconds to wait for that lock. A write takes ~3, and Claude Code SIGTERMs an
+# awsAuthRefresh hook at 3 minutes, so wait well inside that and then say so.
+CREDS_LOCK_WAIT=${MQBEDROCK_LOCK_WAIT:-60}
 SSO_PROFILE=bedrock-sso          # profile holding the SSO settings.
                                  # Set to "default" to reuse an existing stanza
                                  # instead of adding a second copy.
@@ -495,6 +508,127 @@ setup_opencode() {
   echo "  Use it with 'OPENCODE_CONFIG=$file opencode'; mqyolo opencode selects it for you."
 }
 
+# --- The static credential file --------------------------------------------
+# `aws configure set` is an unlocked read-modify-write. It reads the whole file,
+# rewrites it in place through open(..., 'w') — so there is a window in which the
+# file is truncated — and when the section is not in what it read it *appends* a
+# fresh `[section]` header rather than failing. Two overlapping writers therefore
+# leave two `[bedrock]` sections behind, and from then on botocore's parser
+# rejects the entire file: "Unable to parse config file: ~/.aws/credentials".
+# That breaks every AWS call, including the ones this script would need to make
+# to put things right, so the only way out was to move the file aside by hand.
+#
+# Overlapping writers are the normal case here, not a rare one: every consumer of
+# the profile shares a single deadline, because the 12h role credential expires
+# for all of them at the same instant. Each Claude Code session's awsAuthRefresh
+# — host sessions, plus one per mqyolo broker forwarding it — then fires within
+# seconds of the others and runs the three writes below in lockstep. So serialise
+# our own writes, and repair the file if something got in anyway.
+
+# with_creds_lock CMD... — run CMD holding an exclusive lock. The lock is its own
+# file rather than the credentials file, so it does not depend on how awscli opens
+# its target (it replaces the contents; a repair below replaces the inode).
+with_creds_lock() {
+  mkdir -p "$(dirname "$CREDS_LOCK")"
+  (
+    if ! flock -w "$CREDS_LOCK_WAIT" 9; then
+      echo "mqbedrock: something still holds $CREDS_LOCK after ${CREDS_LOCK_WAIT}s;" >&2
+      echo "mqbedrock: giving up rather than racing it into a corrupt credentials file." >&2
+      echo "mqbedrock: If no other mqbedrock is running, delete that lock file." >&2
+      exit 4
+    fi
+    "$@"
+  ) 9>"$CREDS_LOCK"
+}
+
+# creds_sections — how many [STATIC_PROFILE] headers the credentials file holds.
+# Exactly one is correct; more is the corruption described above.
+creds_sections() {
+  [[ -s $CREDS ]] || { echo 0; return 0; }
+  grep -cE "^[[:blank:]]*\[$STATIC_PROFILE\][[:blank:]]*\$" "$CREDS" || true
+}
+
+# collapse_creds_section — print the credentials file with its duplicate
+# [STATIC_PROFILE] sections merged into the first one (last value for a key wins,
+# i.e. the most recent write), every other byte left exactly as it was. Comments
+# and blank lines stay where they are, including inside the section: a comment
+# just above the next header parses as ours but plainly is not. Two passes over
+# the file: gather, then emit.
+collapse_creds_section() {
+  awk -v sec="[$STATIC_PROFILE]" '
+    function header(l) { sub(/[ \t]+$/, "", l); return l }
+    function is_prose(l) { return (l == "" || l ~ /^[ \t]*[#;]/) }
+    FNR == NR {                                   # pass 1: collect the keys
+      line = header($0)
+      if (line ~ /^[ \t]*\[/) { insec = (line == sec); next }
+      if (!insec || is_prose(line)) next
+      key = line; sub(/[ \t]*=.*/, "", key)
+      if (!(key in value)) order[++n] = key
+      value[key] = $0                             # raw line: keep its spacing
+      next
+    }
+    {                                             # pass 2: emit one section
+      line = header($0)
+      if (line ~ /^[ \t]*\[/) {
+        insec = (line == sec)
+        if (!insec) { print; next }
+        if (++seen == 1) {
+          print
+          for (i = 1; i <= n; i++) print value[order[i]]
+        }
+        next
+      }
+      if (!insec || is_prose(line)) print
+    }
+  ' "$CREDS" "$CREDS"
+}
+
+# repair_creds — undo a duplicated [STATIC_PROFILE] section, so a file corrupted
+# by a concurrent write heals on the next run instead of needing a human. Only our
+# own section is rewritten, and only when every line in it is a plain
+# `key = value` (all we ever put there); anything more interesting is reported
+# rather than guessed at, since this file can hold other profiles' long-lived keys.
+repair_creds() {
+  local n; n=$(creds_sections)
+  (( n > 1 )) || return 0
+  echo "mqbedrock: $CREDS holds $n [$STATIC_PROFILE] sections, which no AWS tool can" >&2
+  echo "mqbedrock: parse — a concurrent write left them. Collapsing them into one." >&2
+  if ! awk -v sec="[$STATIC_PROFILE]" '
+        { line = $0; sub(/[ \t]+$/, "", line) }
+        line ~ /^[ \t]*\[/ { insec = (line == sec); next }
+        line == "" || line ~ /^[ \t]*[#;]/ { next }
+        insec && line !~ /^[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*[^ \t]/ { bad = 1 }
+        END { exit(bad ? 1 : 0) }
+      ' "$CREDS"; then
+    echo "mqbedrock: ...except one of them holds something other than plain key = value" >&2
+    echo "mqbedrock: entries, so this is not ours to rewrite. Merge them by hand." >&2
+    return 1
+  fi
+  backup_file "$CREDS" >&2
+  local tmp; tmp=$(mktemp "$CREDS.mqbedrock-XXXXXX")
+  collapse_creds_section > "$tmp"
+  mv -f "$tmp" "$CREDS"          # atomic, so no reader sees a half-written file
+}
+
+# write_static_keys — copy the fetched credentials into [STATIC_PROFILE]. Called
+# under the lock; `creds` is the JSON fetched below.
+write_static_keys() {
+  aws configure set aws_access_key_id     "$(jq -r .AccessKeyId     <<<"$creds")" --profile "$STATIC_PROFILE"
+  aws configure set aws_secret_access_key "$(jq -r .SecretAccessKey <<<"$creds")" --profile "$STATIC_PROFILE"
+  aws configure set aws_session_token     "$(jq -r .SessionToken    <<<"$creds")" --profile "$STATIC_PROFILE"
+  # Under the lock our own three writes cannot collide, so a duplicate at this
+  # point means a writer that does not take it — a hand-run `aws configure set`,
+  # or another tool. Report it now: left alone it resurfaces later as a parse
+  # error that points at the file rather than at whatever wrote it.
+  local n; n=$(creds_sections)
+  if (( n != 1 )); then
+    echo "mqbedrock: wrote the keys, but $CREDS now holds $n [$STATIC_PROFILE] sections" >&2
+    echo "mqbedrock: instead of 1 — something outside this script wrote it at the same" >&2
+    echo "mqbedrock: time. Re-run mqbedrock to collapse them." >&2
+    return 1
+  fi
+}
+
 # The --setup-* options only write config files: no AWS config check, no
 # credentials, no network — so they also work before the profile has ever been
 # filled in, and any order of the setup steps is fine. Several may be given at
@@ -514,6 +648,12 @@ elif ! check; then
   echo "$CFG is missing the entries above; add them or delete the conflicting keys" >&2
   exit 1                         # never edit a config that has other entries in it
 fi
+
+# Heal a credentials file a concurrent write corrupted, before the first AWS call
+# rather than just before our own write: every command below reads that file, so a
+# duplicated section otherwise fails the fetch — and then the login it falls
+# through to, which is where the parse error finally becomes visible.
+with_creds_lock repair_creds
 
 # Fetch credentials. Normally served from ~/.aws/cli/cache without touching the
 # network; falls through to a login only once the full 12h has elapsed.
@@ -540,9 +680,8 @@ fi
 # Copy into [bedrock] as plain static keys. Claude Code re-resolves these about
 # hourly, but that is now a local file read rather than an Identity Center call.
 # Codex (see setup_codex) signs the Bedrock OpenAI-compatible endpoint with the
-# same profile.
-aws configure set aws_access_key_id     "$(jq -r .AccessKeyId     <<<"$creds")" --profile "$STATIC_PROFILE"
-aws configure set aws_secret_access_key "$(jq -r .SecretAccessKey <<<"$creds")" --profile "$STATIC_PROFILE"
-aws configure set aws_session_token     "$(jq -r .SessionToken    <<<"$creds")" --profile "$STATIC_PROFILE"
+# same profile. Under the lock, so two sessions refreshing at the same moment
+# cannot interleave awscli's read-modify-write into a duplicated section.
+with_creds_lock write_static_keys
 
 echo "$STATIC_PROFILE profile refreshed, expires $(jq -r .Expiration <<<"$creds")"
