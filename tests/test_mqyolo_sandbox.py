@@ -45,6 +45,13 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _project_rpid(monkeypatch):
+    # mqsub only falls back to the CMR RPID for microbiome group members; pin one so
+    # these tests do not depend on the groups of whoever runs them.
+    monkeypatch.setenv("DEFAULT_RPID", "ABCDEF1234")
+
+
 def _sif_path():
     return os.environ.get("AI_TOOL_SIF") or str(REPO / "singularity" / "ai_tool.sif")
 
