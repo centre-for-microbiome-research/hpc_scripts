@@ -18,7 +18,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Check mqsub --dry-run
         run: |
-            python3 bin/mqsub --dry-run -- echo 'Hello world'
+            python3 bin/mqsub --dry-run -P ABCDEF1234 -- echo 'Hello world'
       # - name: Check mqstat # commented out because os.getlogin() fails on github actions
       #   run: |
       #       python3 bin/mqstat --help

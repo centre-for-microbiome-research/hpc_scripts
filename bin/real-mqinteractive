@@ -23,8 +23,9 @@ quota_check() { # queue ncpus mem_gb ngpus
 }
 
 # Project RPID, required on every aqua job: -P/--rpid, else $DEFAULT_RPID, else
-# the fallback (keep in sync with FALLBACK_RPID in mqsub).
-rpid="${DEFAULT_RPID:-DFAZCB7230}"
+# the fallback, for microbiome group members only (keep in sync with
+# FALLBACK_RPID/FALLBACK_RPID_GROUP in mqsub).
+rpid="${DEFAULT_RPID:-}"
 args=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -39,6 +40,14 @@ while [ $# -gt 0 ]; do
     esac
 done
 set -- "${args[@]}"
+if [ -z "$rpid" ]; then
+    if id -Gn | tr ' ' '\n' | grep -qx microbiome; then
+        rpid=DFAZCB7230
+    else
+        echo "A project RPID is required for all aqua jobs. Supply one with -P <RPID> or set \$DEFAULT_RPID (6 uppercase letters followed by 4 digits, e.g. ABCDEF1234). Find your RPIDs in the QUT DMP (https://data-mgmt-plan.qut.edu.au). The default DFAZCB7230 is only available to members of the 'microbiome' group." >&2
+        exit 1
+    fi
+fi
 if ! [[ "$rpid" =~ ^[A-Z]{6}[0-9]{4}$ ]]; then
     echo "Invalid project RPID '$rpid': expected 6 uppercase letters followed by 4 digits, e.g. ABCDEF1234" >&2
     exit 1
