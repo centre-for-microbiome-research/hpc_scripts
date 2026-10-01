@@ -29,6 +29,14 @@ From there the behaviour can be modified in several ways, using the optional arg
 $ mqsub --hours 1 -- echo hi
 ```
 
+### Project RPID
+
+Aqua requires every job to name the project it is charged to (`qsub -P <RPID>`, 6 uppercase letters followed by 4 digits — find yours in the [QUT DMP](https://data-mgmt-plan.qut.edu.au)). `mqsub`, `snakemake --profile aqua` and `mqinteractive` all set it, resolved in this order:
+
+1. `mqsub -P ABCDEF1234 ...` / `mqinteractive -P ABCDEF1234 [gpu|half]`, or a snakemake rule's `rpid` resource (`resources: rpid="ABCDEF1234"`)
+2. the `DEFAULT_RPID` environment variable (e.g. `export DEFAULT_RPID=ABCDEF1234` in your `~/.bashrc`)
+3. the CMR default, `DFAZCB7230`
+
 There are several other options, which can be viewed with `mqsub -h`
 ```mqsub -h
                             _

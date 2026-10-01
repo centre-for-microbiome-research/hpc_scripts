@@ -22,6 +22,28 @@ quota_check() { # queue ncpus mem_gb ngpus
     "$quota_checker" --queue "$1" --ncpus "$2" --mem-gb "$3" --ngpus "$4" || true
 }
 
+# Project RPID, required on every aqua job: -P/--rpid, else $DEFAULT_RPID, else
+# the fallback (keep in sync with FALLBACK_RPID in mqsub).
+rpid="${DEFAULT_RPID:-DFAZCB7230}"
+args=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -P|--rpid)
+            if [ -z "$2" ]; then
+                echo "$1 requires a project RPID argument" >&2
+                exit 1
+            fi
+            rpid="$2"; shift 2 ;;
+        --rpid=*) rpid="${1#--rpid=}"; shift ;;
+        *) args+=("$1"); shift ;;
+    esac
+done
+set -- "${args[@]}"
+if ! [[ "$rpid" =~ ^[A-Z]{6}[0-9]{4}$ ]]; then
+    echo "Invalid project RPID '$rpid': expected 6 uppercase letters followed by 4 digits, e.g. ABCDEF1234" >&2
+    exit 1
+fi
+
 # Attaching to a running interactive job (previously "mqinteractive a", via
 # ssh-to-job) is no longer permitted by the HPC admins.
 if [ "$1" == "a" ] || [ "$1" == "attach" ]; then
@@ -31,11 +53,11 @@ if [ "$1" == "a" ] || [ "$1" == "attach" ]; then
 elif [ "$1" == "gpu" ]; then
     # NOTE: keep in sync with usual invocation below
     quota_check gpu_inter_exec 8 32 1
-    qsub -I -m n -l select=1:ncpus=8:mem=32GB:ngpus=1,walltime=12:00:00
+    qsub -I -m n -P "$rpid" -l select=1:ncpus=8:mem=32GB:ngpus=1,walltime=12:00:00
 
 elif [ "$1" == "half" ]; then
     quota_check cpu_inter_exec 4 16 0
-    qsub -I -m n -l select=1:ncpus=4:mem=16GB,walltime=12:00:00
+    qsub -I -m n -P "$rpid" -l select=1:ncpus=4:mem=16GB,walltime=12:00:00
 
 elif [ -n "$1" ]; then
     echo "Unknown argument: $1"
@@ -44,5 +66,5 @@ elif [ -n "$1" ]; then
 else
     # NOTE: keep in sync with gpu invocation above
     quota_check cpu_inter_exec 8 32 0
-    qsub -I -m n -l select=1:ncpus=8:mem=32GB,walltime=12:00:00
+    qsub -I -m n -P "$rpid" -l select=1:ncpus=8:mem=32GB,walltime=12:00:00
 fi
