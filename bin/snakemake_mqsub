@@ -124,6 +124,16 @@ if __name__ == '__main__':
         if gpus > 0:
             gpu_arg = '--gpu {}'.format(gpus)
 
+    # Project RPID: the rule's `rpid` resource, else $DEFAULT_RPID, else mqsub's own
+    # fallback. The env var is passed explicitly so it also reaches mqsub when that
+    # runs on the other side of the mqyolo broker.
+    if 'rpid' in job_properties['resources']:
+        rpid_arg = '-P {}'.format(job_properties['resources']['rpid'])
+    elif os.getenv('DEFAULT_RPID'):
+        rpid_arg = '-P {}'.format(os.getenv('DEFAULT_RPID'))
+    else:
+        rpid_arg = ''
+
     if 'extra_mqsub_args' in job_properties['resources']:
         extra_mqsub_args = job_properties['resources']['extra_mqsub_args']
     else:
@@ -140,12 +150,12 @@ if __name__ == '__main__':
 
     mqsub_command = 'mqsub'
 
-    cmd = "{mqsub_command} --no-email --quiet --bg --name {job_name} -t {threads} {mem} {gpu_arg} {hours} --script {script} {queue} {depend} {segregated_log_files_arg} {extra_mqsub_args} 2>&1".format(
+    cmd = "{mqsub_command} --no-email --quiet --bg --name {job_name} -t {threads} {mem} {gpu_arg} {hours} {rpid_arg} --script {script} {queue} {depend} {segregated_log_files_arg} {extra_mqsub_args} 2>&1".format(
         mqsub_command=mqsub_command,
         job_name=job_name, extra_mqsub_args=extra_mqsub_args,
         threads=threads, script=jobscript, mem=mem_argument, hours=runtime_hours, queue=queue, 
         depend=depend, segregated_log_files_arg=segregated_log_files_arg,
-        gpu_arg=gpu_arg)
+        gpu_arg=gpu_arg, rpid_arg=rpid_arg)
 
     if args.dry_run or os.getenv('SNAKEMAKE_MQSUB_DRY_RUN', None) is not None:
         with open('snakemake_mqsub_debug.log', 'w') as f:
