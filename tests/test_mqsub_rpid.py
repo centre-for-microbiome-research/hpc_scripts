@@ -1,4 +1,4 @@
-"""Tests for mqsub's project RPID resolution (-P/--rpid, $DEFAULT_RPID, group fallback).
+"""Tests for mqsub's project RPID resolution (-P/--rpid, $DEFAULT_RPID, group fallback, else none with a warning).
 
 Group membership is faked by patching grp.getgrgid before running mqsub, so these
 run anywhere (no PBS needed).
@@ -44,11 +44,13 @@ def test_member_gets_fallback(tmp_path):
     assert pbs_project(run_mqsub(tmp_path=tmp_path)) == "DFAZCB7230"
 
 
-def test_non_member_without_rpid_is_refused(tmp_path):
+def test_non_member_without_rpid_warns_and_submits_without_one(tmp_path):
     result = run_mqsub(group="other", tmp_path=tmp_path)
-    assert result.returncode == 1
+    assert result.returncode == 0, result.stderr
+    assert "WARNING: No project RPID set" in result.stderr
     assert "only available to members of the 'microbiome' group" in result.stderr
-    assert "#PBS" not in result.stdout + result.stderr
+    assert "#PBS -q aqua" in result.stderr
+    assert "#PBS -P" not in result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("group", ["microbiome", "other"])

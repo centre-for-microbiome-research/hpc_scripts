@@ -275,7 +275,8 @@ class script_format:
             depend = ":".join(args.depend)
             print('#PBS -W depend=afterok:{}'.format(depend),file=outfile)
         print('#PBS -q {}'.format(args.queue),file=outfile)
-        print('#PBS -P {}'.format(rpid),file=outfile)
+        if rpid:
+            print('#PBS -P {}'.format(rpid),file=outfile)
         if segregated_logs_dir:
             print('#PBS -o {}'.format(segregated_logs_dir),file=outfile)
             print('#PBS -e {}'.format(segregated_logs_dir),file=outfile)
@@ -540,7 +541,7 @@ Example usage:
     parser.add_argument('--array', help="Submit as an array job with the given number of tasks [default: Not used]")
     parser.add_argument('--directive', help="Arbitrary PBS directory to add e.g. '-l ngpus=1' to ask for a GPU [default: Not used]")
     parser.add_argument('-q','--queue', default='aqua', help="Name of queue to send to [default: aqua]")
-    parser.add_argument('-P','--rpid', help="Project RPID to charge the job to (6 uppercase letters then 4 digits, e.g. ABCDEF1234). Find yours in the QUT DMP (https://data-mgmt-plan.qut.edu.au) [default: ${} if set, otherwise {} for members of the '{}' group]".format(RPID_ENV_VAR, FALLBACK_RPID, FALLBACK_RPID_GROUP))
+    parser.add_argument('-P','--rpid', help="Project RPID to charge the job to (6 uppercase letters then 4 digits, e.g. ABCDEF1234). Find yours in the QUT DMP (https://data-mgmt-plan.qut.edu.au) [default: ${} if set, otherwise {} for members of the '{}' group, otherwise none (with a warning)]".format(RPID_ENV_VAR, FALLBACK_RPID, FALLBACK_RPID_GROUP))
     walltime_group = parser.add_mutually_exclusive_group()
     walltime_group.add_argument('--hours',default=48,type=int, help="Hours to run for [default: 48 hours]")
     walltime_group.add_argument('--days',type=int,help="Days to run for [default: 2]")
@@ -692,12 +693,13 @@ Further information can also be found in the CMR Compute Notes -  https://tinyur
         hours = 48       
 
     rpid = args.rpid or os.environ.get(RPID_ENV_VAR)
-    if not rpid:
-        if not in_unix_group(FALLBACK_RPID_GROUP):
-            logging.error("A project RPID is required for all aqua jobs. Supply one with -P <RPID> or set ${} (6 uppercase letters followed by 4 digits, e.g. ABCDEF1234). Find your RPIDs in the QUT DMP (https://data-mgmt-plan.qut.edu.au). The default {} is only available to members of the '{}' group.".format(RPID_ENV_VAR, FALLBACK_RPID, FALLBACK_RPID_GROUP))
-            sys.exit(1)
+    if not rpid and in_unix_group(FALLBACK_RPID_GROUP):
         rpid = FALLBACK_RPID
-    if not RPID_PATTERN.match(rpid):
+    if not rpid:
+        # Not fatal: aqua still accepts jobs without -P during the transition period
+        # (recorded against ERR-NORPID), so submit without one and nag instead.
+        logging.warning("No project RPID set, so the job is submitted without one. Aqua requires a project RPID on all jobs: supply one with -P <RPID> or set ${} (6 uppercase letters followed by 4 digits, e.g. ABCDEF1234). Find your RPIDs in the QUT DMP (https://data-mgmt-plan.qut.edu.au). The default {} is only available to members of the '{}' group.".format(RPID_ENV_VAR, FALLBACK_RPID, FALLBACK_RPID_GROUP))
+    elif not RPID_PATTERN.match(rpid):
         source = '-P/--rpid' if args.rpid else '${}'.format(RPID_ENV_VAR)
         logging.error("Invalid project RPID {!r} from {}: expected 6 uppercase letters followed by 4 digits, e.g. ABCDEF1234".format(rpid, source))
         sys.exit(1)
