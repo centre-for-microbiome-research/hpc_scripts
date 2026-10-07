@@ -35,7 +35,7 @@ Aqua requires every job to name the project it is charged to (`qsub -P <RPID>`, 
 
 1. `mqsub -P ABCDEF1234 ...` / `mqinteractive -P ABCDEF1234 [gpu|half]`, or a snakemake rule's `rpid` resource (`resources: rpid="ABCDEF1234"`)
 2. the `DEFAULT_RPID` environment variable (e.g. `export DEFAULT_RPID=ABCDEF1234` in your `~/.bashrc`)
-3. the CMR default, `DFAZCB7230` — only for members of the `microbiome` Unix group. Anyone else gets an error asking for `-P` or `DEFAULT_RPID`.
+3. the CMR default, `DFAZCB7230` — only for members of the `microbiome` Unix group. Anyone else gets a warning and the job is submitted without an RPID (which aqua accepts only during the transition period).
 
 There are several other options, which can be viewed with `mqsub -h`
 ```mqsub -h

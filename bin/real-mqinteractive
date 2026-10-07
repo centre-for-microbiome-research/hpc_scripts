@@ -40,17 +40,19 @@ while [ $# -gt 0 ]; do
     esac
 done
 set -- "${args[@]}"
-if [ -z "$rpid" ]; then
-    if id -Gn | tr ' ' '\n' | grep -qx microbiome; then
-        rpid=DFAZCB7230
-    else
-        echo "A project RPID is required for all aqua jobs. Supply one with -P <RPID> or set \$DEFAULT_RPID (6 uppercase letters followed by 4 digits, e.g. ABCDEF1234). Find your RPIDs in the QUT DMP (https://data-mgmt-plan.qut.edu.au). The default DFAZCB7230 is only available to members of the 'microbiome' group." >&2
-        exit 1
-    fi
+if [ -z "$rpid" ] && id -Gn | tr ' ' '\n' | grep -qx microbiome; then
+    rpid=DFAZCB7230
 fi
-if ! [[ "$rpid" =~ ^[A-Z]{6}[0-9]{4}$ ]]; then
+rpid_args=()
+if [ -z "$rpid" ]; then
+    # Not fatal: aqua still accepts jobs without -P during the transition period
+    # (recorded against ERR-NORPID), so start the session without one and nag.
+    echo "WARNING: No project RPID set, so the job is submitted without one. Aqua requires a project RPID on all jobs: supply one with -P <RPID> or set \$DEFAULT_RPID (6 uppercase letters followed by 4 digits, e.g. ABCDEF1234). Find your RPIDs in the QUT DMP (https://data-mgmt-plan.qut.edu.au). The default DFAZCB7230 is only available to members of the 'microbiome' group." >&2
+elif ! [[ "$rpid" =~ ^[A-Z]{6}[0-9]{4}$ ]]; then
     echo "Invalid project RPID '$rpid': expected 6 uppercase letters followed by 4 digits, e.g. ABCDEF1234" >&2
     exit 1
+else
+    rpid_args=(-P "$rpid")
 fi
 
 # Attaching to a running interactive job (previously "mqinteractive a", via
@@ -62,11 +64,11 @@ if [ "$1" == "a" ] || [ "$1" == "attach" ]; then
 elif [ "$1" == "gpu" ]; then
     # NOTE: keep in sync with usual invocation below
     quota_check gpu_inter_exec 8 32 1
-    qsub -I -m n -P "$rpid" -l select=1:ncpus=8:mem=32GB:ngpus=1,walltime=12:00:00
+    qsub -I -m n "${rpid_args[@]}" -l select=1:ncpus=8:mem=32GB:ngpus=1,walltime=12:00:00
 
 elif [ "$1" == "half" ]; then
     quota_check cpu_inter_exec 4 16 0
-    qsub -I -m n -P "$rpid" -l select=1:ncpus=4:mem=16GB,walltime=12:00:00
+    qsub -I -m n "${rpid_args[@]}" -l select=1:ncpus=4:mem=16GB,walltime=12:00:00
 
 elif [ -n "$1" ]; then
     echo "Unknown argument: $1"
@@ -75,5 +77,5 @@ elif [ -n "$1" ]; then
 else
     # NOTE: keep in sync with gpu invocation above
     quota_check cpu_inter_exec 8 32 0
-    qsub -I -m n -P "$rpid" -l select=1:ncpus=8:mem=32GB,walltime=12:00:00
+    qsub -I -m n "${rpid_args[@]}" -l select=1:ncpus=8:mem=32GB,walltime=12:00:00
 fi
