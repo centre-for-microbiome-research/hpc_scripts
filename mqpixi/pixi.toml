@@ -73,6 +73,17 @@ postinstall-base = { cmd = ["aviary", "build", "--gpu"], depends-on = [{ task = 
 [feature.aviary-v0-13-0.activation]
 env = { PYTHONNOUSERSITE = "1", GTDBTK_DATA_PATH = "/work/microbiome/db/gtdb/gtdb_release232/auxillary_files/gtdbtk_package/full_package/release232", CHECKM2DB = "/work/microbiome/db/CheckM2_database/uniref100.KO.1.dmnd", EGGNOG_DATA_DIR = "/mnt/hpccs01/work/microbiome/db/eggnog-mapper/2.1.3", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S6.5.0.GTDB_r232.metapackage_20260319.smpkg.zb", METABULI_DB_PATH = "/work/microbiome/db/metabuli/2024-3-28-GTDB214.1+humanT2T" }
 
+# ---------- aviary-v0-13-3 ----------
+[feature.aviary-v0-13-3.dependencies]
+aviary = "==0.13.3"
+snakemake-executor-plugin-cluster-generic = ">=1"
+
+[feature.aviary-v0-13-3.tasks]
+postinstall-base = { cmd = ["aviary", "build", "--gpu"], depends-on = [{ task = "postinstall-aviary-config-v0-13-3", environment = "default" }] }
+
+[feature.aviary-v0-13-3.activation]
+env = { PYTHONNOUSERSITE = "1", GTDBTK_DATA_PATH = "/work/microbiome/db/gtdb/gtdb_release232/auxillary_files/gtdbtk_package/full_package/release232", CHECKM2DB = "/work/microbiome/db/CheckM2_database/uniref100.KO.1.dmnd", EGGNOG_DATA_DIR = "/mnt/hpccs01/work/microbiome/db/eggnog-mapper/2.1.3", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S6.5.0.GTDB_r232.metapackage_20260319.smpkg.zb", METABULI_DB_PATH = "/work/microbiome/db/metabuli/2024-3-28-GTDB214.1+humanT2T" }
+
 # ---------- aviary-v0-13-4 ----------
 [feature.aviary-v0-13-4.dependencies]
 aviary = "==0.13.4"
@@ -814,6 +825,7 @@ arb-v2-23-0 = { features = ["arb-v2-23-0"], no-default-feature = true }
 aria2-v1-37-0 = { features = ["aria2-v1-37-0"], no-default-feature = true }
 art-v2016-06-05 = { features = ["art-v2016-06-05"], no-default-feature = true }
 aviary-v0-13-0 = { features = ["aviary-v0-13-0"], no-default-feature = true }
+aviary-v0-13-3 = { features = ["aviary-v0-13-3"], no-default-feature = true }
 aviary-v0-13-4 = { features = ["aviary-v0-13-4"], no-default-feature = true }
 bakta-v1-11-0 = { features = ["bakta-v1-11-0"], no-default-feature = true }
 bbmap-v39-18 = { features = ["bbmap-v39-18"], no-default-feature = true }
@@ -928,6 +940,10 @@ cmd = "python write_activate_vars.py"
 # Write aviary's embedded .pixi/config.toml (detached-environments = false)
 cmd = ["python", "write_pixi_configs.py", "aviary-v0-13-0", "aviary"]
 
+[tasks.postinstall-aviary-config-v0-13-3]
+# Write aviary's embedded .pixi/config.toml (detached-environments = false)
+cmd = ["python", "write_pixi_configs.py", "aviary-v0-13-3", "aviary"]
+
 [tasks.postinstall-aviary-config-v0-13-4]
 # Write aviary's embedded .pixi/config.toml (detached-environments = false)
 cmd = ["python", "write_pixi_configs.py", "aviary-v0-13-4", "aviary"]
@@ -941,11 +957,27 @@ cmd = ["python", "write_pixi_configs.py", "binchicken-v0-15-0", "binchicken"]
 cmd = ["python", "write_pixi_configs.py", "binchicken-v0-15-0", "aviary", "binchicken"]
 depends-on = [{ task = "binchicken-build-no-aviary", environment = "binchicken-v0-15-0" }]
 
+# One postinstall task per env so a single env can be (re)built on its own, e.g.
+# `pixi run postinstall-aviary-v0-13-0`. Each also refreshes the activate.d vars
+# (cheap, and run only once when several of these are chained by `postinstall`).
+[tasks.postinstall-aviary-v0-13-0]
+depends-on = ["postinstall-activate-vars", { task = "postinstall-base", environment = "aviary-v0-13-0" }]
+
+[tasks.postinstall-aviary-v0-13-3]
+depends-on = ["postinstall-activate-vars", { task = "postinstall-base", environment = "aviary-v0-13-3" }]
+
+[tasks.postinstall-aviary-v0-13-4]
+depends-on = ["postinstall-activate-vars", { task = "postinstall-base", environment = "aviary-v0-13-4" }]
+
+[tasks.postinstall-binchicken-v0-15-0]
+depends-on = ["postinstall-activate-vars", { task = "postinstall-base", environment = "binchicken-v0-15-0" }]
+
 [tasks.postinstall]
 # Build steps that aviary/binchicken need after their conda deps are installed
 depends-on = [
     "postinstall-activate-vars",
-    { task = "postinstall-base", environment = "aviary-v0-13-0" },
-    { task = "postinstall-base", environment = "aviary-v0-13-4" },
-    { task = "postinstall-base", environment = "binchicken-v0-15-0" },
+    "postinstall-aviary-v0-13-0",
+    "postinstall-aviary-v0-13-3",
+    "postinstall-aviary-v0-13-4",
+    "postinstall-binchicken-v0-15-0",
 ]
