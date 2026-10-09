@@ -56,17 +56,6 @@
   },
   {
     "provider": "Amazon",
-    "name": "Nova Premier",
-    "category": "Other",
-    "tb21": null,
-    "tb40": null,
-    "input_price": 1.25,
-    "output_price": 12.5,
-    "price_tier": null,
-    "price_source": "AWS Bedrock (live)"
-  },
-  {
-    "provider": "Amazon",
     "name": "Nova Pro",
     "category": "Other",
     "tb21": null,
@@ -74,6 +63,39 @@
     "input_price": 0.8,
     "output_price": 3.2,
     "price_tier": null,
+    "price_source": "AWS Bedrock (live)"
+  },
+  {
+    "provider": "Anthropic",
+    "name": "Claude Haiku 5.5",
+    "category": "Anthropic",
+    "tb21": null,
+    "tb40": 32.8282828282828,
+    "input_price": 0.11,
+    "output_price": 0.55,
+    "price_tier": "standard",
+    "price_source": "AWS Bedrock (live)"
+  },
+  {
+    "provider": "Anthropic",
+    "name": "Claude Sonnet 5.5",
+    "category": "Anthropic",
+    "tb21": null,
+    "tb40": 63.636363636363605,
+    "input_price": 2.2,
+    "output_price": 11.0,
+    "price_tier": "standard",
+    "price_source": "AWS Bedrock (live)"
+  },
+  {
+    "provider": "Anthropic",
+    "name": "Claude Opus 5.5",
+    "category": "Anthropic",
+    "tb21": null,
+    "tb40": 59.5959595959596,
+    "input_price": 4.4,
+    "output_price": 22.0,
+    "price_tier": "standard",
     "price_source": "AWS Bedrock (live)"
   },
   {
@@ -243,34 +265,12 @@
   },
   {
     "provider": "Anthropic",
-    "name": "Claude 3.5 Haiku",
-    "category": "Anthropic",
-    "tb21": 10.1123595505618,
-    "tb40": null,
-    "input_price": 0.8,
-    "output_price": 4.0,
-    "price_tier": "standard",
-    "price_source": "AWS Bedrock (live)"
-  },
-  {
-    "provider": "Anthropic",
     "name": "Claude 3 Haiku",
     "category": "Anthropic",
     "tb21": null,
     "tb40": null,
     "input_price": 0.25,
     "output_price": 1.25,
-    "price_tier": "standard",
-    "price_source": "AWS Bedrock (live)"
-  },
-  {
-    "provider": "Anthropic",
-    "name": "Claude Mythos Preview",
-    "category": "Anthropic",
-    "tb21": null,
-    "tb40": null,
-    "input_price": 27.5,
-    "output_price": 137.5,
     "price_tier": "standard",
     "price_source": "AWS Bedrock (live)"
   },
@@ -346,7 +346,7 @@
     "category": "Other",
     "tb21": 38.9513108614232,
     "tb40": null,
-    "input_price": 0.115,
+    "input_price": 0.1,
     "output_price": 0.37,
     "price_tier": null,
     "price_source": "Artificial Analysis (fallback, not AWS list price)"
@@ -394,6 +394,17 @@
     "output_price": 0,
     "price_tier": null,
     "price_source": "Artificial Analysis (fallback, not AWS list price)"
+  },
+  {
+    "provider": "Luma AI",
+    "name": "Ray2",
+    "category": "Other",
+    "tb21": null,
+    "tb40": null,
+    "input_price": null,
+    "output_price": null,
+    "price_tier": null,
+    "price_source": null
   },
   {
     "provider": "Meta",
@@ -511,8 +522,8 @@
     "category": "Other",
     "tb21": 7.86516853932584,
     "tb40": 0,
-    "input_price": 0.26,
-    "output_price": 0.9099999999999999,
+    "input_price": 0.25,
+    "output_price": 0.87,
     "price_tier": null,
     "price_source": "Artificial Analysis (fallback, not AWS list price)"
   },
@@ -577,10 +588,10 @@
     "category": "Other",
     "tb21": 30.337078651685403,
     "tb40": 0,
-    "input_price": 0,
-    "output_price": 0,
+    "input_price": null,
+    "output_price": null,
     "price_tier": null,
-    "price_source": "Artificial Analysis (fallback, not AWS list price)"
+    "price_source": null
   },
   {
     "provider": "Mistral AI",
@@ -621,8 +632,8 @@
     "category": "Other",
     "tb21": null,
     "tb40": null,
-    "input_price": 0.25,
-    "output_price": 0.25,
+    "input_price": 0.15,
+    "output_price": 0.2,
     "price_tier": null,
     "price_source": "Artificial Analysis (fallback, not AWS list price)"
   },
@@ -680,6 +691,17 @@
     "output_price": null,
     "price_tier": null,
     "price_source": null
+  },
+  {
+    "provider": "Moonshot AI",
+    "name": "Kimi K3",
+    "category": "Other",
+    "tb21": 85.0187265917603,
+    "tb40": 12.6262626262626,
+    "input_price": 3.3,
+    "output_price": 16.5,
+    "price_tier": "standard",
+    "price_source": "AWS Bedrock (live)"
   },
   {
     "provider": "Moonshot AI",
@@ -742,8 +764,8 @@
     "category": "Other",
     "tb21": 38.5767790262172,
     "tb40": 0,
-    "input_price": 0.1925,
-    "output_price": 0.65,
+    "input_price": 0.3,
+    "output_price": 0.9,
     "price_tier": null,
     "price_source": "Artificial Analysis (fallback, not AWS list price)"
   },
@@ -755,6 +777,39 @@
     "tb40": 59.09090909090911,
     "input_price": 10,
     "output_price": 50,
+    "price_tier": null,
+    "price_source": "Artificial Analysis (fallback, not AWS list price)"
+  },
+  {
+    "provider": "OpenAI",
+    "name": "GPT-6.1 Sol",
+    "category": "OpenAI",
+    "tb21": null,
+    "tb40": 56.0606060606061,
+    "input_price": 2,
+    "output_price": 10,
+    "price_tier": null,
+    "price_source": "Artificial Analysis (fallback, not AWS list price)"
+  },
+  {
+    "provider": "OpenAI",
+    "name": "GPT-6 Sol",
+    "category": "OpenAI",
+    "tb21": null,
+    "tb40": null,
+    "input_price": 2,
+    "output_price": 10,
+    "price_tier": null,
+    "price_source": "Artificial Analysis (fallback, not AWS list price)"
+  },
+  {
+    "provider": "OpenAI",
+    "name": "GPT-6 Luna",
+    "category": "OpenAI",
+    "tb21": null,
+    "tb40": 12.6262626262626,
+    "input_price": 0.1,
+    "output_price": 0.5,
     "price_tier": null,
     "price_source": "Artificial Analysis (fallback, not AWS list price)"
   },
@@ -883,8 +938,8 @@
     "provider": "Qwen",
     "name": "Qwen3 235B A22B 2507",
     "category": "Other",
-    "tb21": null,
-    "tb40": null,
+    "tb21": 11.9850187265918,
+    "tb40": 0,
     "input_price": 0.22,
     "output_price": 0.88,
     "price_tier": "standard",
@@ -957,6 +1012,17 @@
     "price_source": "Artificial Analysis (fallback, not AWS list price)"
   },
   {
+    "provider": "Stability AI",
+    "name": "Stable Diffusion 3.5 Large",
+    "category": "Other",
+    "tb21": null,
+    "tb40": null,
+    "input_price": null,
+    "output_price": null,
+    "price_tier": null,
+    "price_source": null
+  },
+  {
     "provider": "Writer",
     "name": "Palmyra X4",
     "category": "Other",
@@ -980,14 +1046,14 @@
   },
   {
     "provider": "xAI",
-    "name": "Grok 4.3",
+    "name": "Grok 4.7",
     "category": "xAI",
-    "tb21": 39.700374531835195,
-    "tb40": 0,
-    "input_price": 1.25,
-    "output_price": 2.5,
-    "price_tier": null,
-    "price_source": "Artificial Analysis (fallback, not AWS list price)"
+    "tb21": null,
+    "tb40": 25.7575757575758,
+    "input_price": 2.2,
+    "output_price": 6.6,
+    "price_tier": "standard",
+    "price_source": "AWS Bedrock (live)"
   },
   {
     "provider": "xAI",
@@ -997,6 +1063,17 @@
     "tb40": 21.2121212121212,
     "input_price": 2,
     "output_price": 6,
+    "price_tier": null,
+    "price_source": "Artificial Analysis (fallback, not AWS list price)"
+  },
+  {
+    "provider": "xAI",
+    "name": "Grok 4.3",
+    "category": "xAI",
+    "tb21": 39.700374531835195,
+    "tb40": 0,
+    "input_price": 1.25,
+    "output_price": 2.5,
     "price_tier": null,
     "price_source": "Artificial Analysis (fallback, not AWS list price)"
   },
@@ -1032,5 +1109,16 @@
     "output_price": 3.2,
     "price_tier": "standard",
     "price_source": "AWS Bedrock (live)"
+  },
+  {
+    "provider": "Z.AI",
+    "name": "GLM 5.3",
+    "category": "Other",
+    "tb21": 83.8951310861423,
+    "tb40": 41.9191919191919,
+    "input_price": 1.4,
+    "output_price": 4.4,
+    "price_tier": null,
+    "price_source": "Artificial Analysis (fallback, not AWS list price)"
   }
 ]

@@ -154,6 +154,37 @@ mqdel --queued --dry-run
 mqdel --all --dry-run
 ```
 
+# mqinteractive
+
+Start an interactive PBS session with `mqinteractive` (8 CPUs, 32GB RAM),
+`mqinteractive half` (4 CPUs, 16GB RAM), or `mqinteractive gpu`.
+
+If Codex arrow keys insert text or mouse movements insert characters, run
+Codex inside `tmux` **after entering the interactive job**:
+
+```bash
+mqinteractive half
+# Once the compute-node shell opens:
+tmux new-session -c "$PWD" 'codex'
+```
+
+PBS interactive input can split an escape sequence across reads. On Aquarius,
+a single Up key (`ESC [ A`) arrived as `ESC`, then `[ A` about 0.6 ms later.
+Codex 0.161.0 interpreted a Left key as literal `[D` and a mouse-motion report
+as literal `[<35;10;10M`. Running Codex inside tmux restored cursor movement
+and prevented mouse reports from entering the prompt in the same PBS job.
+`--no-alt-screen` alone did not fix the problem.
+
+If Codex's sandbox also fails with a permission error creating its temporary
+directory, give Codex a writable temporary directory before starting it:
+
+```bash
+mkdir -p .tmp
+tmux new-session -c "$PWD" 'TMPDIR="$PWD/.tmp" codex'
+```
+
+Exit Codex when finished, then exit the PBS shell to release the allocation.
+
 # mqstat
 To view useful usage statistics (i.e. the percentage of microbiome queue CPUs which are currently in-use/available) simply type `mqstat`. Example output:
 ```
