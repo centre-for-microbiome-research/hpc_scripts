@@ -49,12 +49,24 @@ Key invariants the tests guard (keep them true):
   workstation where `/work` is a symlink onto the sshfs mount, `/work` is not bound.
 - Credential directories in the real home are shadowed with an empty dir bound over
   their realpath, so they are not readable through the read-only home bind
-  (`sandbox_home_shadow_dir`): `~/.ssh` unconditionally, and `~/.aws` unless the
-  caller passed it via `--ro-paths`/`--rw-paths` (those granted paths are forwarded
+  (`sandbox_home_shadow_dir`): `~/.ssh` unconditionally, and `~/.aws` and
+  `~/.config/gh` (where `gh auth login` stores its token in plain text when there
+  is no keyring) unless the caller passed them via `--ro-paths`/`--rw-paths`
+  (those granted paths are forwarded
   into `sandbox_home_dotfiles` for exactly this check — the shadow binds are appended
   after the caller's binds and `sandbox_dedupe_binds` keeps the last per destination,
   so a shadow would otherwise silently override an explicit opt-in). When `~/.aws` is
   opted in its home symlink must be recreated, or the AWS SDKs cannot find the profile.
+  **The shadow must be bound at every mount alias, not just the realpath**: a bind
+  covers one path, and on aqua compute nodes lustre's `/home` subtree is mounted at
+  `/home` as well as under `/mnt/hpccs01`, so a realpath-only shadow left the real
+  `id_rsa` and `~/.aws/sso` readable at `/home/$USER/...` through the wholesale
+  `/home` bind. `sandbox_mount_aliases` finds the other mounts of the same
+  filesystem subtree from `/proc/self/mountinfo`. `~/.config/gh` is created (mode
+  700) at launch when missing, since only an existing directory can be shadowed and
+  a mid-session login would otherwise land somewhere that session can read. Guarded
+  end-to-end by `test_mqsandbox_hides_home_credentials_at_every_path`, which checks
+  what is readable in a real container rather than the bind list.
   Bedrock access should instead use a credential scoped to model invocation
   (`AWS_BEARER_TOKEN_BEDROCK`); mqyolo's explicit `--env` list deliberately omits
   `AWS_PROFILE` and the access-key/session-token trio, which carry the caller's
