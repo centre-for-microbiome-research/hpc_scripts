@@ -13,30 +13,42 @@
 #      environments defined in the manifest (not just the ones postinstall
 #      touches), so non-admin users never trigger a slow first-time install
 #      (or hit a permissions error building one) themselves.
-#   3. [rremoved by commenting out] Grants the microbiome-admin group write access (on top of the
-#      microbiome group's existing read/execute) on anything the invoking
-#      user owns under the shared pixi envs. conda/pip/pixi extract package
-#      files owned by whoever happens to run the install, group=microbiome,
-#      mode 755 - fine for regular read-only use, but it means only that one
-#      person can write there afterwards (e.g. aviary's/binchicken's own
-#      nested `pixi install -a`, or write_activate_vars.py touching an env
-#      someone else built first). A plain `chmod g+w` can't fix this without
-#      also handing write access to every ordinary microbiome member, since
-#      microbiome is the *owning* group - two different groups needing two
-#      different privilege levels on the same files requires a POSIX ACL.
-#      Setting the *default* ACL (-d) means anything created under these
-#      directories from now on inherits it automatically, so this only ever
-#      needs to run again for directories that don't have it yet; it's
-#      scoped to `$(id -un)`'s own files so running it as a different admin
-#      never fails on paths owned by someone else.
+#   3. Only with --fix-permissions: fixes permissions on the shared pixi envs
+#      (see fix_env_permissions below): group $ADMIN_GROUP gets read/write/execute, everyone else
+#      (including ordinary microbiome members, who are not in $ADMIN_GROUP)
+#      gets read, plus execute where the owner/group have it, but never write.
+#      conda/pip/pixi extract files as whoever runs the install, mode 660/770
+#      with no access for "other", which is why `mqpixi aviary` failed for
+#      anyone outside the owning group. /pkg (weka) does not take the POSIX ACLs
+#      that would let microbiome-admin be a *second* group, so $ADMIN_GROUP is
+#      made the owning group and "other" carries the read-only access.
+#      Re-run after the postinstall step too, since that creates files.
 #   4. Runs `pixi run postinstall`, which chains every env's postinstall task.
 #
-# Usage: deploy_to_production.sh [path-to-production-checkout]
+# Usage: deploy_to_production.sh [--fix-permissions] [path-to-production-checkout]
 # Defaults to /work/microbiome/sw/hpc_scripts.
 
 set -euo pipefail
 
-PRODUCTION_REPO="${1:-/work/microbiome/sw/hpc_scripts}"
+FIX_PERMISSIONS=0
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --fix-permissions) FIX_PERMISSIONS=1 ;;
+        -h|--help)
+            sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0 ;;
+        -*) echo "ERROR: unknown option: $1" >&2; exit 1 ;;
+        *) POSITIONAL+=("$1") ;;
+    esac
+    shift
+done
+if [[ ${#POSITIONAL[@]} -gt 1 ]]; then
+    echo "ERROR: expected at most one production checkout path" >&2
+    exit 1
+fi
+
+PRODUCTION_REPO="${POSITIONAL[0]:-/work/microbiome/sw/hpc_scripts}"
 MQPIXI_DIR="$PRODUCTION_REPO/mqpixi"
 PIXI_ENVS_DIR="$MQPIXI_DIR/.pixi/envs"
 ADMIN_GROUP="${ADMIN_GROUP:-microbiome-admin}"
@@ -78,19 +90,28 @@ echo "==> Installing all environments"
 cd "$MQPIXI_DIR"
 pixi install -a --frozen
 
-# echo "==> Granting $ADMIN_GROUP write access on anything owned by $(id -un)"
-# if [[ -d "$PIXI_ENVS_DIR" ]]; then
-#     # -m: existing files/dirs the current user owns get the ACL now.
-#     # -d: directories also get it as a *default* ACL, so anything created
-#     # under them later (by this user, with any umask) inherits it too.
-#     find "$PIXI_ENVS_DIR" -user "$(id -un)" \( -type d -o -type f \) -print0 \
-#         | xargs -0 -r setfacl -m "g:${ADMIN_GROUP}:rwx"
-#     find "$PIXI_ENVS_DIR" -user "$(id -un)" -type d -print0 \
-#         | xargs -0 -r setfacl -d -m "g:${ADMIN_GROUP}:rwx"
-# else
-#     echo "WARNING: $PIXI_ENVS_DIR not found (no envs built yet?), skipping" >&2
-# fi
+fix_env_permissions() {
+    if [[ "$FIX_PERMISSIONS" -ne 1 ]]; then
+        return 0
+    fi
+    echo "==> Setting $ADMIN_GROUP:rwx, others:r-x on $PIXI_ENVS_DIR"
+    if [[ ! -d "$PIXI_ENVS_DIR" ]]; then
+        echo "WARNING: $PIXI_ENVS_DIR not found (no envs built yet?), skipping" >&2
+        return 0
+    fi
+    # Directory above the envs: others need execute (traverse) to reach them.
+    # Not recursive - .git etc. in there are not meant for everyone.
+    local envs_root
+    envs_root="$(dirname "$(realpath "$PIXI_ENVS_DIR")")/.."
+    chmod o+rx "$envs_root" || echo "WARNING: could not chmod o+rx $envs_root" >&2
+    # mpermissions keeps going past failures on files owned by someone else.
+    "$PRODUCTION_REPO/bin/mpermissions" -g "$ADMIN_GROUP" --other-read "$(realpath "$PIXI_ENVS_DIR")"
+}
+
+fix_env_permissions
 
 echo "==> Running mqpixi postinstall"
 cd "$MQPIXI_DIR"
 pixi run postinstall
+
+fix_env_permissions

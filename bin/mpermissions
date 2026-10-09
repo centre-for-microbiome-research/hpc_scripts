@@ -79,6 +79,10 @@ if __name__ == '__main__':
     parser.add_argument('-g', help='Add permissions for this group', required=True)
     parser.add_argument('--no-continue', help='Do not keep running commands after one fails', action='store_true')
     parser.add_argument('--no-group-write', help='Do not add group write permissions', action='store_true')
+    parser.add_argument('--other-read', help='Instead of removing all access for users outside the group, '
+                        'give them read (and execute where the owner/group have it) but never write. '
+                        'Use for shared software trees (e.g. mqpixi environments) that everyone must be able to run '
+                        'but only the group may modify.', action='store_true')
     parser.add_argument('--dry-run', help='Do not actually run commands', action='store_true')
     args = parser.parse_args()
 
@@ -103,26 +107,47 @@ if __name__ == '__main__':
         dir_group_permissions = 'r-x'
         file_group_permissions = 'r-'
         file_group_additions = 'r'
+    # Permissions for users who are neither the owner nor in the group.
+    # chmod (weka) form, then POSIX ACL form for dirs / plain files / executables.
+    if args.other_read:
+        other_chmod_dir = 'o+rx,o-w'
+        other_chmod_file = 'o+r,o-wx'
+        other_chmod_exec = 'o+x'
+        other_acl_dir = 'r-x'
+        other_acl_file = 'r--'
+        other_acl_exec = 'r-x'
+    else:
+        other_chmod_dir = 'o-rwx'
+        other_chmod_file = 'o-rwx'
+        other_chmod_exec = None
+        other_acl_dir = '---'
+        other_acl_file = '---'
+        other_acl_exec = '---'
+    other_exec_cmd = 'chmod {} \"$file\"; '.format(other_chmod_exec) if other_chmod_exec else ''
+    # Loop over "$@": find ... -exec {} + passes many directories per bash
+    # invocation, and handling only "$1" silently skipped all but the first.
     cmd1 = (
         "find {} -type d -exec bash -c '".format(folder2) +
-        "if [[ $(realpath \"$1\") == /mnt/weka/pkg* ]]; then "
-        "chmod g+{} \"$1\"; chmod u+rwx,g+{} \"$1\"; chmod o-rwx \"$1\"; ".format(dir_group_permissions, dir_group_permissions) +
+        "for dir in \"$@\"; do "
+        "if [[ $(realpath \"$dir\") == /mnt/weka/pkg* ]]; then "
+        "chmod g+{} \"$dir\"; chmod u+rwx,g+{} \"$dir\"; chmod {} \"$dir\"; ".format(dir_group_permissions, dir_group_permissions, other_chmod_dir) +
         "else "
-        "setfacl -dm g:microbiome-admin:rwx,g::{},u::rwx,o::--- \"$1\"; ".format(dir_group_permissions) +
-        "setfacl -m g:microbiome-admin:rwx,g::{},u::rwx,o::--- \"$1\"; ".format(dir_group_permissions) +
-        "fi' _ {} +"
+        "setfacl -dm g:microbiome-admin:rwx,g::{},u::rwx,o::{} \"$dir\"; ".format(dir_group_permissions, other_acl_dir) +
+        "setfacl -m g:microbiome-admin:rwx,g::{},u::rwx,o::{} \"$dir\"; ".format(dir_group_permissions, other_acl_dir) +
+        "fi; "
+        "done' _ {} +"
     )
     cmd2 = (
         "find {} -type f -exec bash -c '".format(folder2) +
         "for file in \"$@\"; do "
         "if [[ $(realpath \"$file\") == /mnt/weka/pkg* ]]; then "
-        "chmod u+rw,g+{},o-rwx \"$file\"; ".format(file_group_additions) +
-        "if [ -x \"$file\" ]; then chmod g+x \"$file\"; fi; "
+        "chmod u+rw,g+{},{} \"$file\"; ".format(file_group_additions, other_chmod_file) +
+        "if [ -x \"$file\" ]; then chmod g+x \"$file\"; {}fi; ".format(other_exec_cmd) +
         "else "
         "if [ -x \"$file\" ]; then "
-        "setfacl -m g:microbiome-admin:rwx,g::{}x,u::rwx,m::rwx,o::--- \"$file\"; ".format(file_group_permissions) +
+        "setfacl -m g:microbiome-admin:rwx,g::{}x,u::rwx,m::rwx,o::{} \"$file\"; ".format(file_group_permissions, other_acl_exec) +
         "else "
-        "setfacl -m g:microbiome-admin:rw-,g::{}-,u::rw-,m::rw-,o::--- \"$file\"; ".format(file_group_permissions) +
+        "setfacl -m g:microbiome-admin:rw-,g::{}-,u::rw-,m::rw-,o::{} \"$file\"; ".format(file_group_permissions, other_acl_file) +
         "fi; "
         "fi; "
         "done' _ {} +"
