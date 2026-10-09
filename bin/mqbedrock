@@ -72,10 +72,14 @@ CODEX_MODEL=openai.gpt-5.6-sol
 SETUP_OPENCODE=0
 OPENCODE_OPTS=0                  # --opencode-* seen, so a missing --setup-opencode can be caught
 OPENCODE_CONFIG_NAME=bedrock     # -> $XDG_CONFIG_HOME/opencode/<name>.json
-# Sonnet as opencode's default: the everyday coding model, and the au.* prefix
-# keeps inference in Australia like the Claude Code settings above. Titles and
-# other cheap side-tasks go to Haiku (opencode's `small_model`).
-OPENCODE_MODEL=au.anthropic.claude-sonnet-5
+# No default `model` is written unless --opencode-model is given. A `model` key in
+# an OPENCODE_CONFIG file outranks opencode's remembered last-used model
+# (state/opencode/model.json), so writing one would reset every session to it and
+# make the user's /models choice impossible to keep. Without it opencode falls
+# through to the last-used model. Cheap side-tasks (titles etc.) go to Haiku
+# (opencode's `small_model`); the au.* prefix keeps inference in Australia like the
+# Claude Code settings above.
+OPENCODE_MODEL=
 OPENCODE_SMALL_MODEL=au.anthropic.claude-haiku-4-5-20251001-v1:0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -107,7 +111,8 @@ while [[ $# -gt 0 ]]; do
       echo "  --setup-opencode write \$XDG_CONFIG_HOME/opencode/<name>.json so"
       echo "                   'OPENCODE_CONFIG=<that file> opencode' runs Claude on"
       echo "                   Bedrock, then exit (no AWS calls)"
-      echo "  --opencode-model Bedrock model id it defaults to (default: $OPENCODE_MODEL)"
+      echo "  --opencode-model Bedrock model id to pin as opencode's default (default: none,"
+      echo "                   so opencode keeps the last model you picked with /models)"
       echo "  --opencode-config  opencode config file name to write (default:"
       echo "                   $OPENCODE_CONFIG_NAME); a non-default name needs"
       echo "                   MQYOLO_OPENCODE_CONFIG set for mqyolo to select it"
@@ -478,6 +483,9 @@ opencode_config_file() {
 }
 
 opencode_config_json() {
+  local model_line=""
+  [[ -n "$OPENCODE_MODEL" ]] && model_line="  \"model\": \"amazon-bedrock/${OPENCODE_MODEL}\",
+"
   cat <<EOF
 {
   "\$schema": "https://opencode.ai/config.json",
@@ -490,8 +498,7 @@ opencode_config_json() {
       }
     }
   },
-  "model": "amazon-bedrock/${OPENCODE_MODEL}",
-  "small_model": "amazon-bedrock/${OPENCODE_SMALL_MODEL}"
+${model_line}  "small_model": "amazon-bedrock/${OPENCODE_SMALL_MODEL}"
 }
 EOF
 }
@@ -500,7 +507,11 @@ setup_opencode() {
   local file
   file=$(opencode_config_file)
   write_json "$file" "$(opencode_config_json)" --setup-opencode || return 1
-  echo "  provider amazon-bedrock (Converse API), model $OPENCODE_MODEL,"
+  if [[ -n "$OPENCODE_MODEL" ]]; then
+    echo "  provider amazon-bedrock (Converse API), model $OPENCODE_MODEL (pinned),"
+  else
+    echo "  provider amazon-bedrock (Converse API), no model pinned (opencode keeps your last pick),"
+  fi
   echo "  region $(profile_region), signing with the [$STATIC_PROFILE] profile"
   echo "  (run 'mqbedrock' to fill it in). opencode has no auth-refresh hook of its"
   echo "  own, so an expired key means running 'mqbedrock' again — on the host, or"

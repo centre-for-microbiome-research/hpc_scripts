@@ -2746,9 +2746,10 @@ def test_mqbedrock_setup_opencode_writes_an_opencode_config(tmp_path):
     assert cfg["provider"]["amazon-bedrock"]["options"] == {
         "profile": "bedrock", "region": "ap-southeast-2",
     }
-    # Sonnet by default (au.* keeps inference in Australia), with Haiku for the
-    # cheap side-tasks like session titles.
-    assert cfg["model"] == "amazon-bedrock/au.anthropic.claude-sonnet-5"
+    # No `model` by default: a model key here outranks opencode's remembered
+    # last-used model, so the user's /models choice would never stick. Haiku
+    # handles the cheap side-tasks like session titles.
+    assert "model" not in cfg
     assert cfg["small_model"] == \
         "amazon-bedrock/au.anthropic.claude-haiku-4-5-20251001-v1:0"
     # It is an additional config layer selected with OPENCODE_CONFIG, so the
@@ -2797,8 +2798,9 @@ def test_mqbedrock_setup_opencode_refuses_to_clobber_a_different_config(tmp_path
     # --force overwrites, keeping the replaced file.
     p = _setup_opencode(home, "--force")
     assert p.returncode == 0, p.stdout + p.stderr
-    assert json.loads(mine.read_text())["model"] == \
-        "amazon-bedrock/au.anthropic.claude-sonnet-5"
+    forced = json.loads(mine.read_text())
+    assert "model" not in forced
+    assert forced["provider"]["amazon-bedrock"]["options"]["profile"] == "bedrock"
     backups = [f for f in mine.parent.iterdir()
                if f.name.startswith("bedrock.json.mqbedrock-")]
     assert len(backups) == 1, list(mine.parent.iterdir())

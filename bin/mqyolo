@@ -735,8 +735,9 @@ BEDROCK
   - opencode runs Claude on Bedrock properly: its `amazon-bedrock` provider uses
     the same per-model Converse API Claude Code does. `mqbedrock --setup-opencode`
     writes ~/.config/opencode/bedrock.json — an additional opencode config layer
-    naming the same static AWS profile, with au.anthropic.claude-sonnet-5 as the
-    default model (Haiku for its cheap side-tasks) — and mqyolo stages that
+    naming the same static AWS profile, with Haiku for its cheap side-tasks and
+    no pinned model (so opencode keeps the model you last picked with /models;
+    `--opencode-model ID` pins one) — and mqyolo stages that
     profile's keys and points OPENCODE_CONFIG at the file. opencode has no
     auth-refresh hook, so when the keys expire run `mqbedrock` again (from inside
     the sandbox it is forwarded to the host, which restages them live).

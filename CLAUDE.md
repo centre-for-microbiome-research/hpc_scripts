@@ -182,9 +182,14 @@ Key invariants the tests guard (keep them true):
   grants — so the `au.anthropic.*` inference profiles work and it signs with the
   same static `[bedrock]` profile. `mqbedrock --setup-opencode` writes
   `~/.config/opencode/bedrock.json` (`--opencode-config NAME` for another name):
-  `provider.amazon-bedrock.options.{profile,region}` plus `model`
-  (`amazon-bedrock/au.anthropic.claude-sonnet-5` — **Sonnet is the default**) and
-  `small_model` (Haiku, for titles and other cheap side-tasks). It is a whole
+  `provider.amazon-bedrock.options.{profile,region}` plus
+  `small_model` (Haiku, for titles and other cheap side-tasks). **It deliberately
+  writes no `model`** unless `--opencode-model ID` is given: a `model` key in an
+  `OPENCODE_CONFIG` layer outranks opencode's remembered last-used model
+  (`~/.local/state/opencode/model.json`, order: `--model` > config `model` >
+  last-used > built-in), so pinning one made every session reset to it and the
+  user's `/models` choice could never stick. (Existing files that still carry a
+  `model` need `mqbedrock --setup-opencode --force` or a manual edit.) It is a whole
   config *file* rather than an edit to `opencode.json`, selected with
   `OPENCODE_CONFIG=<file>`, which opencode loads as an **additional layer over**
   the global config (winning only on the keys it sets) — so the file is entirely
