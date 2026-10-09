@@ -9,15 +9,27 @@
 #   1. git pull --ff-only in the production checkout (refuses to run at all
 #      if there are local changes, and refuses to pull if that would create
 #      a merge commit - this is a shared checkout, not a dev sandbox).
-#   2. One-time repair of group-write permissions on any installed package
-#      that embeds its own nested pixi project (aviary, binchicken, ...).
-#      These are extracted by conda/pip under the default umask (022), so
-#      despite mqpixi's directories being setgid, group members other than
-#      whoever first built the env can't write into them - which is exactly
-#      what breaks `aviary build`'s own `pixi install -a` for everyone else.
-#      (pixi.toml's postinstall tasks now run under `umask 002`, so this is
-#      only needed to fix already-built envs; new ones won't need it.)
-#   3. Runs `pixi run postinstall`, which chains every env's postinstall task.
+#   2. `pixi install -a --frozen`, installing every one of the ~100+ tool
+#      environments defined in the manifest (not just the ones postinstall
+#      touches), so non-admin users never trigger a slow first-time install
+#      (or hit a permissions error building one) themselves.
+#   3. [rremoved by commenting out] Grants the microbiome-admin group write access (on top of the
+#      microbiome group's existing read/execute) on anything the invoking
+#      user owns under the shared pixi envs. conda/pip/pixi extract package
+#      files owned by whoever happens to run the install, group=microbiome,
+#      mode 755 - fine for regular read-only use, but it means only that one
+#      person can write there afterwards (e.g. aviary's/binchicken's own
+#      nested `pixi install -a`, or write_activate_vars.py touching an env
+#      someone else built first). A plain `chmod g+w` can't fix this without
+#      also handing write access to every ordinary microbiome member, since
+#      microbiome is the *owning* group - two different groups needing two
+#      different privilege levels on the same files requires a POSIX ACL.
+#      Setting the *default* ACL (-d) means anything created under these
+#      directories from now on inherits it automatically, so this only ever
+#      needs to run again for directories that don't have it yet; it's
+#      scoped to `$(id -un)`'s own files so running it as a different admin
+#      never fails on paths owned by someone else.
+#   4. Runs `pixi run postinstall`, which chains every env's postinstall task.
 #
 # Usage: deploy_to_production.sh [path-to-production-checkout]
 # Defaults to /work/microbiome/sw/hpc_scripts.
@@ -27,6 +39,7 @@ set -euo pipefail
 PRODUCTION_REPO="${1:-/work/microbiome/sw/hpc_scripts}"
 MQPIXI_DIR="$PRODUCTION_REPO/mqpixi"
 PIXI_ENVS_DIR="$MQPIXI_DIR/.pixi/envs"
+ADMIN_GROUP="${ADMIN_GROUP:-microbiome-admin}"
 
 if [[ ! -d "$PRODUCTION_REPO/.git" ]]; then
     echo "ERROR: $PRODUCTION_REPO is not a git checkout" >&2
@@ -61,21 +74,22 @@ if ! git pull --ff-only; then
     exit 1
 fi
 
-echo "==> Repairing group-write permissions on nested pixi envs"
-if [[ -d "$PIXI_ENVS_DIR" ]]; then
-    found_any=0
-    while IFS= read -r -d '' nested_pixi; do
-        found_any=1
-        pkg_dir="$(dirname "$nested_pixi")"
-        echo "  chmod -R g+w $pkg_dir"
-        chmod -R g+w "$pkg_dir"
-    done < <(find "$PIXI_ENVS_DIR" -type d -name ".pixi" -print0)
-    if [[ "$found_any" -eq 0 ]]; then
-        echo "  (no installed packages with an embedded .pixi found, nothing to do)"
-    fi
-else
-    echo "WARNING: $PIXI_ENVS_DIR not found (no envs built yet?), skipping" >&2
-fi
+echo "==> Installing all environments"
+cd "$MQPIXI_DIR"
+pixi install -a --frozen
+
+# echo "==> Granting $ADMIN_GROUP write access on anything owned by $(id -un)"
+# if [[ -d "$PIXI_ENVS_DIR" ]]; then
+#     # -m: existing files/dirs the current user owns get the ACL now.
+#     # -d: directories also get it as a *default* ACL, so anything created
+#     # under them later (by this user, with any umask) inherits it too.
+#     find "$PIXI_ENVS_DIR" -user "$(id -un)" \( -type d -o -type f \) -print0 \
+#         | xargs -0 -r setfacl -m "g:${ADMIN_GROUP}:rwx"
+#     find "$PIXI_ENVS_DIR" -user "$(id -un)" -type d -print0 \
+#         | xargs -0 -r setfacl -d -m "g:${ADMIN_GROUP}:rwx"
+# else
+#     echo "WARNING: $PIXI_ENVS_DIR not found (no envs built yet?), skipping" >&2
+# fi
 
 echo "==> Running mqpixi postinstall"
 cd "$MQPIXI_DIR"
