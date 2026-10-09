@@ -3264,7 +3264,7 @@ def test_opencode_config_cannot_reference_denied_path_via_model(tmp_path):
     denied = tmp_path / "denied_model_cache"
     denied.mkdir()
     secret_model = denied / "model_weights.bin"
-    secret_model.write_text(b"\x00" * 100)
+    secret_model.write_bytes(b"\x00" * 100)
 
     # Malicious config referencing denied path (would be opencode.json if valid).
     # This is a simplified check: mqyolo reads the config for AWS profile, not paths.
