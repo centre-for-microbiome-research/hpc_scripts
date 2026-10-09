@@ -679,10 +679,16 @@ sandbox_dedupe_binds() {
 #   are appended AFTER the caller's, and sandbox_dedupe_binds keeps the last bind
 #   per destination, so a shadow added here would otherwise silently override an
 #   explicit opt-in.
+#
+#   The shadow is bound at the real path AND at every mount alias of it
+#   (sandbox_mount_aliases). A bind covers one path, not the directory: on aqua
+#   compute nodes lustre's /home subtree is mounted at /home as well as under
+#   /mnt/hpccs01, so a shadow on /mnt/hpccs01/home/$USER/.ssh alone left the real
+#   keys readable at /home/$USER/.ssh through the wholesale /home bind.
 # ---------------------------------------------------------------------------
 sandbox_home_shadow_dir() {
     local rel="$1"; shift
-    local target="${HOME}/${rel}" real opt opt_real
+    local target="${HOME}/${rel}" real opt opt_real empty dst
     [[ -d "$target" ]] || return 1
     real="$(realpath "$target" 2>/dev/null || echo "$target")"
     for opt in "$@"; do
@@ -690,9 +696,69 @@ sandbox_home_shadow_dir() {
         opt_real="$(realpath -m "$opt" 2>/dev/null || echo "$opt")"
         [[ "$opt_real" == "$real" || "$opt_real" == "$real"/* ]] && return 1
     done
-    mkdir -p "${CONTAINER_HOME}/_empty_${rel#.}"
-    BIND_ARGS+=(--bind "${CONTAINER_HOME}/_empty_${rel#.}:${real}:ro")
+    empty="${CONTAINER_HOME}/_empty_$(tr / _ <<<"${rel#.}")"
+    mkdir -p "$empty"
+    BIND_ARGS+=(--bind "${empty}:${real}:ro")
+    while IFS= read -r dst; do
+        [[ -n "$dst" && "$dst" != "$real" && -d "$dst" ]] || continue
+        BIND_ARGS+=(--bind "${empty}:${dst}:ro")
+    done < <(sandbox_mount_aliases "$real")
     return 0
+}
+
+# ---------------------------------------------------------------------------
+# sandbox_mount_aliases PATH [MOUNTINFO]
+#   Print every other path at which the directory PATH (a realpath) is reachable
+#   because its filesystem — or a subtree of it containing PATH — is mounted more
+#   than once (MOUNTINFO defaults to $SANDBOX_MOUNTINFO, else /proc/self/mountinfo,
+#   the override existing for tests; field 3 is the device,
+#   4 the root of the mount within that filesystem, 5 the mountpoint). Symlink
+#   aliases are not listed: they resolve to PATH and are covered by it.
+#   Only aliases under a path that sandbox_build_binds exposes are useful, but
+#   the rest are harmless: the caller skips any that do not exist on the host.
+# ---------------------------------------------------------------------------
+sandbox_mount_aliases() {
+    local path="$1" mountinfo="${2:-${SANDBOX_MOUNTINFO:-/proc/self/mountinfo}}"
+    [[ -r "$mountinfo" ]] || return 0
+    awk -v path="$path" '
+        function unesc(s,   out, i, c) {
+            out = ""
+            for (i = 1; i <= length(s); i++) {
+                c = substr(s, i, 1)
+                if (c == "\\" && substr(s, i + 1, 3) ~ /^[0-7][0-7][0-7]$/) {
+                    out = out sprintf("%c", (substr(s, i + 1, 1) * 64) + (substr(s, i + 2, 1) * 8) + substr(s, i + 3, 1))
+                    i += 3
+                } else out = out c
+            }
+            return out
+        }
+        # "rest" of p below prefix pre ("" if equal, "/x/y" if under, -1 if not).
+        function below(p, pre) {
+            if (pre == "/") return (p == "/") ? "" : p
+            if (p == pre) return ""
+            if (substr(p, 1, length(pre) + 1) == pre "/") return substr(p, length(pre) + 1)
+            return -1
+        }
+        { n++; dev[n] = $3; root[n] = unesc($4); mnt[n] = unesc($5) }
+        END {
+            best = 0; bestlen = -1
+            for (i = 1; i <= n; i++) {
+                r = below(path, mnt[i])
+                if (r != -1 && length(mnt[i]) >= bestlen) { best = i; bestlen = length(mnt[i]) }
+            }
+            if (!best) exit
+            rest = below(path, mnt[best])
+            fspath = (root[best] == "/") ? rest : root[best] rest
+            if (fspath == "") fspath = "/"
+            for (i = 1; i <= n; i++) {
+                if (dev[i] != dev[best]) continue
+                r = below(fspath, root[i])
+                if (r == -1) continue
+                alias = (mnt[i] == "/") ? r : mnt[i] r
+                if (alias == "") alias = "/"
+                if (alias != path && !(alias in seen)) { seen[alias] = 1; print alias }
+            }
+        }' "$mountinfo"
 }
 
 # ---------------------------------------------------------------------------
@@ -728,6 +794,19 @@ sandbox_home_dotfiles() {
     # who accept that trade.
     local _shadowed_aws=0
     sandbox_home_shadow_dir .aws "${_opt_ins[@]+"${_opt_ins[@]}"}" && _shadowed_aws=1
+
+    # --- Hide ~/.config/gh by default (shadow with an empty dir) ---
+    # On a host without a keyring, `gh auth login` stores the GitHub token in
+    # plain text in ~/.config/gh/hosts.yml. Created up front when missing: a
+    # shadow can only be bound over a directory that exists at launch, so
+    # otherwise a login made while a session is running would land in a
+    # directory that session can read. Hand the sandbox a scoped token via
+    # GH_TOKEN instead; `--ro-paths ~/.config/gh` re-exposes the real one.
+    # ~/.config itself is linked through below, and its gh entry resolves to the
+    # shadowed realpath.
+    [[ -d "${HOME}/.config" && ! -e "${HOME}/.config/gh" ]] && \
+        mkdir -m 700 "${HOME}/.config/gh" 2>/dev/null
+    sandbox_home_shadow_dir .config/gh "${_opt_ins[@]+"${_opt_ins[@]}"}" || true
 
     # Bind CARGO_HOME (default ~/.cargo) rw so `cargo build`/`cargo test` can
     # download missing deps into the registry.

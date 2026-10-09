@@ -1137,6 +1137,92 @@ def test_home_dotfiles_ssh_shadow_is_not_opt_innable(tmp_path):
     assert ".ssh" not in entries, entries
 
 
+def _mount_aliases(path, mountinfo):
+    p = subprocess.run(
+        ["bash", "-c", 'source "$1"; sandbox_mount_aliases "$2" "$3"', "_",
+         str(SANDBOX_LIB), str(path), str(mountinfo)],
+        text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+    return p.stdout.splitlines()
+
+
+def test_mount_aliases_finds_other_mounts_of_the_same_subtree(tmp_path):
+    # Layout of an aqua compute node: lustre hpccs01 is mounted whole at
+    # /mnt/hpccs01, and its /home and /work subtrees again at /home and /work.
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(
+        "22 1 253:0 / / rw - xfs /dev/root rw\n"
+        "30 22 467:1 / /mnt/hpccs01 rw - lustre x:/hpccs01 rw\n"
+        "31 22 467:1 /home /home rw - lustre x:/hpccs01 rw\n"
+        "32 22 467:1 /work /work rw - lustre x:/hpccs01 rw\n"
+        "33 22 467:1 /home/u/my\\040dir /srv/my\\040dir rw - lustre x:/hpccs01 rw\n"
+        "34 22 523:1 / /mnt/weka rw - wekafs w rw\n"
+    )
+    assert _mount_aliases("/mnt/hpccs01/home/u/.ssh", mountinfo) == ["/home/u/.ssh"]
+    assert _mount_aliases("/home/u/.ssh", mountinfo) == ["/mnt/hpccs01/home/u/.ssh"]
+    assert sorted(_mount_aliases("/home/u/my dir/x", mountinfo)) == \
+        ["/mnt/hpccs01/home/u/my dir/x", "/srv/my dir/x"]
+    assert _mount_aliases("/mnt/weka/scratch", mountinfo) == []
+    assert _mount_aliases("/etc", mountinfo) == []
+
+
+def test_home_shadow_covers_every_mount_alias(tmp_path):
+    # The regression: the ~/.ssh shadow was bound only at its realpath, so on a
+    # node that mounts the same lustre subtree at /home too, the real keys stayed
+    # readable at /home/$USER/.ssh through the wholesale /home bind.
+    real_root = tmp_path / "real"
+    alias_root = tmp_path / "alias"
+    home = real_root / "home"
+    for d in (".ssh", ".aws", ".config/gh"):
+        (home / d).mkdir(parents=True)
+        (alias_root / "home" / d).mkdir(parents=True)
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(
+        "30 1 9:9 / %s rw - lustre x rw\n"
+        "31 1 9:9 / %s rw - lustre x rw\n"
+        % (os.path.realpath(real_root), os.path.realpath(alias_root)))
+    old = os.environ.get("SANDBOX_MOUNTINFO")
+    os.environ["SANDBOX_MOUNTINFO"] = str(mountinfo)
+    try:
+        binds, _ = _home_dotfiles(home)
+    finally:
+        if old is None:
+            del os.environ["SANDBOX_MOUNTINFO"]
+        else:
+            os.environ["SANDBOX_MOUNTINFO"] = old
+    for d in (".ssh", ".aws", ".config/gh"):
+        for root in (real_root, alias_root):
+            dst = os.path.realpath(root / "home" / d)
+            assert any(b.endswith(f":{dst}:ro") and "/_empty_" in b for b in binds), \
+                (d, dst, binds)
+
+
+def test_home_dotfiles_shadows_gh_config_and_creates_it_when_missing(tmp_path):
+    # `gh auth login` writes its token to ~/.config/gh/hosts.yml. The directory
+    # is created at launch so a login made mid-session also lands behind the
+    # shadow rather than in a directory the running session can read.
+    home = tmp_path / "home"
+    (home / ".config").mkdir(parents=True)
+
+    binds, _ = _home_dotfiles(home)
+
+    gh_real = os.path.realpath(home / ".config" / "gh")
+    assert os.path.isdir(gh_real)
+    assert oct(os.stat(gh_real).st_mode & 0o777) == "0o700"
+    shadow = [b for b in binds if b.endswith(f":{gh_real}:ro")]
+    assert len(shadow) == 1 and "_empty_config_gh" in shadow[0], binds
+
+
+def test_home_dotfiles_gh_config_can_be_opted_back_in(tmp_path):
+    home = tmp_path / "home"
+    (home / ".config" / "gh").mkdir(parents=True)
+
+    binds, _ = _home_dotfiles(home, opt_ins=[home / ".config" / "gh"])
+
+    gh_real = os.path.realpath(home / ".config" / "gh")
+    assert not any(b.endswith(f":{gh_real}:ro") for b in binds), binds
+
+
 def test_mirror_home_subdir_replaces_symlink_with_dir_of_symlinks(tmp_path):
     # sandbox_home_dotfiles leaves ~/.config as a symlink onto the (read-only)
     # real home. Mirroring must replace the LINK — never write through it — with a
@@ -1584,6 +1670,36 @@ def test_mqsandbox_hides_denied_paths():
         else:
             # Nothing to carve out, so the whole denied tree stays hidden.
             assert "scratch:ABSENT" in out, out
+    finally:
+        shutil.rmtree(cwd, ignore_errors=True)
+
+
+@requires_container
+def test_mqsandbox_hides_home_credentials_at_every_path():
+    # Check what is actually readable, not just the bind list: the shadow was
+    # once bound only at the realpath, leaving ~/.ssh readable at /home/$USER/.ssh
+    # on compute nodes that mount lustre's /home subtree a second time.
+    home = os.path.expanduser("~")
+    paths = set()
+    for rel in (".ssh", ".aws", ".config/gh"):
+        logical = os.path.join(home, rel)
+        if not os.path.isdir(logical):
+            continue
+        real = os.path.realpath(logical)
+        paths.update({logical, real})
+        paths.update(a for a in _mount_aliases(real, "/proc/self/mountinfo")
+                     if os.path.isdir(a))
+    if not paths:
+        pytest.skip("no credential directories in $HOME")
+    cwd = tempfile.mkdtemp(prefix="mqs_cwd_", dir=str(REPO))
+    script = "".join(
+        'printf "%%s=" %s; ls -A %s 2>/dev/null | tr "\\n" ","; echo; '
+        % (shlex.quote(p), shlex.quote(p)) for p in sorted(paths))
+    try:
+        rc, out = _run_in_sandbox(cwd, script)
+        assert rc == 0, out
+        for p in paths:
+            assert f"{p}=\n" in out, out
     finally:
         shutil.rmtree(cwd, ignore_errors=True)
 
