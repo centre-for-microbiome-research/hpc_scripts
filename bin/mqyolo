@@ -46,6 +46,20 @@
 # is instead told there is no queue and to run all work directly on the local
 # machine.
 
+# Re-run ourselves as a child so this process has exactly one child: mqyolo.
+# zellij's session resurrection records a pane's command as the child of the
+# pane's process, keeping only the highest-PID child. When a resurrected pane runs
+# mqyolo directly (no shell in between), mqyolo *is* the pane's process and its
+# children are the broker and `Apptainer runtime parent: ai_tool.sif` — so the
+# next resurrection offered to rerun "Apptainer" instead of mqyolo, alternating
+# day by day. The outer process stays in the foreground process group, so Ctrl-C
+# and terminal hangup still reach the real session.
+if [[ -z "${_MQYOLO_INNER:-}" ]]; then
+    _MQYOLO_INNER=1 "$0" "$@"
+    exit $?
+fi
+unset _MQYOLO_INNER
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"

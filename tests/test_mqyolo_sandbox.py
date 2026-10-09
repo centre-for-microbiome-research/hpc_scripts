@@ -966,6 +966,60 @@ def test_mqyolo_passes_nv_to_the_runtime(tmp_path, nv, expect_nv):
     assert ("--nv" in out.splitlines()) is expect_nv, out
 
 
+def test_mqyolo_top_process_has_only_an_mqyolo_child(tmp_path):
+    # zellij resurrection records a pane's command as the highest-PID child of the
+    # pane's process. A resurrected pane runs mqyolo directly, so mqyolo must not
+    # have the runtime (or the broker) as its own child, or the next resurrection
+    # offers "Apptainer runtime parent: ai_tool.sif" instead of mqyolo.
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    fake_apptainer = fakebin / "apptainer"
+    fake_apptainer.write_text(
+        "#!/bin/sh\n"
+        "top=$(ps -o ppid= -p $PPID | tr -d ' ')\n"
+        "echo \"TOP: $(ps -o args= -p $top)\"\n"
+        "ps -o args= --ppid $top | sed 's/^/CHILD: /'\n"
+        "echo \"INNER_VAR=${_MQYOLO_INNER-unset}\"\n"
+    )
+    fake_apptainer.chmod(0o755)
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    fake_sif = tmp_path / "ai_tool.sif"
+    fake_sif.write_text("")
+    p = subprocess.run(
+        [str(MQYOLO), "--no-broker", "claude"], text=True, capture_output=True,
+        env={**os.environ, "PATH": f"{fakebin}:{os.environ['PATH']}",
+             "HOME": str(fake_home), "AI_TOOL_SIF": str(fake_sif)},
+        cwd=str(fake_home),
+    )
+    assert p.returncode == 0, p.stderr
+    lines = p.stdout.splitlines()
+    top = [l for l in lines if l.startswith("TOP: ")]
+    children = [l for l in lines if l.startswith("CHILD: ")]
+    assert top and str(MQYOLO) in top[0], p.stdout
+    assert len(children) == 1 and str(MQYOLO) in children[0], p.stdout
+    assert "INNER_VAR=unset" in lines, p.stdout
+
+
+def test_mqyolo_inner_preserves_exit_status(tmp_path):
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    fake_apptainer = fakebin / "apptainer"
+    fake_apptainer.write_text("#!/bin/sh\nexit 7\n")
+    fake_apptainer.chmod(0o755)
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    fake_sif = tmp_path / "ai_tool.sif"
+    fake_sif.write_text("")
+    p = subprocess.run(
+        [str(MQYOLO), "--no-broker", "claude"], text=True, capture_output=True,
+        env={**os.environ, "PATH": f"{fakebin}:{os.environ['PATH']}",
+             "HOME": str(fake_home), "AI_TOOL_SIF": str(fake_sif)},
+        cwd=str(fake_home),
+    )
+    assert p.returncode == 7, p.stdout + p.stderr
+
+
 def test_mqsandbox_forwards_cuda_visible_devices(tmp_path):
     # PBS sets CUDA_VISIBLE_DEVICES in the job environment to the GPU(s) it
     # allocated; the job inside the sandbox must still see it.
