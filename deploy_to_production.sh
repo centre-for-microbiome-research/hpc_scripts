@@ -22,7 +22,8 @@
 #      anyone outside the owning group. /pkg (weka) does not take the POSIX ACLs
 #      that would let microbiome-admin be a *second* group, so $ADMIN_GROUP is
 #      made the owning group and "other" carries the read-only access.
-#      Re-run after the postinstall step too, since that creates files.
+#      Runs before the install (which needs write access to every env), and
+#      again after the install and postinstall steps, since those create files.
 #   4. Runs `pixi run postinstall`, which chains every env's postinstall task.
 #
 # Usage: deploy_to_production.sh [--fix-permissions] [path-to-production-checkout]
@@ -86,10 +87,6 @@ if ! git pull --ff-only; then
     exit 1
 fi
 
-echo "==> Installing all environments"
-cd "$MQPIXI_DIR"
-pixi install -a --frozen
-
 fix_env_permissions() {
     if [[ "$FIX_PERMISSIONS" -ne 1 ]]; then
         return 0
@@ -107,6 +104,18 @@ fix_env_permissions() {
     # mpermissions keeps going past failures on files owned by someone else.
     "$PRODUCTION_REPO/bin/mpermissions" -g "$ADMIN_GROUP" --other-read "$(realpath "$PIXI_ENVS_DIR")"
 }
+
+# Before the install as well: `pixi install` needs write access to every env
+# prefix (install lock, conda-meta), so envs built by another user must be
+# made writable for $ADMIN_GROUP first or the install aborts (set -e) and the
+# later fix never runs. Only files owned by the invoking user can be changed;
+# anything owned by someone else has to be fixed by that user running this
+# script with --fix-permissions.
+fix_env_permissions
+
+echo "==> Installing all environments"
+cd "$MQPIXI_DIR"
+pixi install -a --frozen
 
 fix_env_permissions
 
