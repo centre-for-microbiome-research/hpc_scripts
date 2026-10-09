@@ -8,3 +8,5 @@ singularity/ai_tool.sif
 !.pixi/config.toml
 singularity/ai_tool.test.sif
 
+bin/pixi
+cmr_bashrc_extras_noconda.bash
