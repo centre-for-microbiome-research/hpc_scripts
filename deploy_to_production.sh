@@ -32,10 +32,12 @@
 set -euo pipefail
 
 FIX_PERMISSIONS=0
+NOT_BEN=0
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --fix-permissions) FIX_PERMISSIONS=1 ;;
+        --not-ben) NOT_BEN=1 ;;
         -h|--help)
             sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
@@ -54,37 +56,39 @@ MQPIXI_DIR="$PRODUCTION_REPO/mqpixi"
 PIXI_ENVS_DIR="$MQPIXI_DIR/.pixi/envs"
 ADMIN_GROUP="${ADMIN_GROUP:-microbiome-admin}"
 
-if [[ ! -d "$PRODUCTION_REPO/.git" ]]; then
-    echo "ERROR: $PRODUCTION_REPO is not a git checkout" >&2
-    exit 1
-fi
+if [[ "$NOT_BEN" -eq 0 ]]; then
+    if [[ ! -d "$PRODUCTION_REPO/.git" ]]; then
+        echo "ERROR: $PRODUCTION_REPO is not a git checkout" >&2
+        exit 1
+    fi
 
-if [[ ! -w "$PRODUCTION_REPO" ]]; then
-    echo "ERROR: $PRODUCTION_REPO is not writable. Are you running inside the" >&2
-    echo "mqyolo/opencode sandbox? /work and /pkg are read-only in there - run" >&2
-    echo "this script from a normal login shell instead." >&2
-    exit 1
-fi
+    if [[ ! -w "$PRODUCTION_REPO" ]]; then
+        echo "ERROR: $PRODUCTION_REPO is not writable. Are you running inside the" >&2
+        echo "mqyolo/opencode sandbox? /work and /pkg are read-only in there - run" >&2
+        echo "this script from a normal login shell instead." >&2
+        exit 1
+    fi
 
-echo "==> Updating $PRODUCTION_REPO"
-cd "$PRODUCTION_REPO"
+    echo "==> Updating $PRODUCTION_REPO"
+    cd "$PRODUCTION_REPO"
 
-# Refuse to pull over local modifications/untracked changes - this is a
-# shared production checkout, not a dev sandbox.
-if [[ -n "$(git status --porcelain)" ]]; then
-    echo "ERROR: $PRODUCTION_REPO has local changes or untracked files; refusing" >&2
-    echo "to pull. Run 'git status' there and resolve first." >&2
-    exit 1
-fi
+    # Refuse to pull over local modifications/untracked changes - this is a
+    # shared production checkout, not a dev sandbox.
+    if [[ -n "$(git status --porcelain)" ]]; then
+        echo "ERROR: $PRODUCTION_REPO has local changes or untracked files; refusing" >&2
+        echo "to pull. Run 'git status' there and resolve first." >&2
+        exit 1
+    fi
 
-git fetch --quiet
+    git fetch --quiet
 
-# --ff-only: fail loudly rather than silently create a merge commit on the
-# shared production clone if it has diverged from upstream.
-if ! git pull --ff-only; then
-    echo "ERROR: 'git pull --ff-only' failed (local branch has diverged from" >&2
-    echo "upstream). Resolve manually in $PRODUCTION_REPO before re-running." >&2
-    exit 1
+    # --ff-only: fail loudly rather than silently create a merge commit on the
+    # shared production clone if it has diverged from upstream.
+    if ! git pull --ff-only; then
+        echo "ERROR: 'git pull --ff-only' failed (local branch has diverged from" >&2
+        echo "upstream). Resolve manually in $PRODUCTION_REPO before re-running." >&2
+        exit 1
+    fi
 fi
 
 fix_env_permissions() {
