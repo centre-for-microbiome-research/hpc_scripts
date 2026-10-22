@@ -26,7 +26,7 @@
 #   ANTHROPIC_API_KEY   Required for claude
 #   OPENAI_API_KEY      Required for codex, unless it is signed in or set up for
 #                       Bedrock (`mqbedrock --setup-codex`)
-#   GITHUB_TOKEN        Required for copilot
+#   GITHUB_TOKEN        Required for copilot; for gh in other tools see `mqyolo --setup-github`
 #   OPENCODE_API_KEY    opencode zen key (opencode also uses ANTHROPIC_API_KEY /
 #                       OPENAI_API_KEY, the credentials it stored via
 #                       `opencode auth login`, or Bedrock — `mqbedrock --setup-opencode`)
@@ -297,6 +297,187 @@ with open(dest, "w") as f:
 PY
 }
 
+# ---------------------------------------------------------------------------
+# GitHub token for the sandbox
+#
+# ~/.config/gh is hidden from the container (it holds the caller's full-scope
+# `gh auth login` token in plain text), so `gh` inside the sandbox only works
+# with a token handed to it through the environment. mqyolo wants that token to
+# be a *fine-grained* personal access token with an expiry, never the broad
+# classic/OAuth one. `mqyolo --setup-github` walks the user through creating one
+# and stores it; every launch then checks whichever token it finds and warns when
+# none is suitable.
+#
+# What can be verified: GitHub exposes no API to read a fine-grained token's
+# permission set or repository selection, so "appropriate" means what IS
+# observable — a github_pat_ token (not a classic ghp_ / OAuth gho_ one, which
+# carry coarse scopes like `repo`), accepted by the API, with an expiry no further
+# out than MQYOLO_GITHUB_TOKEN_DAYS. The permission list printed by --setup-github
+# is what keeps it narrow.
+# ---------------------------------------------------------------------------
+MQYOLO_GITHUB_TOKEN_DAYS=90
+_mqyolo_github_api() { echo "${MQYOLO_GITHUB_API:-https://api.github.com}"; }
+_mqyolo_github_token_file() {
+    echo "${MQYOLO_GITHUB_TOKEN_FILE:-${HOME}/.config/mqyolo/github-token}"
+}
+
+# The permissions requested for the sandbox token (name=level, GitHub's own
+# query-parameter names). Deliberately omits `workflows`, which would let the
+# token rewrite .github/workflows and so run code in CI with the repo's secrets,
+# and every admin/secrets/webhook permission. Contents is read-only: pushes go via
+# pull requests, or from the host.
+_MQYOLO_GITHUB_PERMS=(contents=read pull_requests=write issues=write actions=read
+                      statuses=read checks=read)
+
+# _mqyolo_github_token_status TOKEN
+#   Set _MQYOLO_GITHUB_STATUS (not printed: callers need _MQYOLO_GITHUB_EXPIRY too,
+#   which a command substitution would lose) and return 0 only for an appropriate token:
+#     ok          fine-grained, valid, expires within MQYOLO_GITHUB_TOKEN_DAYS
+#     unverified  looks fine-grained but GitHub could not be reached (return 0:
+#                 an offline workstation should not lose its token)
+#     broad       not a fine-grained token (classic/OAuth/other)
+#     invalid     GitHub rejected it
+#     noexpiry    valid but never expires
+#     longlived   expires later than MQYOLO_GITHUB_TOKEN_DAYS
+#   The token goes to curl on stdin (-K -), not argv, so it is not visible in `ps`
+#   to other users on a shared login node.
+#   Also sets _MQYOLO_GITHUB_EXPIRY (YYYY-MM-DD) when known.
+_mqyolo_github_token_status() {
+    local token="$1" hdrs code exp epoch days
+    _MQYOLO_GITHUB_EXPIRY=""; _MQYOLO_GITHUB_STATUS=""
+    if [[ "$token" != github_pat_* ]]; then _MQYOLO_GITHUB_STATUS=broad; return 1; fi
+    if ! command -v curl &>/dev/null; then _MQYOLO_GITHUB_STATUS=unverified; return 0; fi
+    hdrs="$(printf 'header = "Authorization: Bearer %s"\n' "$token" | \
+        curl -sS -m 8 -o /dev/null -D - -K - \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "$(_mqyolo_github_api)/user" 2>/dev/null | tr -d '\r')" || { _MQYOLO_GITHUB_STATUS=unverified; return 0; }
+    code="$(awk 'NR==1 {print $2}' <<<"$hdrs")"
+    case "$code" in
+        200) ;;
+        401) _MQYOLO_GITHUB_STATUS=invalid; return 1 ;;
+        *)   _MQYOLO_GITHUB_STATUS=unverified; return 0 ;;
+    esac
+    # Classic and OAuth tokens always answer with X-OAuth-Scopes; fine-grained never do.
+    if grep -qi '^x-oauth-scopes:' <<<"$hdrs"; then _MQYOLO_GITHUB_STATUS=broad; return 1; fi
+    exp="$(grep -i '^github-authentication-token-expiration:' <<<"$hdrs" | head -1 | cut -d' ' -f2- | sed 's/^ *//')"
+    if [[ -z "$exp" ]]; then _MQYOLO_GITHUB_STATUS=noexpiry; return 1; fi
+    epoch="$(date -d "$exp" +%s 2>/dev/null)" || { _MQYOLO_GITHUB_STATUS=unverified; return 0; }
+    _MQYOLO_GITHUB_EXPIRY="$(date -d "@$epoch" +%F)"
+    days=$(( (epoch - $(date +%s)) / 86400 ))
+    # One day of slack: the token's clock starts when GitHub creates it.
+    if (( days > MQYOLO_GITHUB_TOKEN_DAYS + 1 )); then _MQYOLO_GITHUB_STATUS=longlived; return 1; fi
+    _MQYOLO_GITHUB_STATUS=ok
+}
+
+# Human description of a status word from _mqyolo_github_token_status.
+_mqyolo_github_status_text() {
+    case "$1" in
+        broad)     echo "is not a fine-grained token (classic/OAuth tokens carry broad scopes such as 'repo')" ;;
+        invalid)   echo "was rejected by GitHub (expired or revoked)" ;;
+        noexpiry)  echo "never expires" ;;
+        longlived) echo "expires more than ${MQYOLO_GITHUB_TOKEN_DAYS} days out" ;;
+        *)         echo "is not suitable" ;;
+    esac
+}
+
+# _mqyolo_setup_github
+#   Interactive: print a pre-filled GitHub "new fine-grained token" URL, read the
+#   pasted token (stdin; hidden when a terminal), check it, and store it for
+#   launches. GitHub offers no API to create a fine-grained token, so the user
+#   has to press the button themselves; everything else is automated.
+_mqyolo_setup_github() {
+    local file perm query token
+    file="$(_mqyolo_github_token_file)"
+    query="name=mqyolo-sandbox&expires_in=${MQYOLO_GITHUB_TOKEN_DAYS}"
+    query+="&description=Token+for+gh+inside+the+mqyolo+sandbox"
+    for perm in "${_MQYOLO_GITHUB_PERMS[@]}"; do query+="&${perm}"; done
+    {
+        echo "mqyolo --setup-github"
+        echo
+        echo "GitHub has no API for creating a fine-grained token, so open this link"
+        echo "(it pre-fills the name, the ${MQYOLO_GITHUB_TOKEN_DAYS}-day expiry and the permissions):"
+        echo
+        echo "  https://github.com/settings/personal-access-tokens/new?${query}"
+        echo
+        echo "Before pressing 'Generate token':"
+        echo "  - Repository access: choose 'All repositories' (it is not pre-fillable)."
+        echo "  - Check the permissions match: Contents read; Pull requests, Issues write;"
+        echo "    Actions, Commit statuses, Checks read; Metadata read (automatic)."
+        echo "    Do NOT add Workflows, Administration or Secrets."
+        echo "  - A token covers one owner: your user account or a single organisation."
+        echo
+    } >&2
+    if [[ -t 0 ]]; then
+        read -r -s -p "Paste the token (input hidden): " token; echo >&2
+    else
+        read -r token || true
+    fi
+    token="${token//[[:space:]]/}"
+    if [[ -z "$token" ]]; then
+        echo "mqyolo: no token entered; nothing stored." >&2; return 1
+    fi
+    if ! _mqyolo_github_token_status "$token"; then
+        echo "mqyolo: that token $(_mqyolo_github_status_text "$_MQYOLO_GITHUB_STATUS"); nothing stored." >&2
+        return 1
+    fi
+    ( umask 077
+      mkdir -p "$(dirname "$file")" && printf '%s\n' "$token" > "${file}.tmp.$$" \
+          && mv -f "${file}.tmp.$$" "$file" ) || {
+        rm -f "${file}.tmp.$$"
+        echo "mqyolo: could not write ${file}" >&2; return 1
+    }
+    echo "mqyolo: stored in ${file} (mode 600)." >&2
+    if [[ "$_MQYOLO_GITHUB_STATUS" == unverified ]]; then
+        echo "mqyolo: could not reach GitHub to verify it; it will be checked at launch." >&2
+    else
+        echo "mqyolo: valid until ${_MQYOLO_GITHUB_EXPIRY}. Re-run --setup-github before then." >&2
+    fi
+    echo "mqyolo: it is passed to the container as GH_TOKEN/GITHUB_TOKEN at every launch." >&2
+}
+
+# _mqyolo_refuse_github_env_token
+#   Exit 1 if GH_TOKEN or GITHUB_TOKEN is set in the caller's environment. Apptainer
+#   forwards the host environment wholesale, so such a token (typically the broad
+#   one from `gh auth token`) would reach the container no matter what mqyolo does;
+#   refusing is the only way to keep it out. Not applied to copilot, which is
+#   documented to take its credential from GITHUB_TOKEN.
+_mqyolo_refuse_github_env_token() {
+    local var
+    for var in GH_TOKEN GITHUB_TOKEN; do
+        [[ -n "${!var:-}" ]] || continue
+        {
+            echo "Error: \$${var} is set in your environment, and would be passed into the"
+            echo "container with whatever access it carries (the host environment is forwarded"
+            echo "wholesale). Unset it and launch again:  unset GH_TOKEN GITHUB_TOKEN"
+            echo "For gh inside the sandbox, run 'mqyolo --setup-github' once: a fine-grained,"
+            echo "${MQYOLO_GITHUB_TOKEN_DAYS}-day token stored for mqyolo is used instead."
+        } >&2
+        exit 1
+    done
+}
+
+# _mqyolo_resolve_github_token
+#   Set GITHUB_SCOPED_TOKEN to the token stored by --setup-github if it is still
+#   suitable; otherwise leave it empty and warn on stderr that GitHub access (gh)
+#   will be limited, saying why the stored token was rejected when there is one.
+_mqyolo_resolve_github_token() {
+    GITHUB_SCOPED_TOKEN=""
+    local file tok=""
+    file="$(_mqyolo_github_token_file)"
+    [[ -r "$file" ]] && tok="$(head -1 "$file" 2>/dev/null | tr -d '[:space:]')"
+    if [[ -n "$tok" ]]; then
+        if _mqyolo_github_token_status "$tok"; then
+            GITHUB_SCOPED_TOKEN="$tok"; return 0
+        fi
+    fi
+    {
+        echo "mqyolo: WARNING: no scoped GitHub token found, so GitHub access (gh) inside the"
+        echo "mqyolo:          sandbox will be limited: ~/.config/gh is hidden from it."
+        [[ -n "$tok" ]] && echo "mqyolo:          the token in ${file} $(_mqyolo_github_status_text "$_MQYOLO_GITHUB_STATUS")."
+        echo "mqyolo:          Run 'mqyolo --setup-github' to create a fine-grained, ${MQYOLO_GITHUB_TOKEN_DAYS}-day token."
+    } >&2
+}
+
 # Total physical RAM of this host in whole GB, or "" if it can't be read. Used to
 # describe the local budget when mqyolo runs off the batch queue.
 _mqyolo_host_mem_gb() {
@@ -544,6 +725,7 @@ while [[ $# -gt 0 ]]; do
         --no-broker)  NO_BROKER=1; shift ;;
         --no-bedrock) NO_BEDROCK=1; shift ;;
         --print-guidance) _mqyolo_guidance_text; exit 0 ;;
+        --setup-github) _mqyolo_setup_github; exit $? ;;
         --rw-paths)
             shift
             while [[ $# -gt 0 && "$1" != --* && "$1" != claude && "$1" != codex && "$1" != copilot && "$1" != opencode ]]; do
@@ -609,6 +791,11 @@ OPTIONS
                        settings.json is never modified. Also skips staging Bedrock
                        AWS credentials.
   --print-guidance     Print the mqsub guidance injected into the AI tool, then exit
+  --setup-github       Set up GitHub access for `gh` inside the sandbox, then exit. Prints
+                       a pre-filled link for a fine-grained token (90-day expiry,
+                       read-mostly permissions, no Workflows/admin), reads the pasted
+                       token, checks it with GitHub, and stores it (mode 600) in
+                       ~/.config/mqyolo/github-token. See GITHUB below.
   help, -h, --help     Show this help text
 
   Any remaining arguments are passed through verbatim to the tool.
@@ -803,6 +990,28 @@ OPENCODE SETTINGS
                       --no-bedrock. MQYOLO_OPENCODE_CONFIG selects a differently
                       named one.
 
+GITHUB
+  ~/.config/gh (the token `gh auth login` saves, in plain text without a keyring) is
+  hidden from the container, so `gh` inside it only works with a token passed
+  through the environment. mqyolo wants that to be a fine-grained personal access
+  token with an expiry, not your broad login:
+  - `mqyolo --setup-github` prints a pre-filled link (name, 90-day expiry,
+    permissions), reads the token you paste, checks it, and stores it in
+    ~/.config/mqyolo/github-token (mode 600; MQYOLO_GITHUB_TOKEN_FILE overrides).
+    GitHub cannot create fine-grained tokens through an API, so the one manual
+    step is pressing "Generate token" — and choosing "All repositories".
+  - mqyolo REFUSES TO LAUNCH if GH_TOKEN or GITHUB_TOKEN is set in your environment:
+    the host environment is forwarded wholesale, so such a token (usually your broad
+    login) would reach the container. Unset it. Copilot is exempt, since it takes its
+    credential from GITHUB_TOKEN.
+  - Each launch otherwise uses the stored token if it is still suitable: a github_pat_
+    token that GitHub accepts and that expires within 90 days. It is passed to the
+    container as GH_TOKEN and GITHUB_TOKEN. If it is missing or unsuitable, mqyolo
+    warns that GitHub access will be limited.
+  - GitHub does not reveal a token's permissions, so those are not verified; the
+    link requests Contents read, Pull requests/Issues write, Actions/Statuses/
+    Checks read, and leaves out Workflows and all admin permissions.
+
 ENVIRONMENT VARIABLES
   ANTHROPIC_API_KEY   Required for claude
   OPENAI_API_KEY      Required for codex, unless it is signed in (~/.codex/auth.json)
@@ -810,7 +1019,8 @@ ENVIRONMENT VARIABLES
   MQYOLO_CODEX_PROFILE  Optional — name of the Codex Bedrock profile file to
                       select for codex (default "bedrock"); needed only if
                       `mqbedrock --setup-codex --codex-profile NAME` used another
-  GITHUB_TOKEN        Required for copilot
+  GITHUB_TOKEN        Required for copilot. For every other tool, setting GITHUB_TOKEN
+  GH_TOKEN            or GH_TOKEN makes mqyolo refuse to launch — see GITHUB
   OPENCODE_API_KEY    opencode zen key for opencode (it also picks up
                       ANTHROPIC_API_KEY / OPENAI_API_KEY, whatever
                       `opencode auth login` stored in ~/.local/share/opencode, or
@@ -907,6 +1117,8 @@ if ! _mqyolo_allowed_cwd "$CWD"; then
     } >&2
     exit 1
 fi
+
+[[ "$TOOL" != copilot ]] && _mqyolo_refuse_github_env_token
 
 # Runtime/image checks happen after arg parsing so that informational flags
 # (--help, --print-guidance) work even without a built container image.
@@ -1172,7 +1384,11 @@ SANDBOX_SHIM_EXPORTS=()
 # the --settings copy below (apptainer forwards the environment regardless of the
 # --settings file, and an explicit env var can outrank settings.json). So exclude
 # it from the host forward and force it off directly instead.
-_MQYOLO_ENV_VARS=(ANTHROPIC_API_KEY OPENAI_API_KEY GITHUB_TOKEN OPENCODE_API_KEY \
+# GITHUB_TOKEN is forwarded as-is only for copilot; every other tool had any
+# GH_TOKEN/GITHUB_TOKEN refused at launch and gets the stored scoped token instead.
+GITHUB_SCOPED_TOKEN=""
+[[ "$TOOL" != copilot ]] && _mqyolo_resolve_github_token
+_MQYOLO_ENV_VARS=(ANTHROPIC_API_KEY OPENAI_API_KEY OPENCODE_API_KEY \
                   OPENAI_BASE_URL ANTHROPIC_BASE_URL \
                   AWS_REGION AWS_DEFAULT_REGION AWS_BEARER_TOKEN_BEDROCK \
                   PIXI_CACHE_DIR RATTLER_CACHE_DIR \
@@ -1183,6 +1399,11 @@ if [[ "$NO_BEDROCK" -eq 1 ]]; then
     ENV_ARGS+=(--env "CLAUDE_CODE_USE_BEDROCK=0")
 else
     _MQYOLO_ENV_VARS+=(CLAUDE_CODE_USE_BEDROCK)
+fi
+if [[ -n "$GITHUB_SCOPED_TOKEN" ]]; then
+    ENV_ARGS+=(--env "GH_TOKEN=${GITHUB_SCOPED_TOKEN}" --env "GITHUB_TOKEN=${GITHUB_SCOPED_TOKEN}")
+elif [[ "$TOOL" == copilot ]]; then
+    _MQYOLO_ENV_VARS+=(GITHUB_TOKEN)
 fi
 sandbox_build_env "${_MQYOLO_ENV_VARS[@]}"
 unset _MQYOLO_ENV_VARS

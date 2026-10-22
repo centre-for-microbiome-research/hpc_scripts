@@ -73,6 +73,22 @@ Key invariants the tests guard (keep them true):
   whole AWS identity. (Note this is not *isolation*: neither script passes
   `--cleanenv`, so anything already exported in the caller's shell reaches the
   container regardless — the `--env` list only controls what mqyolo adds.)
+- **`gh` in the sandbox runs on a scoped token, not the caller's login.** Because
+  `~/.config/gh` is shadowed, `gh` only works from the environment. `mqyolo
+  --setup-github` prints a pre-filled fine-grained-token link (90-day expiry; Contents
+  read, Pull requests/Issues write, Actions/Statuses/Checks read; never Workflows or
+  admin), reads the pasted token and stores it in `~/.config/mqyolo/github-token`
+  (mode 600) — GitHub has no API to create one, so that button-press is manual. Each
+  launch (skipped for copilot, which keeps its own `GITHUB_TOKEN`) first refuses
+  to start if `$GH_TOKEN`/`$GITHUB_TOKEN` is set at all (`_mqyolo_refuse_github_env_token`
+  — the host environment is forwarded wholesale, so a broad token there reaches the
+  container however mqyolo behaves), then uses the stored file
+  (`_mqyolo_resolve_github_token`) and passes it as `GH_TOKEN` and `GITHUB_TOKEN`. "Appropriate" is only what the API shows:
+  a `github_pat_` token (classic/OAuth answer with `X-OAuth-Scopes`), accepted, with an
+  expiry within 90 days; permissions are NOT observable, so the link is what keeps
+  them narrow. No suitable stored token → a stderr warning that GitHub access is limited. The
+  token reaches curl on stdin, never argv. `MQYOLO_GITHUB_API` redirects the check
+  (the tests use a fake server).
 - **Bedrock credentials are staged as a Bedrock-only `~/.aws`, not by exposing the
   real one.** Symptom when this is missing: Claude starts, takes a prompt, and
   never answers — no error even under `--debug` — because `~/.aws` is shadowed, the

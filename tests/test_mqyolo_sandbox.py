@@ -3552,3 +3552,172 @@ def test_absolute_symlink_in_home_shadow_resolved(tmp_path):
     # But the denied path must not be bound read-write or read-only.
     denied_real = os.path.realpath(str(denied))
     assert not any(b.startswith("%s:" % denied_real) for b in binds), binds
+
+
+# ---------------------------------------------------------------------------
+# GitHub token: --setup-github and the launch-time check
+# ---------------------------------------------------------------------------
+import datetime
+import http.server
+import threading
+
+
+def _expiry(days):
+    d = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=days, hours=1)
+    return d.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+@pytest.fixture
+def fake_github():
+    """A stand-in for api.github.com/user, keyed on the bearer token. Mirrors the
+    real signals: classic/OAuth tokens send X-OAuth-Scopes, fine-grained ones do
+    not, and a token with an expiry sends GitHub-Authentication-Token-Expiration."""
+    tokens = {
+        "github_pat_good": {"expires": _expiry(90)},
+        "github_pat_other": {"expires": _expiry(60)},
+        "github_pat_forever": {"expires": None},
+        "github_pat_longlived": {"expires": _expiry(365)},
+        "github_pat_classicish": {"expires": _expiry(30), "scopes": "repo"},
+    }
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            tok = self.headers.get("Authorization", "").replace("Bearer ", "")
+            info = tokens.get(tok)
+            if info is None:
+                self.send_response(401)
+                self.end_headers()
+                return
+            self.send_response(200)
+            if "scopes" in info:
+                self.send_header("X-OAuth-Scopes", info["scopes"])
+            if info["expires"]:
+                self.send_header("GitHub-Authentication-Token-Expiration", info["expires"])
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield "http://127.0.0.1:%d" % srv.server_port
+    srv.shutdown()
+
+
+def _gh_env(tmp_path, api, **extra):
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir(exist_ok=True)
+    fake_apptainer = fakebin / "apptainer"
+    fake_apptainer.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+    fake_apptainer.chmod(0o755)
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    sif = tmp_path / "ai_tool.sif"
+    sif.write_text("")
+    env = {
+        **os.environ,
+        "PATH": "%s:%s" % (fakebin, os.environ["PATH"]),
+        "HOME": str(home),
+        "AI_TOOL_SIF": str(sif),
+        "MQYOLO_GITHUB_API": api,
+        "CLAUDE_CODE_USE_BEDROCK": "",
+        "AWS_PROFILE": "",
+        "AWS_BEARER_TOKEN_BEDROCK": "",
+        "GH_TOKEN": "",
+        "GITHUB_TOKEN": "",
+    }
+    env.update(extra)
+    return env, home
+
+
+def _setup_github(tmp_path, api, token):
+    env, home = _gh_env(tmp_path, api)
+    p = subprocess.run([str(MQYOLO), "--setup-github"], input=token + "\n", text=True,
+                       capture_output=True, env=env, cwd=str(home))
+    return p, home / ".config" / "mqyolo" / "github-token"
+
+
+def _launch(tmp_path, api, *args, **extra_env):
+    env, home = _gh_env(tmp_path, api, **extra_env)
+    p = subprocess.run([str(MQYOLO), "--no-broker", *args], text=True,
+                       capture_output=True, env=env, cwd=str(home))
+    assert p.returncode == 0, p.stderr
+    return p, home
+
+
+def _forwarded(p, name):
+    return [l for l in p.stdout.splitlines() if l.startswith(name + "=")]
+
+
+def test_setup_github_stores_a_valid_fine_grained_token(tmp_path, fake_github):
+    p, f = _setup_github(tmp_path, fake_github, "github_pat_good")
+    assert p.returncode == 0, p.stderr
+    assert f.read_text().strip() == "github_pat_good"
+    assert oct(f.stat().st_mode & 0o777) == "0o600"
+    # The link carries the 90-day expiry and the narrow permission set, and
+    # deliberately omits the permissions that make a token dangerous.
+    assert "expires_in=90" in p.stderr
+    assert "contents=read" in p.stderr and "pull_requests=write" in p.stderr
+    for banned in ("workflows", "administration", "secrets"):
+        assert banned not in p.stderr.split("Before pressing")[0].lower(), banned
+
+
+@pytest.mark.parametrize("token,why", [
+    ("ghp_classic", "not a fine-grained"),
+    ("gho_oauth", "not a fine-grained"),
+    ("github_pat_classicish", "not a fine-grained"),
+    ("github_pat_forever", "never expires"),
+    ("github_pat_longlived", "90 days"),
+    ("github_pat_revoked", "rejected"),
+])
+def test_setup_github_refuses_unsuitable_tokens(tmp_path, fake_github, token, why):
+    p, f = _setup_github(tmp_path, fake_github, token)
+    assert p.returncode != 0
+    assert why in p.stderr, p.stderr
+    assert not f.exists()
+
+
+def test_launch_passes_the_stored_token_without_warning(tmp_path, fake_github):
+    _, f = _setup_github(tmp_path, fake_github, "github_pat_good")
+    p, _ = _launch(tmp_path, fake_github, "opencode")
+    assert _forwarded(p, "GH_TOKEN") == ["GH_TOKEN=github_pat_good"]
+    assert _forwarded(p, "GITHUB_TOKEN") == ["GITHUB_TOKEN=github_pat_good"]
+    assert "GitHub token" not in p.stderr
+
+
+def test_launch_warns_when_no_scoped_token(tmp_path, fake_github):
+    p, _ = _launch(tmp_path, fake_github, "opencode")
+    assert "no scoped GitHub token found" in p.stderr
+    assert "limited" in p.stderr and "--setup-github" in p.stderr
+    assert not _forwarded(p, "GH_TOKEN")
+
+
+@pytest.mark.parametrize("var", ["GH_TOKEN", "GITHUB_TOKEN"])
+@pytest.mark.parametrize("token", ["ghp_broad", "github_pat_good"])
+def test_launch_refuses_when_a_github_token_is_in_the_environment(tmp_path, fake_github, var, token):
+    # Even a suitable-looking token: the rule is about the environment, which is
+    # forwarded wholesale, not about this token's quality.
+    env, home = _gh_env(tmp_path, fake_github, **{var: token})
+    p = subprocess.run([str(MQYOLO), "--no-broker", "opencode"], text=True,
+                       capture_output=True, env=env, cwd=str(home))
+    assert p.returncode != 0
+    assert "$%s is set" % var in p.stderr and "unset" in p.stderr
+    assert "apptainer" not in p.stdout and token not in p.stdout + p.stderr
+
+
+def test_launch_ignores_an_expired_stored_token(tmp_path, fake_github):
+    env, home = _gh_env(tmp_path, fake_github)
+    f = home / ".config" / "mqyolo" / "github-token"
+    f.parent.mkdir(parents=True)
+    f.write_text("github_pat_revoked\n")
+    p, _ = _launch(tmp_path, fake_github, "opencode")
+    assert "no scoped GitHub token found" in p.stderr
+    assert "rejected by GitHub" in p.stderr
+
+
+def test_copilot_keeps_its_github_token_and_gets_no_warning(tmp_path, fake_github):
+    p, _ = _launch(tmp_path, fake_github, "copilot", GITHUB_TOKEN="ghp_copilot")
+    assert _forwarded(p, "GITHUB_TOKEN") == ["GITHUB_TOKEN=ghp_copilot"]
+    assert "no scoped GitHub token" not in p.stderr
