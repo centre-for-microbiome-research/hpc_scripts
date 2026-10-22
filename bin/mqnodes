@@ -10,8 +10,8 @@ mqnodes checks every login node (over ssh, all at once) and shows:
 2. Your zellij sessions on every node: when they started, whether anyone is
    attached, which folder each pane is in, and how many of your jobs were
    submitted from that folder
-3. How many of your PBS jobs are running/queued/held, and which login node
-   each was submitted from
+3. How many of your PBS jobs are interactive, running or queued (held jobs
+   count as queued), and which login node each was submitted from
 
 Pane folders are read live from the shells running inside each session.
 Jobs are matched to a folder through the "Submitted job ... external jobid"
@@ -45,6 +45,7 @@ HIGH_FRACTION = 0.8
 MID_FRACTION = 0.5
 MAX_SNAKEMAKE_LOGS = 50  # per folder, newest first
 LOG_TIME_SLACK_SECONDS = 60
+RUNNING_STATES = ("R", "E", "B")  # running, finishing (exiting), array with subjobs started
 SNAKEMAKE_SUBMIT_RE = re.compile(r"external jobid '([^']+)'")
 
 # Runs on each login node (fed to `bash -s`). Prints one tab-separated line per fact:
@@ -141,9 +142,17 @@ class NodeReport:
 @dataclass(frozen=True)
 class Job:
     job_id: str
-    state: str  # R running, Q queued, H held, ...
+    state: str  # PBS letter: R running, Q queued, H held, E exiting, ...
     submit_host: str
     submitted: float = 0.0  # seconds since 1970, 0 if unknown
+    interactive: bool = False  # started with qsub -I / mqinteractive
+
+    @property
+    def kind(self) -> str:
+        """'interactive', 'running' or 'queued' (anything still waiting, held included)."""
+        if self.interactive:
+            return "interactive"
+        return "running" if self.state in RUNNING_STATES else "queued"
 
 
 @dataclass(frozen=True)
@@ -209,7 +218,8 @@ def parse_jobs_json(text: str) -> List[Job]:
     jobs = [Job(job_id=job_id,
                 state=j.get("job_state", "?"),
                 submit_host=short_host(j.get("Submit_Host", "")),
-                submitted=parse_pbs_time(j.get("ctime")))
+                submitted=parse_pbs_time(j.get("ctime")),
+                interactive=str(j.get("interactive", "")).lower() == "true")
             for job_id, j in data.get("Jobs", {}).items()]
     return sorted(jobs, key=lambda job: job.job_id)
 
@@ -407,32 +417,34 @@ def render_session_table(sessions: Sequence[Tuple[str, Session]], local_host: st
 def render_pane_table(reports: Sequence[NodeReport], origins: Dict[str, JobOrigin],
                       jobs: Sequence[Job]) -> List[str]:
     """One row per pane folder, with how many jobs came from it."""
-    state_of = {j.job_id: j.state for j in jobs}
-    states_by_folder: Dict[Tuple[str, str, str], Counter] = {}
+    kind_of = {j.job_id: j.kind for j in jobs}
+    kinds_by_folder: Dict[Tuple[str, str, str], Counter] = {}
     for job_id, o in origins.items():
-        if job_id in state_of:
-            states_by_folder.setdefault((o.node, o.session, o.folder), Counter())[state_of[job_id]] += 1
+        if job_id in kind_of:
+            kinds_by_folder.setdefault((o.node, o.session, o.folder), Counter())[kind_of[job_id]] += 1
 
     rows = []
     for r in reports:
         for s in r.sessions:
             for i, folder in enumerate(r.folders(s.name) or ["?"]):
-                counts = states_by_folder.get((r.node, s.name, folder), Counter())
+                counts = kinds_by_folder.get((r.node, s.name, folder), Counter())
                 rows.append((s.name if i == 0 else "", "?" if folder == "?" else describe_folder(folder),
-                             counts["R"], counts["Q"], counts["H"]))
+                             counts["running"], counts["queued"]))
     if not rows:
         return []
     sw = max(len("Session"), *(len(row[0]) for row in rows))
-    fw = max(len("Pane folder"), *(len(row[1]) for row in rows))
+    fw = max(len("Panel folder"), *(len(row[1]) for row in rows))
 
     def count(n: int, colour: str) -> str:
         return f"{colour}{n:>5}{Colors.ENDC}" if n else f"{Colors.DIM}{'-':>5}{Colors.ENDC}"
 
-    out = [f"{'Session':<{sw}}  {'Pane folder':<{fw}}  {'Run':>5} {'Queue':>5} {'Held':>5}",
-           f"{'-' * sw}  {'-' * fw}  {'-' * 5} {'-' * 5} {'-' * 5}"]
-    for session, folder, running, queued, held in rows:
+    rule = f"{'-' * sw}  {'-' * fw}  {'-' * 5} {'-' * 5}"
+    out = [f"{'Session':<{sw}}  {'Panel folder':<{fw}}  {'Run':>5} {'Queue':>5}", rule]
+    for i, (session, folder, running, queued) in enumerate(rows):
+        if session and i > 0:  # a new session starts: separate it from the one above
+            out.append(f"{Colors.DIM}{rule}{Colors.ENDC}")
         out.append(f"{session:<{sw}}  {folder:<{fw}}  "
-                   f"{count(running, Colors.GREEN)} {count(queued, Colors.YELLOW)} {count(held, Colors.RED)}")
+                   f"{count(running, Colors.GREEN)} {count(queued, Colors.YELLOW)}")
     return out
 
 
@@ -463,25 +475,23 @@ def render_job_summary(report: JobReport, user: str, traced: int = 0) -> List[st
     if report.error:
         out.append(f"{Colors.RED}{report.error}{Colors.ENDC}")
     jobs = report.jobs
-    states = Counter(j.state for j in jobs)
-    other = len(jobs) - states["R"] - states["Q"] - states["H"]
-    out.append(f"Jobs: {Colors.GREEN}{states['R']} running{Colors.ENDC}, "
-               f"{Colors.YELLOW}{states['Q']} queued{Colors.ENDC}, {states['H']} held"
-               + (f", {other} other" if other else "") + f"  ({len(jobs)} total)")
+    kinds = Counter(j.kind for j in jobs)
+    out.append(f"Jobs: {Colors.CYAN}{kinds['interactive']} interactive{Colors.ENDC}, "
+               f"{Colors.GREEN}{kinds['running']} running{Colors.ENDC}, "
+               f"{Colors.YELLOW}{kinds['queued']} queued{Colors.ENDC}  ({len(jobs)} total)")
     if traced:
         out.append(f"{traced} of {len(jobs)} traced to a zellij pane (via snakemake logs)")
     if not jobs:
         return out
     by_host: Dict[str, Counter] = {}
     for j in jobs:
-        by_host.setdefault(j.submit_host, Counter())[j.state] += 1
+        by_host.setdefault(j.submit_host, Counter())[j.kind] += 1
     out += ["",
-            f"{'Submitted from':<14} {'Run':>5} {'Queue':>5} {'Held':>5} {'Other':>5}",
-            f"{'-' * 14} {'-' * 5} {'-' * 5} {'-' * 5} {'-' * 5}"]
+            f"{'Submitted from':<14} {'Int':>5} {'Run':>5} {'Queue':>5}",
+            f"{'-' * 14} {'-' * 5} {'-' * 5} {'-' * 5}"]
     for host in sorted(by_host):
         c = by_host[host]
-        rest = sum(c.values()) - c["R"] - c["Q"] - c["H"]
-        out.append(f"{host:<14} {c['R']:>5} {c['Q']:>5} {c['H']:>5} {rest:>5}")
+        out.append(f"{host:<14} {c['interactive']:>5} {c['running']:>5} {c['queued']:>5}")
     return out
 
 

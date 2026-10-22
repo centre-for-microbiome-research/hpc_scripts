@@ -9,22 +9,52 @@
       "queue": "cpu_batch_exec",
       "Submit_Host": "aquarius02.ib0.hpc.qut.edu.au",
       "exec_host": "cpu1n001/3*8",
-      "Resource_List": {"mem": "32gb", "ncpus": 8, "nodect": 1, "walltime": "12:00:00"},
-      "resources_used": {"walltime": "01:23:45"}
+      "Resource_List": {
+        "mem": "32gb",
+        "ncpus": 8,
+        "nodect": 1,
+        "walltime": "12:00:00"
+      },
+      "resources_used": {
+        "walltime": "01:23:45"
+      }
     },
     "101.aqua": {
       "Job_Name": "short",
       "job_state": "Q",
       "queue": "cpu_batch_exec",
       "Submit_Host": "aquarius03.ib0.hpc.qut.edu.au",
-      "Resource_List": {"mem": "16gb", "ncpus": 16, "nodect": 1, "walltime": "24:00:00"}
+      "Resource_List": {
+        "mem": "16gb",
+        "ncpus": 16,
+        "nodect": 1,
+        "walltime": "24:00:00"
+      }
     },
     "102.aqua": {
       "Job_Name": "held",
       "job_state": "H",
       "queue": "cpu_batch_exec",
       "Submit_Host": "aquarius03.ib0.hpc.qut.edu.au",
-      "Resource_List": {"mem": "1gb", "ncpus": 1, "nodect": 1, "walltime": "01:00:00"}
+      "Resource_List": {
+        "mem": "1gb",
+        "ncpus": 1,
+        "nodect": 1,
+        "walltime": "01:00:00"
+      }
+    },
+    "103.aqua": {
+      "Job_Name": "STDIN",
+      "job_state": "R",
+      "queue": "cpu_inter_exec",
+      "interactive": "True",
+      "Submit_Host": "aquarius02.ib0.hpc.qut.edu.au",
+      "Resource_List": {
+        "mem": "32gb",
+        "ncpus": 8,
+        "nodect": 1,
+        "walltime": "12:00:00"
+      }
     }
   }
 }

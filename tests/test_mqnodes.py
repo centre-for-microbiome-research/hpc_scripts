@@ -83,8 +83,11 @@ def test_panes_in_the_same_folder_become_one_row():
 
 def test_parse_jobs_json_reads_state_submit_host_and_time():
     jobs = mq.parse_jobs_json(QSTAT_JSON.read_text())
-    assert [(j.job_id, j.state, j.submit_host) for j in jobs] == [
-        ("100.aqua", "R", "aquarius02"), ("101.aqua", "Q", "aquarius03"), ("102.aqua", "H", "aquarius03")]
+    assert [(j.job_id, j.state, j.submit_host, j.kind) for j in jobs] == [
+        ("100.aqua", "R", "aquarius02", "running"),
+        ("101.aqua", "Q", "aquarius03", "queued"),
+        ("102.aqua", "H", "aquarius03", "queued"),        # held counts as queued
+        ("103.aqua", "R", "aquarius02", "interactive")]  # qsub -I job
 
 
 def test_parse_pbs_time():
@@ -154,9 +157,9 @@ def test_jobs_are_traced_to_their_pane_and_counted_in_the_table(tmp_path):
     assert origins["10.aqua"] == mq.JobOrigin("aquarius04", "cowbell", str(run_dir))
     out = mq.render_zellij(reports, "elsewhere", origins, jobs)
     header = next(l for l in out if l.startswith("Session") and "Pane" in l)
-    assert header.split() == ["Session", "Pane", "folder", "Run", "Queue", "Held"]
+    assert header.split() == ["Session", "Panel", "folder", "Run", "Queue"]
     row = next(l for l in out if "myrepo" in l)
-    assert row.split() == ["cowbell", "myrepo", "1", "1", "-"]
+    assert row.split() == ["cowbell", "myrepo", "1", "1"]
 
 
 # ---------------------------------------------------------------- printing
@@ -164,7 +167,7 @@ def test_jobs_are_traced_to_their_pane_and_counted_in_the_table(tmp_path):
 def test_session_with_no_panes_found_still_gets_a_row():
     reports = [mq.NodeReport("aquarius02", sessions=(mq.Session("fresh", 0, 0),))]
     row = next(l for l in mq.render_zellij(reports, "elsewhere") if l.startswith("fresh"))
-    assert row.split() == ["fresh", "?", "-", "-", "-"]
+    assert row.split() == ["fresh", "?", "-", "-"]
 
 
 def test_exited_sessions_are_counted_once_and_exclude_live_ones():
@@ -190,10 +193,11 @@ def test_unreachable_node_is_reported_not_fatal():
 def test_job_counts_by_submit_host():
     result = run("--no-nodes", "--qstat-json-file", str(QSTAT_JSON))
     assert result.returncode == 0, result.stderr
-    assert "Jobs: 1 running, 1 queued, 1 held  (3 total)" in result.stdout
+    assert "Jobs: 1 interactive, 1 running, 2 queued  (4 total)" in result.stdout
     lines = result.stdout.splitlines()
-    assert any(l.split() == ["aquarius02", "1", "0", "0", "0"] for l in lines)
-    assert any(l.split() == ["aquarius03", "0", "1", "1", "0"] for l in lines)
+    assert any(l.split() == ["Submitted", "from", "Int", "Run", "Queue"] for l in lines)
+    assert any(l.split() == ["aquarius02", "1", "1", "0"] for l in lines)
+    assert any(l.split() == ["aquarius03", "0", "0", "2"] for l in lines)
 
 
 # ---------------------------------------------------------------- the script that runs on each node
@@ -215,3 +219,15 @@ def test_node_script_reports_live_pane_folders(tmp_path):
         server.kill()
         subprocess.run(["pkill", "-P", str(server.pid)])
     assert f"pane\tprobe-session\t{pane_dir}" in out.splitlines()
+
+
+def test_sessions_in_the_pane_table_are_separated_by_a_line():
+    reports = [mq.NodeReport("aquarius02", sessions=(mq.Session("one", 0, 0), mq.Session("two", 0, 0)),
+                             panes=(("one", "/a"), ("one", "/b"), ("two", "/c")))]
+    out = mq.render_pane_table(reports, {}, ())
+    rows = [l.split()[0] if l.split() else "" for l in out]
+    # header, rule, one/a, (continuation)/b, separator, two/c
+    assert rows[2] == "one" and out[3].split()[0] == "/b"
+    assert set(out[4].replace(" ", "")) == {"-"}
+    assert rows[5] == "two"
+    assert sum(1 for l in out if set(l.replace(" ", "")) == {"-"}) == 2  # header rule + one separator
