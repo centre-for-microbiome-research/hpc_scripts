@@ -2,26 +2,25 @@
 """
 mqnodes - what you have running on each aqua login node.
 
-Aqua has four login nodes (aquarius01-04). zellij sessions live on the node
-they were started on, so `zellij attach` only shows the current node's ones.
-This scans every login node over ssh (in parallel) and reports:
+Aqua has four login nodes (aquarius01-04). A zellij session only exists on the
+node it was started on, so `zellij attach` only shows that node's sessions.
+mqnodes checks every login node (over ssh, all at once) and shows:
 
-1. Each login node's load / memory / user count (marks the one you're on)
-2. Live zellij sessions on every node, with start time and attached clients,
-   and under each session the repo/directory of its panes plus how many of your
-   queued/running jobs were submitted from there (snakemake runs)
-3. Your PBS job counts, broken down by the login node each job was submitted from
+1. Each login node's load, memory use and number of users (-> marks yours)
+2. Your zellij sessions on every node: when they started, whether anyone is
+   attached, which folder each pane is in, and how many of your jobs were
+   submitted from that folder
+3. How many of your PBS jobs are running/queued/held, and which login node
+   each was submitted from
 
-Pane directories come from zellij's own session snapshot in the shared
-~/.cache/zellij (refreshed about once a minute), and job IDs from the
-.snakemake/log files in those directories written since your oldest queued job,
-so this needs no extra ssh.
+Pane folders are read live from the shells running inside each session.
+Jobs are matched to a folder through the "Submitted job ... external jobid"
+lines snakemake writes to <folder>/.snakemake/log/.
 """
 from __future__ import annotations
 
 import argparse
 import getpass
-import glob
 import json
 import os
 import re
@@ -37,46 +36,64 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, FrozenSet, List, Optional, Sequence, Set, Tuple
 
-DEFAULT_NODES = ("aquarius01", "aquarius02", "aquarius03", "aquarius04")
+LOGIN_NODES = ("aquarius01", "aquarius02", "aquarius03", "aquarius04")
 NODE_DOMAIN = "qut.edu.au"
-SSH_TIMEOUT_SECONDS = 20  # per node, so one hung login node can't stall the whole report
-QSTAT_CHUNK = 500
+SSH_TIMEOUT_SECONDS = 20  # per node, so one stuck login node can't hold up the report
+QSTAT_BATCH_SIZE = 500
 BAR_WIDTH = 20
-SNAKEMAKE_MAX_LOGS = 50  # per directory, newest first, bounds work on a huge .snakemake/log
-LOG_MTIME_SLACK_SECONDS = 60
-SNAKEMAKE_JOBID_RE = re.compile(r"external jobid '([^']+)'")
-KDL_ATTR_RE = re.compile(r'(\w+)="([^"]*)"')  # key="value" attributes on a node line
-KDL_BASE_CWD_RE = re.compile(r'^\s*cwd "([^"]*)"')
 HIGH_FRACTION = 0.8
 MID_FRACTION = 0.5
+MAX_SNAKEMAKE_LOGS = 50  # per folder, newest first
+LOG_TIME_SLACK_SECONDS = 60
+SNAKEMAKE_SUBMIT_RE = re.compile(r"external jobid '([^']+)'")
 
-# Run on each node via `bash -s`. Emits tab-separated records:
-#   L load1 ncpu | M mem_total_kb mem_avail_kb | U nusers
-#   S name socket_mtime nclients   (live session)  | X name  (exited, resurrectable)
-REMOTE_SCRIPT = r"""
-read l1 _ < /proc/loadavg
-printf 'L\t%s\t%s\n' "$l1" "$(nproc)"
-awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{printf "M\t%s\t%s\n", t, a}' /proc/meminfo
-printf 'U\t%s\n' "$(who | awk '{print $1}' | sort -u | wc -l)"
-RT=${XDG_RUNTIME_DIR:-/tmp}
-seen=" "
-for Z in "$(command -v zellij 2>/dev/null)" /work/microbiome/sw/zellij/zellij \
-         "$HOME/bin/zellij" "$HOME/.cargo/bin/zellij" "$HOME/.local/bin/zellij" \
-         "$HOME"/bin/zellij-*; do  # old versions kept around, e.g. ~/bin/zellij-0.43.1
-    [ -n "$Z" ] && [ -x "$Z" ] || continue
-    real=$(readlink -f "$Z")
-    case "$seen" in *" $real "*) continue ;; esac
-    seen="$seen$real "
-    "$Z" list-sessions --no-formatting </dev/null 2>/dev/null | while IFS= read -r line; do
+# Runs on each login node (fed to `bash -s`). Prints one tab-separated line per fact:
+#   load <1-min load> <cpus>           mem <total kB> <available kB>    users <count>
+#   session <name> <start time> <attached clients>
+#   exited <name>                      (an old session zellij can bring back)
+#   pane <session> <folder>            (one per shell running inside a session)
+#   warning <text>
+#
+# zellij is looked for in several places because an ssh command doesn't load
+# ~/.bashrc (where the group's zellij is put on PATH), and each zellij version
+# only lists its own sessions, so every copy found is asked.
+#
+# Pane folders come from the processes themselves: each session has one
+# `zellij --server .../<session>` process, its children are the pane shells,
+# and /proc/<pid>/cwd is the folder each shell is in right now.
+NODE_SCRIPT = r"""
+read load1 _ < /proc/loadavg
+printf 'load\t%s\t%s\n' "$load1" "$(nproc)"
+awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{printf "mem\t%s\t%s\n", t, a}' /proc/meminfo
+printf 'users\t%s\n' "$(who | awk '{print $1}' | sort -u | wc -l)"
+
+runtime=${XDG_RUNTIME_DIR:-/tmp}
+checked=" "
+for zellij in "$(command -v zellij 2>/dev/null)" /work/microbiome/sw/zellij/zellij \
+              "$HOME/bin/zellij" "$HOME/.cargo/bin/zellij" "$HOME/.local/bin/zellij" \
+              "$HOME"/bin/zellij-*; do  # older copies kept around, e.g. ~/bin/zellij-0.43.1
+    [ -n "$zellij" ] && [ -x "$zellij" ] || continue
+    real=$(readlink -f "$zellij")
+    case "$checked" in *" $real "*) continue ;; esac
+    checked="$checked$real "
+    "$zellij" list-sessions --no-formatting </dev/null 2>/dev/null | while IFS= read -r line; do
         name=${line%% \[Created*}
-        case "$line" in *EXITED*) printf 'X\t%s\n' "$name"; continue ;; esac
-        sock=$(ls -d "$RT"/zellij/*/"$name" /tmp/zellij-"$(id -u)"/*/"$name" 2>/dev/null | head -n 1)
-        if [ -n "$sock" ]; then mtime=$(stat -c %Y "$sock"); else mtime=0; fi
-        nc=$("$Z" -s "$name" action list-clients </dev/null 2>/dev/null | tail -n +2 | grep -c .)
-        printf 'S\t%s\t%s\t%s\n' "$name" "$mtime" "$nc"
+        case "$line" in *EXITED*) printf 'exited\t%s\n' "$name"; continue ;; esac
+        sock=$(ls -d "$runtime"/zellij/*/"$name" /tmp/zellij-"$(id -u)"/*/"$name" 2>/dev/null | head -n 1)
+        if [ -n "$sock" ]; then started=$(stat -c %Y "$sock"); else started=0; fi
+        clients=$("$zellij" -s "$name" action list-clients </dev/null 2>/dev/null | tail -n +2 | grep -c .)
+        printf 'session\t%s\t%s\t%s\n' "$name" "$started" "$clients"
     done
 done
-[ "$seen" = " " ] && printf 'E\tzellij not found (checked PATH, /work/microbiome/sw/zellij, ~/bin, ~/.cargo/bin, ~/.local/bin, ~/bin/zellij-*)\n'
+[ "$checked" = " " ] && printf 'warning\tzellij not found (looked on PATH, in /work/microbiome/sw/zellij, ~/bin, ~/.cargo/bin and ~/.local/bin)\n'
+
+for server in $(pgrep -u "$(id -u)" -f 'zellij[^ ]* --server '); do
+    session=$(tr '\0' '\n' < "/proc/$server/cmdline" 2>/dev/null | tail -n 1)
+    session=${session##*/}
+    for shell in $(pgrep -P "$server"); do
+        folder=$(readlink "/proc/$shell/cwd" 2>/dev/null) && printf 'pane\t%s\t%s\n' "$session" "$folder"
+    done
+done
 exit 0
 """
 
@@ -97,10 +114,10 @@ class Colors:
 
 
 @dataclass(frozen=True)
-class ZellijSession:
+class Session:
     name: str
-    started: int  # epoch seconds, 0 if unknown
-    clients: int
+    started: int  # seconds since 1970, 0 if unknown
+    clients: int  # how many terminals are attached
 
 
 @dataclass(frozen=True)
@@ -112,37 +129,21 @@ class NodeReport:
     mem_total_kb: int = 0
     mem_avail_kb: int = 0
     users: int = 0
-    sessions: Tuple[ZellijSession, ...] = ()
+    sessions: Tuple[Session, ...] = ()
     exited: Tuple[str, ...] = ()
+    panes: Tuple[Tuple[str, str], ...] = ()  # (session name, folder), one per distinct folder
     warning: Optional[str] = None
+
+    def folders(self, session: str) -> List[str]:
+        return [folder for name, folder in self.panes if name == session]
 
 
 @dataclass(frozen=True)
 class Job:
     job_id: str
-    state: str
+    state: str  # R running, Q queued, H held, ...
     submit_host: str
-    submitted: float = 0.0  # epoch seconds (PBS ctime), 0 if unknown
-
-
-@dataclass(frozen=True)
-class PaneDir:
-    path: str     # absolute directory the pane is in
-    command: str  # foreground command (last in a pipeline), "" if a plain shell
-
-
-@dataclass(frozen=True)
-class SessionPanes:
-    node: str
-    session: str
-    panes: Tuple[PaneDir, ...]
-
-
-@dataclass(frozen=True)
-class JobLink:
-    node: str
-    session: str
-    directory: str
+    submitted: float = 0.0  # seconds since 1970, 0 if unknown
 
 
 @dataclass(frozen=True)
@@ -151,49 +152,80 @@ class JobReport:
     error: Optional[str] = None
 
 
-# ---------------------------------------------------------------- parsing
+@dataclass(frozen=True)
+class JobOrigin:
+    """The zellij session and folder a job was submitted from."""
+    node: str
+    session: str
+    folder: str
+
+
+# ---------------------------------------------------------------- reading the node and job data
 
 def short_host(host: str) -> str:
     return host.split(".")[0] if host else "-"
 
 
 def parse_node_output(node: str, text: str) -> NodeReport:
-    """Turn REMOTE_SCRIPT's tab-separated records into a NodeReport."""
+    """Turn NODE_SCRIPT's output into a NodeReport."""
     fields: Dict[str, object] = {}
-    sessions: Dict[str, ZellijSession] = {}
+    sessions: Dict[str, Session] = {}  # the same session can be reported by two zellij copies
     exited: List[str] = []
+    panes: Dict[Tuple[str, str], None] = {}  # ordered set: several panes can share a folder
     for line in text.splitlines():
-        parts = line.split("\t")
-        tag, rest = parts[0], parts[1:]
+        kind, *values = line.split("\t")
         try:
-            if tag == "L" and len(rest) == 2:
-                fields["load1"], fields["ncpu"] = float(rest[0]), int(rest[1])
-            elif tag == "M" and len(rest) == 2:
-                fields["mem_total_kb"], fields["mem_avail_kb"] = int(rest[0]), int(rest[1])
-            elif tag == "U" and len(rest) == 1:
-                fields["users"] = int(rest[0])
-            elif tag == "S" and len(rest) == 3:
-                sessions.setdefault(rest[0], ZellijSession(rest[0], int(rest[1]), int(rest[2])))
-            elif tag == "X" and len(rest) == 1:
-                exited.append(rest[0])
-            elif tag == "E" and len(rest) == 1:
-                fields["warning"] = rest[0]
+            if kind == "load" and len(values) == 2:
+                fields["load1"], fields["ncpu"] = float(values[0]), int(values[1])
+            elif kind == "mem" and len(values) == 2:
+                fields["mem_total_kb"], fields["mem_avail_kb"] = int(values[0]), int(values[1])
+            elif kind == "users" and len(values) == 1:
+                fields["users"] = int(values[0])
+            elif kind == "session" and len(values) == 3:
+                sessions.setdefault(values[0], Session(values[0], int(values[1]), int(values[2])))
+            elif kind == "exited" and len(values) == 1:
+                exited.append(values[0])
+            elif kind == "pane" and len(values) == 2:
+                panes[(values[0], values[1])] = None
+            elif kind == "warning" and len(values) == 1:
+                fields["warning"] = values[0]
         except ValueError:
-            continue  # one malformed record shouldn't hide the rest of the node
-    return NodeReport(node=node, sessions=tuple(sessions.values()), exited=tuple(exited), **fields)
+            continue  # one garbled line shouldn't hide the rest of the node
+    return NodeReport(node=node, sessions=tuple(sessions.values()), exited=tuple(exited),
+                      panes=tuple(panes), **fields)
 
+
+def parse_pbs_time(value: Optional[str]) -> float:
+    """'Wed Oct 21 15:35:43 2026' -> seconds since 1970, 0 if missing or unreadable."""
+    try:
+        return datetime.strptime(value or "", "%a %b %d %H:%M:%S %Y").timestamp()
+    except ValueError:
+        return 0.0
+
+
+def parse_jobs_json(text: str) -> List[Job]:
+    """Read `qstat -f -F json` output (strict=False because PBS leaves raw control characters in)."""
+    data = json.loads(text, strict=False)
+    jobs = [Job(job_id=job_id,
+                state=j.get("job_state", "?"),
+                submit_host=short_host(j.get("Submit_Host", "")),
+                submitted=parse_pbs_time(j.get("ctime")))
+            for job_id, j in data.get("Jobs", {}).items()]
+    return sorted(jobs, key=lambda job: job.job_id)
+
+
+# ---------------------------------------------------------------- folders, repos and where jobs came from
 
 @lru_cache(maxsize=None)
-def find_repo_root(directory: str) -> str:
-    """Path of the git checkout containing `directory`, else the nearest pixi project.
+def find_repo_root(folder: str) -> str:
+    """The git checkout containing `folder`, or failing that the nearest pixi project.
 
-    Git wins so nested pixi projects (e.g. singlem/extras/update_metapackage) are
-    reported under their checkout name, which is what tells two clones apart.
-    Stops before any home directory itself (home is often a git repo of dotfiles)
-    and at the filesystem root. Blank if nothing is found or the path isn't
-    visible from this node.
+    Git is preferred so a pixi project inside a checkout (e.g.
+    singlem/extras/update_metapackage) is shown under the checkout's name,
+    which is what tells two clones apart. Home folders themselves don't count
+    (they're often a git repo of dotfiles). "" if nothing is found.
     """
-    d = Path(directory)
+    d = Path(folder)
     nearest_pixi = ""
     while d.parent != d and d.parent.name != "home":
         if (d / ".git").exists():
@@ -204,205 +236,86 @@ def find_repo_root(directory: str) -> str:
     return nearest_pixi
 
 
-def abbreviate_home(path: str) -> str:
-    for home in sorted({os.path.expanduser("~"), os.path.realpath(os.path.expanduser("~"))},
-                       key=len, reverse=True):
-        if path == home or path.startswith(home + "/"):
-            return "~" + path[len(home):]
+def shorten_home(path: str) -> str:
+    home = os.path.expanduser("~")
+    for prefix in sorted({home, os.path.realpath(home)}, key=len, reverse=True):
+        if path == prefix or path.startswith(prefix + "/"):
+            return "~" + path[len(prefix):]
     return path
 
 
-def pane_label(path: str) -> str:
-    """'singlem-myversion/extras/update_metapackage', or a ~-path outside any repo."""
-    root = find_repo_root(path)
+def describe_folder(folder: str) -> str:
+    """'singlem-myversion/extras/update_metapackage', or a ~/... path if not in a repo."""
+    root = find_repo_root(folder)
     if not root:
-        return abbreviate_home(path)
-    rel = os.path.relpath(path, root)
+        return shorten_home(folder)
+    inside = os.path.relpath(folder, root)
     name = os.path.basename(root)
-    return name if rel == "." else f"{name}/{rel}"
-
-
-def parse_pbs_time(value: Optional[str]) -> float:
-    """'Wed Oct 21 15:35:43 2026' -> epoch seconds, 0 if missing/unparseable."""
-    try:
-        return datetime.strptime(value or "", "%a %b %d %H:%M:%S %Y").timestamp()
-    except ValueError:
-        return 0.0
-
-
-def parse_jobs_json(text: str) -> List[Job]:
-    """Parse `qstat -f -F json` output. strict=False: PBS emits raw control chars."""
-    data = json.loads(text, strict=False)
-    jobs = []
-    for job_id, j in data.get("Jobs", {}).items():
-        jobs.append(Job(
-            job_id=job_id,
-            state=j.get("job_state", "?"),
-            submit_host=short_host(j.get("Submit_Host", "")),
-            submitted=parse_pbs_time(j.get("ctime")),
-        ))
-    return sorted(jobs, key=lambda job: job.job_id)
-
-
-# ---------------------------------------------------------------- zellij panes -> jobs
-
-KDL_TEMPLATE_BLOCKS = ("new_tab_template", "default_tab_template", "tab_template",
-                       "pane_template", "swap_tiled_layout", "swap_floating_layout")
-SHELLS = ("bash", "zsh", "sh", "fish")
-NO_SNAPSHOT_LABEL = "(no pane snapshot yet)"
-
-
-@dataclass
-class _KdlBlock:
-    kind: str  # "tab", "pane", "template" or "other"
-    attrs: Dict[str, str]
-    has_child_pane: bool = False
-    has_plugin: bool = False
-
-
-def _pane_command(attrs: Dict[str, str]) -> str:
-    command = os.path.basename(attrs.get("command", "")).lstrip("-")
-    return "" if command in SHELLS else command
-
-
-def parse_layout_panes(text: str) -> List[PaneDir]:
-    """Terminal panes (directory + command) from a zellij session-layout.kdl snapshot.
-
-    Only leaf panes count: a pane block holding other panes is a split container,
-    one holding `plugin` is a status bar etc., and template blocks describe new
-    tabs rather than live panes. A pane without cwd= is in its tab's cwd, which
-    defaults to the layout's top-level `cwd "..."`. Relies on zellij's own
-    serialisation style: one node per line, blocks opened with a trailing '{'
-    and closed by a line holding only '}'.
-    """
-    base = ""
-    stack: List[_KdlBlock] = []
-    panes: Dict[str, PaneDir] = {}
-
-    def emit(attrs: Dict[str, str]) -> None:
-        if any(b.kind == "template" for b in stack):
-            return
-        tab_cwd = next((b.attrs.get("cwd", "") for b in stack if b.kind == "tab"), "")
-        path = os.path.normpath(os.path.join(base, tab_cwd, attrs.get("cwd", "")))
-        panes.setdefault(path, PaneDir(path, _pane_command(attrs)))
-
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped == "}":
-            block = stack.pop() if stack else None
-            if block and block.kind == "pane" and not block.has_child_pane and not block.has_plugin:
-                emit(block.attrs)
-            continue
-        m = KDL_BASE_CWD_RE.match(line)
-        if m and not base:
-            base = m.group(1)
-        word = stripped.split(" ", 1)[0].rstrip("{")
-        attrs = dict(KDL_ATTR_RE.findall(stripped))
-        opens = stripped.endswith("{")
-        if word == "pane":
-            if stack and stack[-1].kind == "pane":
-                stack[-1].has_child_pane = True
-            if not opens:
-                emit(attrs)
-        elif word == "plugin" and stack and stack[-1].kind == "pane":
-            stack[-1].has_plugin = True
-        if opens:
-            kind = ("pane" if word == "pane" else "tab" if word == "tab"
-                    else "template" if word in KDL_TEMPLATE_BLOCKS else "other")
-            stack.append(_KdlBlock(kind, attrs))
-    return list(panes.values())
-
-
-def zellij_cache_root() -> Path:
-    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "zellij"
-
-
-def read_session_layout(session: str, cache_root: Path) -> str:
-    """Newest snapshot for `session` across zellij versions; "" if none/unreadable."""
-    pattern = str(cache_root / "*" / "session_info" / glob.escape(session) / "session-layout.kdl")
-    candidates = []
-    for path in glob.glob(pattern):
-        try:
-            candidates.append((os.path.getmtime(path), path))
-        except OSError:
-            continue
-    if not candidates:
-        return ""
-    try:
-        with open(max(candidates)[1], errors="replace") as f:
-            return f.read()
-    except OSError:
-        return ""
-
-
-def collect_session_panes(reports: Sequence[NodeReport], cache_root: Path) -> Tuple[SessionPanes, ...]:
-    return tuple(
-        SessionPanes(r.node, s.name, tuple(parse_layout_panes(read_session_layout(s.name, cache_root))))
-        for r in reports for s in r.sessions)
+    return name if inside == "." else f"{name}/{inside}"
 
 
 @lru_cache(maxsize=None)
-def snakemake_job_ids(directory: str, since: float = 0.0) -> FrozenSet[str]:
-    """PBS job IDs submitted by snakemake runs in `directory`.
+def snakemake_submitted_jobs(folder: str, since: float = 0.0) -> FrozenSet[str]:
+    """Job IDs that snakemake runs in `folder` submitted, from logs written at/after `since`.
 
-    Only logs modified at/after `since` are read: a log that submitted a job still
-    in the queue was written after that job's submission, so passing the oldest
-    live job's submit time skips stale logs without missing restarted drivers.
+    A log that submitted a job that's still in the queue was last written after
+    that job was submitted, so `since` (the oldest queued job's submit time)
+    skips old logs without missing a run that was restarted.
     """
-    log_dir = os.path.join(directory, ".snakemake", "log")
+    log_dir = os.path.join(folder, ".snakemake", "log")
     logs = []
     try:
         for name in os.listdir(log_dir):
             if name.endswith(".snakemake.log"):
                 path = os.path.join(log_dir, name)
-                mtime = os.path.getmtime(path)
-                if mtime >= since:
-                    logs.append((mtime, path))
+                modified = os.path.getmtime(path)
+                if modified >= since:
+                    logs.append((modified, path))
     except OSError:
         return frozenset()
     logs.sort(reverse=True)
-    ids: Set[str] = set()
-    for _, log in logs[:SNAKEMAKE_MAX_LOGS]:
+    job_ids: Set[str] = set()
+    for _, log in logs[:MAX_SNAKEMAKE_LOGS]:
         try:
             with open(log, errors="replace") as f:
-                ids.update(SNAKEMAKE_JOBID_RE.findall(f.read()))
+                job_ids.update(SNAKEMAKE_SUBMIT_RE.findall(f.read()))
         except OSError:
             continue
-    return frozenset(ids)
+    return frozenset(job_ids)
 
 
-def link_jobs(session_panes: Sequence[SessionPanes], jobs: Sequence[Job]) -> Dict[str, JobLink]:
-    """Map each queued/running job ID to the zellij pane whose snakemake submitted it."""
+def find_job_origins(reports: Sequence[NodeReport], jobs: Sequence[Job]) -> Dict[str, JobOrigin]:
+    """For each job still in the queue, the zellij pane folder it was submitted from (if any)."""
     job_ids = {j.job_id for j in jobs}
-    known = [j.submitted for j in jobs if j.submitted]
-    since = min(known) - LOG_MTIME_SLACK_SECONDS if known else 0.0
-    links: Dict[str, JobLink] = {}
-    for sp in session_panes:
-        for pane in sp.panes:
-            for job_id in sorted(snakemake_job_ids(pane.path, since) & job_ids):
-                links.setdefault(job_id, JobLink(sp.node, sp.session, pane.path))
-    return links
+    submit_times = [j.submitted for j in jobs if j.submitted]
+    since = min(submit_times) - LOG_TIME_SLACK_SECONDS if submit_times else 0.0
+    origins: Dict[str, JobOrigin] = {}
+    for report in reports:
+        for session, folder in report.panes:
+            for job_id in sorted(snakemake_submitted_jobs(folder, since) & job_ids):
+                origins.setdefault(job_id, JobOrigin(report.node, session, folder))
+    return origins
 
 
-# ---------------------------------------------------------------- collection
+# ---------------------------------------------------------------- collecting
 
-def scan_node(node: str, local_host: str, timeout: int) -> NodeReport:
-    """Run REMOTE_SCRIPT on `node` (locally if we're already on it)."""
+def scan_node(node: str, local_host: str) -> NodeReport:
+    """Run NODE_SCRIPT on `node` (directly if we're already on it)."""
     if node == local_host:
         cmd = ["bash", "-s"]
     else:
         cmd = ["ssh", "-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
                f"{node}.{NODE_DOMAIN}", "bash", "-s"]
     try:
-        proc = subprocess.run(cmd, input=REMOTE_SCRIPT, capture_output=True,
-                              text=True, timeout=timeout)
+        proc = subprocess.run(cmd, input=NODE_SCRIPT, capture_output=True,
+                              text=True, timeout=SSH_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
-        return NodeReport(node=node, error=f"timed out after {timeout}s")
+        return NodeReport(node=node, error=f"timed out after {SSH_TIMEOUT_SECONDS}s")
     except OSError as e:
         return NodeReport(node=node, error=str(e))
     if proc.returncode != 0 and not proc.stdout:
-        msg = proc.stderr.strip().splitlines()[-1:] or [f"exit code {proc.returncode}"]
-        return NodeReport(node=node, error=f"unreachable ({msg[0]})")
+        reason = proc.stderr.strip().splitlines()[-1:] or [f"exit code {proc.returncode}"]
+        return NodeReport(node=node, error=f"unreachable ({reason[0]})")
     return parse_node_output(node, proc.stdout)
 
 
@@ -413,18 +326,18 @@ def fetch_jobs(user: str) -> JobReport:
     except (OSError, subprocess.CalledProcessError) as e:
         return JobReport(error=f"qselect failed: {e}")
     jobs: List[Job] = []
-    for i in range(0, len(ids), QSTAT_CHUNK):
-        chunk = ids[i:i + QSTAT_CHUNK]
-        # Non-zero exit is normal if a job finished between qselect and qstat,
-        # so only give up when there's no JSON at all.
-        proc = subprocess.run(["qstat", "-f", "-F", "json", *chunk],
+    for i in range(0, len(ids), QSTAT_BATCH_SIZE):
+        batch = ids[i:i + QSTAT_BATCH_SIZE]
+        # qstat exits non-zero if a job finished since qselect, which is fine;
+        # only give up if it printed nothing at all.
+        proc = subprocess.run(["qstat", "-f", "-F", "json", *batch],
                               capture_output=True, text=True)
         if not proc.stdout.strip():
             return JobReport(tuple(jobs), f"qstat failed: {proc.stderr.strip()}")
         try:
             jobs.extend(parse_jobs_json(proc.stdout))
         except json.JSONDecodeError as e:
-            return JobReport(tuple(jobs), f"could not parse qstat JSON: {e}")
+            return JobReport(tuple(jobs), f"could not read qstat output: {e}")
     return JobReport(tuple(jobs))
 
 
@@ -433,7 +346,7 @@ def load_jobs_file(path: str) -> JobReport:
         return JobReport(tuple(parse_jobs_json(f.read())))
 
 
-# ---------------------------------------------------------------- rendering
+# ---------------------------------------------------------------- printing
 
 def bar(fraction: float) -> str:
     fraction = min(max(fraction, 0.0), 1.0)
@@ -463,121 +376,112 @@ def render_nodes(reports: Sequence[NodeReport], local_host: str) -> List[str]:
         if r.error:
             out.append(f"{marker}{r.node:<11} {Colors.RED}{r.error}{Colors.ENDC}")
             continue
-        mem_frac = 1 - r.mem_avail_kb / r.mem_total_kb if r.mem_total_kb else 0.0
+        mem_used = 1 - r.mem_avail_kb / r.mem_total_kb if r.mem_total_kb else 0.0
         load = f"{r.load1:.1f}/{r.ncpu}"
         live = f"{len(r.sessions)} live" if r.sessions else f"{Colors.DIM}-{Colors.ENDC}"
-        out.append(f"{marker}{r.node:<11} {load:>11}  {bar(mem_frac)}  {r.users:>5}  {live}")
+        out.append(f"{marker}{r.node:<11} {load:>11}  {bar(mem_used)}  {r.users:>5}  {live}")
     if local_host not in {r.node for r in reports}:
         out.append(f"{Colors.DIM}(you are on {local_host}, not a login node){Colors.ENDC}")
     return out
 
 
-def render_pane_table(session_panes: Sequence[SessionPanes],
-                      states: Dict[Tuple[str, str], Dict[str, List[str]]]) -> List[str]:
-    """One row per pane directory, columns aligned across all sessions."""
+def render_session_table(sessions: Sequence[Tuple[str, Session]], local_host: str) -> List[str]:
+    width = max(len("Session"), *(len(s.name) for _, s in sessions))
+    out = [f"{'Node':<11} {'Session':<{width}}  {'Started':<16}  {'Age':>7}  Status",
+           f"{'-' * 11} {'-' * width}  {'-' * 16}  {'-' * 7}  {'-' * 12}"]
+    current = os.environ.get("ZELLIJ_SESSION_NAME")
+    now = time.time()
+    for node, s in sessions:
+        started = datetime.fromtimestamp(s.started).strftime("%Y-%m-%d %H:%M") if s.started else "?"
+        age = human_age(now - s.started) if s.started else "?"
+        if node == local_host and s.name == current:
+            status = f"{Colors.CYAN}current{Colors.ENDC}"
+        elif s.clients:
+            status = f"{Colors.YELLOW}{s.clients} attached{Colors.ENDC}"
+        else:
+            status = f"{Colors.GREEN}detached{Colors.ENDC}"
+        out.append(f"{node:<11} {s.name:<{width}}  {started:<16}  {age:>7}  {status}")
+    return out
+
+
+def render_pane_table(reports: Sequence[NodeReport], origins: Dict[str, JobOrigin],
+                      jobs: Sequence[Job]) -> List[str]:
+    """One row per pane folder, with how many jobs came from it."""
+    state_of = {j.job_id: j.state for j in jobs}
+    states_by_folder: Dict[Tuple[str, str, str], Counter] = {}
+    for job_id, o in origins.items():
+        if job_id in state_of:
+            states_by_folder.setdefault((o.node, o.session, o.folder), Counter())[state_of[job_id]] += 1
+
     rows = []
-    for sp in session_panes:
-        if not sp.panes:  # zellij writes its first snapshot a little after the session starts
-            rows.append((sp.session, NO_SNAPSHOT_LABEL, "", 0, 0, 0))
-        for i, pane in enumerate(sp.panes):
-            c = Counter(states.get((sp.node, sp.session), {}).get(pane.path, []))
-            rows.append((sp.session if i == 0 else "", pane_label(pane.path), pane.command,
-                         c.get("R", 0), c.get("Q", 0), c.get("H", 0)))
+    for r in reports:
+        for s in r.sessions:
+            for i, folder in enumerate(r.folders(s.name) or ["?"]):
+                counts = states_by_folder.get((r.node, s.name, folder), Counter())
+                rows.append((s.name if i == 0 else "", "?" if folder == "?" else describe_folder(folder),
+                             counts["R"], counts["Q"], counts["H"]))
     if not rows:
         return []
-    sw = max(len("Session"), *(len(r[0]) for r in rows))
-    dw = max(len("Pane directory"), *(len(r[1]) for r in rows))
-    cw = max(len("Cmd"), *(len(r[2]) for r in rows))
+    sw = max(len("Session"), *(len(row[0]) for row in rows))
+    fw = max(len("Pane folder"), *(len(row[1]) for row in rows))
 
     def count(n: int, colour: str) -> str:
         return f"{colour}{n:>5}{Colors.ENDC}" if n else f"{Colors.DIM}{'-':>5}{Colors.ENDC}"
 
-    out = [f"{'Session':<{sw}}  {'Pane directory':<{dw}}  {'Cmd':<{cw}}  {'Run':>5} {'Queue':>5} {'Held':>5}",
-           f"{'-' * sw}  {'-' * dw}  {'-' * cw}  {'-' * 5} {'-' * 5} {'-' * 5}"]
-    for session, label, command, r, q, h in rows:
-        shown = f"{Colors.DIM}{label:<{dw}}{Colors.ENDC}" if label == NO_SNAPSHOT_LABEL else f"{label:<{dw}}"
-        out.append(f"{session:<{sw}}  {shown}  {command:<{cw}}  "
-                   f"{count(r, Colors.GREEN)} {count(q, Colors.YELLOW)} {count(h, Colors.RED)}")
+    out = [f"{'Session':<{sw}}  {'Pane folder':<{fw}}  {'Run':>5} {'Queue':>5} {'Held':>5}",
+           f"{'-' * sw}  {'-' * fw}  {'-' * 5} {'-' * 5} {'-' * 5}"]
+    for session, folder, running, queued, held in rows:
+        out.append(f"{session:<{sw}}  {folder:<{fw}}  "
+                   f"{count(running, Colors.GREEN)} {count(queued, Colors.YELLOW)} {count(held, Colors.RED)}")
     return out
 
 
 def render_zellij(reports: Sequence[NodeReport], local_host: str,
-                  session_panes: Sequence[SessionPanes] = (),
-                  links: Optional[Dict[str, JobLink]] = None,
+                  origins: Optional[Dict[str, JobOrigin]] = None,
                   jobs: Sequence[Job] = ()) -> List[str]:
     out = [f"{Colors.BOLD}=== ZELLIJ ==={Colors.ENDC}"]
-    panes_by_session = {(sp.node, sp.session): sp.panes for sp in session_panes}
-    state_by_id = {j.job_id: j.state for j in jobs}
-    states: Dict[Tuple[str, str], Dict[str, List[str]]] = {}
-    for job_id, link in (links or {}).items():
-        if job_id in state_by_id:
-            states.setdefault((link.node, link.session), {}).setdefault(
-                link.directory, []).append(state_by_id[job_id])
-    rows = [(r.node, s) for r in reports for s in r.sessions]
-    current = os.environ.get("ZELLIJ_SESSION_NAME")
-    for r in reports:
-        if r.warning:
-            out.append(f"{Colors.RED}{r.node}: {r.warning}{Colors.ENDC}")
-    if not rows:
+    out += [f"{Colors.RED}{r.node}: {r.warning}{Colors.ENDC}" for r in reports if r.warning]
+    sessions = [(r.node, s) for r in reports for s in r.sessions]
+    if not sessions:
         out.append("No live zellij sessions on any login node.")
     else:
-        width = max(len("Session"), *(len(s.name) for _, s in rows))
-        out.append(f"{'Node':<11} {'Session':<{width}}  {'Started':<16}  {'Age':>7}  Status")
-        out.append(f"{'-' * 11} {'-' * width}  {'-' * 16}  {'-' * 7}  {'-' * 12}")
-        now = time.time()
-        for node, s in rows:
-            started = datetime.fromtimestamp(s.started).strftime("%Y-%m-%d %H:%M") if s.started else "?"
-            age = human_age(now - s.started) if s.started else "?"
-            if node == local_host and s.name == current:
-                status = f"{Colors.CYAN}current{Colors.ENDC}"
-            elif s.clients:
-                status = f"{Colors.YELLOW}{s.clients} attached{Colors.ENDC}"
-            else:
-                status = f"{Colors.GREEN}detached{Colors.ENDC}"
-            out.append(f"{node:<11} {s.name:<{width}}  {started:<16}  {age:>7}  {status}")
-        live = [SessionPanes(node, s.name, panes_by_session.get((node, s.name), ())) for node, s in rows]
-        pane_table = render_pane_table(live, states)
-        if pane_table:
-            out += [""] + pane_table
+        out += render_session_table(sessions, local_host)
+        out += [""] + render_pane_table(reports, origins or {}, jobs)
         out += ["", f"{Colors.DIM}Attach with: ssh -t <node>.{NODE_DOMAIN} zellij attach <session>{Colors.ENDC}"]
 
-    # The resurrection cache is in the shared home, so every node lists the same
-    # exited sessions. Union them, minus anything that is live somewhere.
-    live_names = {s.name for _, s in rows}
-    exited = sorted({n for r in reports for n in r.exited} - live_names)
+    # Old sessions are saved in your (shared) home folder, so every node lists
+    # the same ones. Count each once, leaving out any that are running somewhere.
+    live_names = {s.name for _, s in sessions}
+    exited = {name for r in reports for name in r.exited} - live_names
     if exited:
-        out.append(f"{Colors.DIM}{len(exited)} resurrectable exited sessions (zellij ls on any node){Colors.ENDC}")
+        out.append(f"{Colors.DIM}{len(exited)} exited sessions can be brought back (zellij ls on any node){Colors.ENDC}")
     return out
 
 
-def render_job_summary(report: JobReport, user: str, linked: int = 0) -> List[str]:
+def render_job_summary(report: JobReport, user: str, traced: int = 0) -> List[str]:
     out = [f"{Colors.BOLD}=== JOBS ({user}) ==={Colors.ENDC}"]
     if report.error:
         out.append(f"{Colors.RED}{report.error}{Colors.ENDC}")
     jobs = report.jobs
-    running = sum(j.state == "R" for j in jobs)
-    queued = sum(j.state == "Q" for j in jobs)
-    held = sum(j.state == "H" for j in jobs)
-    other = len(jobs) - running - queued - held
-    out.append(f"Jobs: {Colors.GREEN}{running} running{Colors.ENDC}, "
-               f"{Colors.YELLOW}{queued} queued{Colors.ENDC}, {held} held"
+    states = Counter(j.state for j in jobs)
+    other = len(jobs) - states["R"] - states["Q"] - states["H"]
+    out.append(f"Jobs: {Colors.GREEN}{states['R']} running{Colors.ENDC}, "
+               f"{Colors.YELLOW}{states['Q']} queued{Colors.ENDC}, {states['H']} held"
                + (f", {other} other" if other else "") + f"  ({len(jobs)} total)")
-    if linked:
-        out.append(f"{linked} of {len(jobs)} traced to a zellij session (snakemake logs)")
+    if traced:
+        out.append(f"{traced} of {len(jobs)} traced to a zellij pane (via snakemake logs)")
     if not jobs:
         return out
-    by_host: Dict[str, List[Job]] = {}
+    by_host: Dict[str, Counter] = {}
     for j in jobs:
-        by_host.setdefault(j.submit_host, []).append(j)
-    out.append("")
-    out.append(f"{'Submitted from':<14} {'Run':>5} {'Queue':>5} {'Held':>5} {'Other':>5}")
-    out.append(f"{'-' * 14} {'-' * 5} {'-' * 5} {'-' * 5} {'-' * 5}")
+        by_host.setdefault(j.submit_host, Counter())[j.state] += 1
+    out += ["",
+            f"{'Submitted from':<14} {'Run':>5} {'Queue':>5} {'Held':>5} {'Other':>5}",
+            f"{'-' * 14} {'-' * 5} {'-' * 5} {'-' * 5} {'-' * 5}"]
     for host in sorted(by_host):
-        hj = by_host[host]
-        r = sum(j.state == "R" for j in hj)
-        q = sum(j.state == "Q" for j in hj)
-        h = sum(j.state == "H" for j in hj)
-        out.append(f"{host:<14} {r:>5} {q:>5} {h:>5} {len(hj) - r - q - h:>5}")
+        c = by_host[host]
+        rest = sum(c.values()) - c["R"] - c["Q"] - c["H"]
+        out.append(f"{host:<14} {c['R']:>5} {c['Q']:>5} {c['H']:>5} {rest:>5}")
     return out
 
 
@@ -585,8 +489,8 @@ def render_job_summary(report: JobReport, user: str, linked: int = 0) -> List[st
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--qstat-json-file", help=argparse.SUPPRESS)  # testing: read jobs from file
-    p.add_argument("--no-nodes", action="store_true", help=argparse.SUPPRESS)  # testing: skip ssh
+    p.add_argument("--qstat-json-file", help=argparse.SUPPRESS)  # for tests: read jobs from a file
+    p.add_argument("--no-nodes", action="store_true", help=argparse.SUPPRESS)  # for tests: skip ssh
     return p.parse_args(argv)
 
 
@@ -595,24 +499,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not sys.stdout.isatty():
         Colors.disable()
     local_host = short_host(socket.gethostname())
-    user = getpass.getuser()  # always the caller: zellij sessions are only visible as yourself
-    nodes = [] if args.no_nodes else list(DEFAULT_NODES)
+    user = getpass.getuser()  # always whoever runs it: zellij sessions are only visible to their owner
+    nodes = [] if args.no_nodes else list(LOGIN_NODES)
 
     with ThreadPoolExecutor(max_workers=len(nodes) + 1) as pool:
-        job_future = pool.submit(
-            load_jobs_file if args.qstat_json_file else fetch_jobs,
-            args.qstat_json_file or user)
-        reports = list(pool.map(lambda n: scan_node(n, local_host, SSH_TIMEOUT_SECONDS), nodes))
+        job_future = pool.submit(load_jobs_file if args.qstat_json_file else fetch_jobs,
+                                 args.qstat_json_file or user)
+        reports = list(pool.map(lambda n: scan_node(n, local_host), nodes))
         job_report = job_future.result()
 
-    session_panes = collect_session_panes(reports, zellij_cache_root())
-    links = link_jobs(session_panes, job_report.jobs)
+    origins = find_job_origins(reports, job_report.jobs)
 
     lines: List[str] = []
     if reports:
         lines += render_nodes(reports, local_host) + [""]
-        lines += render_zellij(reports, local_host, session_panes, links, job_report.jobs) + [""]
-    lines += render_job_summary(job_report, user, linked=len(links))
+        lines += render_zellij(reports, local_host, origins, job_report.jobs) + [""]
+    lines += render_job_summary(job_report, user, traced=len(origins))
     print("\n".join(lines))
     return 1 if job_report.error or any(r.error for r in reports) else 0
 

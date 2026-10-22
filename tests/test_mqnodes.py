@@ -1,9 +1,9 @@
 import importlib.machinery
-import json
-import os
 import importlib.util
+import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -21,7 +21,7 @@ def load_mqnodes():
 
 
 mq = load_mqnodes()
-mq.Colors.disable()  # ANSI codes would skew width assertions
+mq.Colors.disable()  # colour codes would throw off the column checks
 
 
 def run(*args):
@@ -29,152 +29,62 @@ def run(*args):
                           text=True, capture_output=True)
 
 
-def test_parse_node_output_reads_all_record_types():
-    text = "\n".join([
-        "L\t3.5\t40",
-        "M\t1000\t250",
-        "U\t7",
-        "S\tmy session\t1761000000\t2",
-        "X\told-one",
-        "S\tbroken\tnot-a-number\t0",
-    ])
-    r = mq.parse_node_output("aquarius01", text)
-    assert (r.load1, r.ncpu, r.mem_total_kb, r.mem_avail_kb, r.users) == (3.5, 40, 1000, 250, 7)
-    assert r.sessions == (mq.ZellijSession("my session", 1761000000, 2),)
-    assert r.exited == ("old-one",)
-    assert r.error is None
-
-
-def test_parse_jobs_json_extracts_state_submit_host_and_time():
-    jobs = mq.parse_jobs_json(QSTAT_JSON.read_text())
-    assert [(j.job_id, j.state, j.submit_host) for j in jobs] == [
-        ("100.aqua", "R", "aquarius02"), ("101.aqua", "Q", "aquarius03"), ("102.aqua", "H", "aquarius03")]
-
-
-def test_pane_label_walks_up_to_pixi_or_git(tmp_path):
-    repo = tmp_path / "aviary-v0.13.14"
-    (repo / "runs" / "sample1").mkdir(parents=True)
-    (repo / "pixi.toml").write_text("")
-    plain = tmp_path / "nothing"
-    plain.mkdir()
-    mq.find_repo_root.cache_clear()
-    assert mq.pane_label(str(repo / "runs" / "sample1")) == "aviary-v0.13.14/runs/sample1"
-    assert mq.pane_label(str(plain)) == str(plain)
-
-
-def test_find_repo_root_ignores_a_home_directory_repo(tmp_path):
-    home = tmp_path / "home" / "someone"
-    (home / ".git").mkdir(parents=True)
-    (home / "work").mkdir()
-    mq.find_repo_root.cache_clear()
-    assert mq.find_repo_root(str(home / "work")) == ""
-
-
-def test_exited_sessions_are_unioned_and_exclude_live_ones():
-    reports = [
-        mq.NodeReport("aquarius01", exited=("a", "b")),
-        mq.NodeReport("aquarius02", sessions=(mq.ZellijSession("b", 0, 0),), exited=("a", "c")),
-    ]
-    out = "\n".join(mq.render_zellij(reports, "elsewhere"))
-    assert "2 resurrectable exited sessions" in out
-    assert "aquarius02  b" in out
-
-
-def test_unreachable_node_is_reported_not_fatal():
-    out = "\n".join(mq.render_nodes([mq.NodeReport("aquarius09", error="unreachable (x)")], "x"))
-    assert "aquarius09" in out and "unreachable (x)" in out
-
-
-def test_summary_counts_by_submit_host():
-    result = run("--no-nodes", "--qstat-json-file", str(QSTAT_JSON))
-    assert result.returncode == 0, result.stderr
-    assert "Jobs: 1 running, 1 queued, 1 held  (3 total)" in result.stdout
-    lines = result.stdout.splitlines()
-    assert any(l.split() == ["aquarius02", "1", "0", "0", "0"] for l in lines)
-    assert any(l.split() == ["aquarius03", "0", "1", "1", "0"] for l in lines)
-
-
-LAYOUT_KDL = """layout {
-    cwd "/base"
-    tab name="Tab #1" focus=true {
-        pane size=1 borderless=true {
-            plugin location="zellij:tab-bar"
-        }
-        pane split_direction="vertical" {
-            pane command="pixi" cwd="repo/backend" size="50%" {
-                args "shell"
-            }
-            pane command="-bash" cwd="/abs/elsewhere"
-            pane command="tee" cwd="repo/backend"
-        }
-    }
-    tab name="Tab #2" cwd="other" {
-        pane command="snakemake" cwd="sub"
-    }
-}
-"""
-
-
-def test_parse_layout_panes_resolves_tab_and_base_cwds():
-    panes = mq.parse_layout_panes(LAYOUT_KDL)
-    assert panes == [
-        mq.PaneDir("/base/repo/backend", "pixi"),  # duplicate dir keeps first command
-        mq.PaneDir("/abs/elsewhere", ""),          # plain shells show no command
-        mq.PaneDir("/base/other/sub", "snakemake"),
-    ]
-
-
-def test_find_repo_root_prefers_git_checkout_over_nested_pixi(tmp_path):
-    checkout = tmp_path / "singlem-myversion"
-    nested = checkout / "extras" / "update_metapackage"
-    nested.mkdir(parents=True)
-    (checkout / ".git").mkdir()
-    (nested / "pixi.toml").write_text("")
-    mq.find_repo_root.cache_clear()
-    assert mq.find_repo_root(str(nested)) == str(checkout)
-    assert mq.pane_label(str(nested)) == "singlem-myversion/extras/update_metapackage"
-    assert mq.pane_label(str(checkout)) == "singlem-myversion"
-
-
-def write_log(directory, name, text, mtime):
-    log_dir = directory / ".snakemake" / "log"
+def write_log(folder, name, text, modified):
+    log_dir = folder / ".snakemake" / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
     path = log_dir / name
     path.write_text(text)
-    os.utime(path, (mtime, mtime))
+    os.utime(path, (modified, modified))
 
 
-def test_snakemake_job_ids_reads_only_logs_newer_than_since(tmp_path):
-    write_log(tmp_path, "old.snakemake.log", "Submitted job 1 with external jobid '1.aqua'.", 1000)
-    write_log(tmp_path, "a.snakemake.log", "Submitted job 2 with external jobid '2.aqua'.", 5000)
-    write_log(tmp_path, "b.snakemake.log", "Submitted job 3 with external jobid '3.aqua'.\nnoise", 6000)
-    mq.snakemake_job_ids.cache_clear()
-    assert mq.snakemake_job_ids(str(tmp_path), 4000.0) == {"2.aqua", "3.aqua"}
-    assert mq.snakemake_job_ids(str(tmp_path / "missing"), 0.0) == frozenset()
-
-
-def test_link_jobs_and_zellij_render_show_counts_per_pane(tmp_path):
-    run_dir = tmp_path / "myrepo"
-    (run_dir / ".git").mkdir(parents=True)
-    write_log(run_dir, "x.snakemake.log",
-              "external jobid '10.aqua'\nexternal jobid '11.aqua'\nexternal jobid '99.aqua'", 5000)
-    jobs = [mq.Job("10.aqua", "R", "aquarius04", 4900.0),
-            mq.Job("11.aqua", "Q", "aquarius04", 4950.0),
-            mq.Job("12.aqua", "Q", "aquarius04", 4990.0)]
-    panes = (mq.SessionPanes("aquarius04", "cowbell", (mq.PaneDir(str(run_dir), "tee"),)),)
-    mq.snakemake_job_ids.cache_clear()
+def clear_caches():
     mq.find_repo_root.cache_clear()
+    mq.snakemake_submitted_jobs.cache_clear()
 
-    links = mq.link_jobs(panes, jobs)
 
-    assert set(links) == {"10.aqua", "11.aqua"}  # 99 finished, 12 came from elsewhere
-    assert links["10.aqua"] == mq.JobLink("aquarius04", "cowbell", str(run_dir))
-    reports = [mq.NodeReport("aquarius04", sessions=(mq.ZellijSession("cowbell", 0, 0),))]
-    out = mq.render_zellij(reports, "elsewhere", panes, links, jobs)
-    header = next(l for l in out if l.startswith("Session"))
-    assert header.split() == ["Session", "Pane", "directory", "Cmd", "Run", "Queue", "Held"]
-    pane_line = next(l for l in out if "myrepo" in l)
-    assert pane_line.split() == ["cowbell", "myrepo", "tee", "1", "1", "-"]
+# ---------------------------------------------------------------- reading node output
+
+def test_parse_node_output_reads_every_kind_of_line():
+    text = "\n".join([
+        "load\t3.5\t40",
+        "mem\t1000\t250",
+        "users\t7",
+        "session\tmy session\t1761000000\t2",
+        "session\tbroken\tnot-a-number\t0",
+        "exited\told-one",
+        "pane\tmy session\t/home/someone/repo",
+        "warning\tzellij not found",
+    ])
+    r = mq.parse_node_output("aquarius01", text)
+    assert (r.load1, r.ncpu, r.mem_total_kb, r.mem_avail_kb, r.users) == (3.5, 40, 1000, 250, 7)
+    assert r.sessions == (mq.Session("my session", 1761000000, 2),)
+    assert r.exited == ("old-one",)
+    assert r.folders("my session") == ["/home/someone/repo"]
+    assert r.warning == "zellij not found"
+
+
+def test_same_session_from_two_zellij_copies_is_listed_once():
+    r = mq.parse_node_output("aquarius01", "session\tdup\t10\t0\nsession\tdup\t10\t0")
+    assert [s.name for s in r.sessions] == ["dup"]
+
+
+def test_panes_in_the_same_folder_become_one_row():
+    text = "\n".join([
+        "session\tcowbell\t0\t0",
+        "pane\tcowbell\t/w/aviary-polish-fix",
+        "pane\tcowbell\t/w/aviary-polish-fix",
+        "pane\tcowbell\t/w/sandpiper/backend",
+        "pane\tother\t/w/aviary-polish-fix",  # same folder in another session stays separate
+    ])
+    r = mq.parse_node_output("aquarius04", text)
+    assert r.folders("cowbell") == ["/w/aviary-polish-fix", "/w/sandpiper/backend"]
+    assert r.folders("other") == ["/w/aviary-polish-fix"]
+
+
+def test_parse_jobs_json_reads_state_submit_host_and_time():
+    jobs = mq.parse_jobs_json(QSTAT_JSON.read_text())
+    assert [(j.job_id, j.state, j.submit_host) for j in jobs] == [
+        ("100.aqua", "R", "aquarius02"), ("101.aqua", "Q", "aquarius03"), ("102.aqua", "H", "aquarius03")]
 
 
 def test_parse_pbs_time():
@@ -183,50 +93,125 @@ def test_parse_pbs_time():
     assert mq.parse_pbs_time("garbage") == 0.0
 
 
-ZELLIJ_044_KDL = """layout {
-    cwd "/home/someone/aviary-monthly"
-    tab name="Tab #1" focus=true hide_floating_panes=true {
-        pane command="/bin/bash" focus=true {
-            args "/work/microbiome/sw/hpc_scripts/bin/mqyolo"
-            start_suspended true
-        }
-        pane size=1 borderless=true {
-            plugin location="zellij:status-bar"
-        }
-        pane size=1 borderless=true {
-            plugin location="file:/home/someone/.config/zellij/plugins/zjstatus.wasm" {
-                format_left "#[bg=#89B4FA] {session} {mode} "
-            }
-        }
-    }
-    new_tab_template {
-        pane
-        pane size=1 borderless=true {
-            plugin location="zellij:status-bar"
-        }
-    }
-}
-"""
+# ---------------------------------------------------------------- folders and repos
+
+def test_describe_folder_uses_nearest_pixi_project(tmp_path):
+    repo = tmp_path / "aviary-v0.13.14"
+    (repo / "runs" / "sample1").mkdir(parents=True)
+    (repo / "pixi.toml").write_text("")
+    plain = tmp_path / "nothing"
+    plain.mkdir()
+    clear_caches()
+    assert mq.describe_folder(str(repo / "runs" / "sample1")) == "aviary-v0.13.14/runs/sample1"
+    assert mq.describe_folder(str(plain)) == str(plain)
 
 
-def test_parse_layout_panes_pane_without_cwd_uses_session_dir():
-    # zellij 0.44 omits cwd= for panes in the session's own directory; the
-    # template's bare `pane` and the plugin panes are not live terminals.
-    assert mq.parse_layout_panes(ZELLIJ_044_KDL) == [mq.PaneDir("/home/someone/aviary-monthly", "")]
+def test_git_checkout_wins_over_a_pixi_project_inside_it(tmp_path):
+    checkout = tmp_path / "singlem-myversion"
+    nested = checkout / "extras" / "update_metapackage"
+    nested.mkdir(parents=True)
+    (checkout / ".git").mkdir()
+    (nested / "pixi.toml").write_text("")
+    clear_caches()
+    assert mq.describe_folder(str(nested)) == "singlem-myversion/extras/update_metapackage"
+    assert mq.describe_folder(str(checkout)) == "singlem-myversion"
 
 
-def test_parse_node_output_keeps_warning_and_dedupes_sessions():
-    text = "S\tdup\t10\t0\nS\tdup\t10\t0\nE\tzellij not found (checked PATH)"
-    r = mq.parse_node_output("aquarius01", text)
-    assert [s.name for s in r.sessions] == ["dup"]
-    assert r.warning == "zellij not found (checked PATH)"
-    out = "\n".join(mq.render_zellij([r], "elsewhere"))
+def test_a_home_folder_is_never_treated_as_a_repo(tmp_path):
+    home = tmp_path / "home" / "someone"
+    (home / ".git").mkdir(parents=True)
+    (home / "work").mkdir()
+    clear_caches()
+    assert mq.find_repo_root(str(home / "work")) == ""
+
+
+# ---------------------------------------------------------------- matching jobs to panes
+
+def test_only_logs_written_since_the_oldest_job_are_read(tmp_path):
+    write_log(tmp_path, "old.snakemake.log", "Submitted job 1 with external jobid '1.aqua'.", 1000)
+    write_log(tmp_path, "a.snakemake.log", "Submitted job 2 with external jobid '2.aqua'.", 5000)
+    write_log(tmp_path, "b.snakemake.log", "Submitted job 3 with external jobid '3.aqua'.\nnoise", 6000)
+    clear_caches()
+    assert mq.snakemake_submitted_jobs(str(tmp_path), 4000.0) == {"2.aqua", "3.aqua"}
+    assert mq.snakemake_submitted_jobs(str(tmp_path / "missing"), 0.0) == frozenset()
+
+
+def test_jobs_are_traced_to_their_pane_and_counted_in_the_table(tmp_path):
+    run_dir = tmp_path / "myrepo"
+    (run_dir / ".git").mkdir(parents=True)
+    write_log(run_dir, "x.snakemake.log",
+              "external jobid '10.aqua'\nexternal jobid '11.aqua'\nexternal jobid '99.aqua'", 5000)
+    jobs = [mq.Job("10.aqua", "R", "aquarius04", 4900.0),
+            mq.Job("11.aqua", "Q", "aquarius04", 4950.0),
+            mq.Job("12.aqua", "Q", "aquarius04", 4990.0)]
+    reports = [mq.NodeReport("aquarius04", sessions=(mq.Session("cowbell", 0, 0),),
+                             panes=(("cowbell", str(run_dir)),))]
+    clear_caches()
+
+    origins = mq.find_job_origins(reports, jobs)
+
+    assert set(origins) == {"10.aqua", "11.aqua"}  # 99 has finished, 12 came from somewhere else
+    assert origins["10.aqua"] == mq.JobOrigin("aquarius04", "cowbell", str(run_dir))
+    out = mq.render_zellij(reports, "elsewhere", origins, jobs)
+    header = next(l for l in out if l.startswith("Session") and "Pane" in l)
+    assert header.split() == ["Session", "Pane", "folder", "Run", "Queue", "Held"]
+    row = next(l for l in out if "myrepo" in l)
+    assert row.split() == ["cowbell", "myrepo", "1", "1", "-"]
+
+
+# ---------------------------------------------------------------- printing
+
+def test_session_with_no_panes_found_still_gets_a_row():
+    reports = [mq.NodeReport("aquarius02", sessions=(mq.Session("fresh", 0, 0),))]
+    row = next(l for l in mq.render_zellij(reports, "elsewhere") if l.startswith("fresh"))
+    assert row.split() == ["fresh", "?", "-", "-", "-"]
+
+
+def test_exited_sessions_are_counted_once_and_exclude_live_ones():
+    reports = [
+        mq.NodeReport("aquarius01", exited=("a", "b")),
+        mq.NodeReport("aquarius02", sessions=(mq.Session("b", 0, 0),), exited=("a", "c")),
+    ]
+    out = "\n".join(mq.render_zellij(reports, "elsewhere"))
+    assert "2 exited sessions can be brought back" in out
+    assert "aquarius02  b" in out
+
+
+def test_zellij_warning_is_shown():
+    out = "\n".join(mq.render_zellij([mq.NodeReport("aquarius01", warning="zellij not found")], "x"))
     assert "aquarius01: zellij not found" in out
 
 
-def test_session_without_snapshot_still_gets_a_pane_row():
-    reports = [mq.NodeReport("aquarius02", sessions=(mq.ZellijSession("fresh", 0, 0),))]
-    panes = (mq.SessionPanes("aquarius02", "fresh", ()),)
-    out = mq.render_zellij(reports, "elsewhere", panes, {}, ())
-    row = next(l for l in out if l.startswith("fresh"))
-    assert "(no pane snapshot yet)" in row
+def test_unreachable_node_is_reported_not_fatal():
+    out = "\n".join(mq.render_nodes([mq.NodeReport("aquarius09", error="unreachable (x)")], "x"))
+    assert "aquarius09" in out and "unreachable (x)" in out
+
+
+def test_job_counts_by_submit_host():
+    result = run("--no-nodes", "--qstat-json-file", str(QSTAT_JSON))
+    assert result.returncode == 0, result.stderr
+    assert "Jobs: 1 running, 1 queued, 1 held  (3 total)" in result.stdout
+    lines = result.stdout.splitlines()
+    assert any(l.split() == ["aquarius02", "1", "0", "0", "0"] for l in lines)
+    assert any(l.split() == ["aquarius03", "0", "1", "1", "0"] for l in lines)
+
+
+# ---------------------------------------------------------------- the script that runs on each node
+
+def test_node_script_reports_live_pane_folders(tmp_path):
+    """Start a fake `zellij --server` with a child shell and check its folder is reported."""
+    fake_zellij = tmp_path / "zellij"
+    fake_zellij.write_text("#!/bin/bash\n(cd \"$PANE_DIR\" && exec sleep 30) & wait\n")
+    fake_zellij.chmod(0o755)
+    pane_dir = tmp_path / "pane here"
+    pane_dir.mkdir()
+    server = subprocess.Popen([str(fake_zellij), "--server", str(tmp_path / "sock" / "probe-session")],
+                              env={**os.environ, "PANE_DIR": str(pane_dir)})
+    try:
+        time.sleep(0.5)
+        out = subprocess.run(["bash", "-s"], input=mq.NODE_SCRIPT, text=True,
+                             capture_output=True, timeout=30).stdout
+    finally:
+        server.kill()
+        subprocess.run(["pkill", "-P", str(server.pid)])
+    assert f"pane\tprobe-session\t{pane_dir}" in out.splitlines()
