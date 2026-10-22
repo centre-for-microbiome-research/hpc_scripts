@@ -8,7 +8,7 @@ Host aqua0
     User woodcrob
     Compression yes
 
-Host aqua
+Host aqu
     HostName aquarius0X.qut.edu.au # Choose aquarius01, aquarius02, aquarius03, or aquarius04 here - choose randomly
     User woodcrob
     Compression yes
