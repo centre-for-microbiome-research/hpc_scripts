@@ -181,3 +181,52 @@ def test_parse_pbs_time():
     assert mq.parse_pbs_time("Wed Oct 21 15:35:43 2026") > 0
     assert mq.parse_pbs_time(None) == 0.0
     assert mq.parse_pbs_time("garbage") == 0.0
+
+
+ZELLIJ_044_KDL = """layout {
+    cwd "/home/someone/aviary-monthly"
+    tab name="Tab #1" focus=true hide_floating_panes=true {
+        pane command="/bin/bash" focus=true {
+            args "/work/microbiome/sw/hpc_scripts/bin/mqyolo"
+            start_suspended true
+        }
+        pane size=1 borderless=true {
+            plugin location="zellij:status-bar"
+        }
+        pane size=1 borderless=true {
+            plugin location="file:/home/someone/.config/zellij/plugins/zjstatus.wasm" {
+                format_left "#[bg=#89B4FA] {session} {mode} "
+            }
+        }
+    }
+    new_tab_template {
+        pane
+        pane size=1 borderless=true {
+            plugin location="zellij:status-bar"
+        }
+    }
+}
+"""
+
+
+def test_parse_layout_panes_pane_without_cwd_uses_session_dir():
+    # zellij 0.44 omits cwd= for panes in the session's own directory; the
+    # template's bare `pane` and the plugin panes are not live terminals.
+    assert mq.parse_layout_panes(ZELLIJ_044_KDL) == [mq.PaneDir("/home/someone/aviary-monthly", "")]
+
+
+def test_parse_node_output_keeps_warning_and_dedupes_sessions():
+    text = "S\tdup\t10\t0\nS\tdup\t10\t0\nE\tzellij not found (checked PATH)"
+    r = mq.parse_node_output("aquarius01", text)
+    assert [s.name for s in r.sessions] == ["dup"]
+    assert r.warning == "zellij not found (checked PATH)"
+    out = "\n".join(mq.render_zellij([r], "elsewhere"))
+    assert "aquarius01: zellij not found" in out
+
+
+def test_session_without_snapshot_still_gets_a_pane_row():
+    reports = [mq.NodeReport("aquarius02", sessions=(mq.ZellijSession("fresh", 0, 0),))]
+    panes = (mq.SessionPanes("aquarius02", "fresh", ()),)
+    out = mq.render_zellij(reports, "elsewhere", panes, {}, ())
+    row = next(l for l in out if l.startswith("fresh"))
+    assert "(no pane snapshot yet)" in row

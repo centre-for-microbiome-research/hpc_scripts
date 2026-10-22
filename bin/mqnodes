@@ -45,7 +45,7 @@ BAR_WIDTH = 20
 SNAKEMAKE_MAX_LOGS = 50  # per directory, newest first, bounds work on a huge .snakemake/log
 LOG_MTIME_SLACK_SECONDS = 60
 SNAKEMAKE_JOBID_RE = re.compile(r"external jobid '([^']+)'")
-KDL_ATTR_RE = re.compile(r'(\w+)="([^"]*)"')
+KDL_ATTR_RE = re.compile(r'(\w+)="([^"]*)"')  # key="value" attributes on a node line
 KDL_BASE_CWD_RE = re.compile(r'^\s*cwd "([^"]*)"')
 HIGH_FRACTION = 0.8
 MID_FRACTION = 0.5
@@ -54,21 +54,30 @@ MID_FRACTION = 0.5
 #   L load1 ncpu | M mem_total_kb mem_avail_kb | U nusers
 #   S name socket_mtime nclients   (live session)  | X name  (exited, resurrectable)
 REMOTE_SCRIPT = r"""
-Z=$(command -v zellij || echo "$HOME/bin/zellij")
 read l1 _ < /proc/loadavg
 printf 'L\t%s\t%s\n' "$l1" "$(nproc)"
 awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{printf "M\t%s\t%s\n", t, a}' /proc/meminfo
 printf 'U\t%s\n' "$(who | awk '{print $1}' | sort -u | wc -l)"
-[ -x "$Z" ] || exit 0
 RT=${XDG_RUNTIME_DIR:-/tmp}
-"$Z" list-sessions --no-formatting </dev/null 2>/dev/null | while IFS= read -r line; do
-    name=${line%% \[Created*}
-    case "$line" in *EXITED*) printf 'X\t%s\n' "$name"; continue ;; esac
-    sock=$(ls -d "$RT"/zellij/*/"$name" /tmp/zellij-"$(id -u)"/*/"$name" 2>/dev/null | head -n 1)
-    if [ -n "$sock" ]; then mtime=$(stat -c %Y "$sock"); else mtime=0; fi
-    nc=$("$Z" -s "$name" action list-clients </dev/null 2>/dev/null | tail -n +2 | grep -c .)
-    printf 'S\t%s\t%s\t%s\n' "$name" "$mtime" "$nc"
+seen=" "
+for Z in "$(command -v zellij 2>/dev/null)" /work/microbiome/sw/zellij/zellij \
+         "$HOME/bin/zellij" "$HOME/.cargo/bin/zellij" "$HOME/.local/bin/zellij" \
+         "$HOME"/bin/zellij-*; do  # old versions kept around, e.g. ~/bin/zellij-0.43.1
+    [ -n "$Z" ] && [ -x "$Z" ] || continue
+    real=$(readlink -f "$Z")
+    case "$seen" in *" $real "*) continue ;; esac
+    seen="$seen$real "
+    "$Z" list-sessions --no-formatting </dev/null 2>/dev/null | while IFS= read -r line; do
+        name=${line%% \[Created*}
+        case "$line" in *EXITED*) printf 'X\t%s\n' "$name"; continue ;; esac
+        sock=$(ls -d "$RT"/zellij/*/"$name" /tmp/zellij-"$(id -u)"/*/"$name" 2>/dev/null | head -n 1)
+        if [ -n "$sock" ]; then mtime=$(stat -c %Y "$sock"); else mtime=0; fi
+        nc=$("$Z" -s "$name" action list-clients </dev/null 2>/dev/null | tail -n +2 | grep -c .)
+        printf 'S\t%s\t%s\t%s\n' "$name" "$mtime" "$nc"
+    done
 done
+[ "$seen" = " " ] && printf 'E\tzellij not found (checked PATH, /work/microbiome/sw/zellij, ~/bin, ~/.cargo/bin, ~/.local/bin, ~/bin/zellij-*)\n'
+exit 0
 """
 
 
@@ -105,6 +114,7 @@ class NodeReport:
     users: int = 0
     sessions: Tuple[ZellijSession, ...] = ()
     exited: Tuple[str, ...] = ()
+    warning: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -150,7 +160,7 @@ def short_host(host: str) -> str:
 def parse_node_output(node: str, text: str) -> NodeReport:
     """Turn REMOTE_SCRIPT's tab-separated records into a NodeReport."""
     fields: Dict[str, object] = {}
-    sessions: List[ZellijSession] = []
+    sessions: Dict[str, ZellijSession] = {}
     exited: List[str] = []
     for line in text.splitlines():
         parts = line.split("\t")
@@ -163,12 +173,14 @@ def parse_node_output(node: str, text: str) -> NodeReport:
             elif tag == "U" and len(rest) == 1:
                 fields["users"] = int(rest[0])
             elif tag == "S" and len(rest) == 3:
-                sessions.append(ZellijSession(rest[0], int(rest[1]), int(rest[2])))
+                sessions.setdefault(rest[0], ZellijSession(rest[0], int(rest[1]), int(rest[2])))
             elif tag == "X" and len(rest) == 1:
                 exited.append(rest[0])
+            elif tag == "E" and len(rest) == 1:
+                fields["warning"] = rest[0]
         except ValueError:
             continue  # one malformed record shouldn't hide the rest of the node
-    return NodeReport(node=node, sessions=tuple(sessions), exited=tuple(exited), **fields)
+    return NodeReport(node=node, sessions=tuple(sessions.values()), exited=tuple(exited), **fields)
 
 
 @lru_cache(maxsize=None)
@@ -234,29 +246,70 @@ def parse_jobs_json(text: str) -> List[Job]:
 
 # ---------------------------------------------------------------- zellij panes -> jobs
 
-def parse_layout_panes(text: str) -> List[PaneDir]:
-    """Pane directories from a zellij session-layout.kdl snapshot.
+KDL_TEMPLATE_BLOCKS = ("new_tab_template", "default_tab_template", "tab_template",
+                       "pane_template", "swap_tiled_layout", "swap_floating_layout")
+SHELLS = ("bash", "zsh", "sh", "fish")
+NO_SNAPSHOT_LABEL = "(no pane snapshot yet)"
 
-    The layout's top-level `cwd "..."` is the base; tab and pane cwd= attributes
-    are relative to it (or absolute). Plugin panes have no cwd and are skipped.
+
+@dataclass
+class _KdlBlock:
+    kind: str  # "tab", "pane", "template" or "other"
+    attrs: Dict[str, str]
+    has_child_pane: bool = False
+    has_plugin: bool = False
+
+
+def _pane_command(attrs: Dict[str, str]) -> str:
+    command = os.path.basename(attrs.get("command", "")).lstrip("-")
+    return "" if command in SHELLS else command
+
+
+def parse_layout_panes(text: str) -> List[PaneDir]:
+    """Terminal panes (directory + command) from a zellij session-layout.kdl snapshot.
+
+    Only leaf panes count: a pane block holding other panes is a split container,
+    one holding `plugin` is a status bar etc., and template blocks describe new
+    tabs rather than live panes. A pane without cwd= is in its tab's cwd, which
+    defaults to the layout's top-level `cwd "..."`. Relies on zellij's own
+    serialisation style: one node per line, blocks opened with a trailing '{'
+    and closed by a line holding only '}'.
     """
-    base, tab_cwd = "", ""
+    base = ""
+    stack: List[_KdlBlock] = []
     panes: Dict[str, PaneDir] = {}
+
+    def emit(attrs: Dict[str, str]) -> None:
+        if any(b.kind == "template" for b in stack):
+            return
+        tab_cwd = next((b.attrs.get("cwd", "") for b in stack if b.kind == "tab"), "")
+        path = os.path.normpath(os.path.join(base, tab_cwd, attrs.get("cwd", "")))
+        panes.setdefault(path, PaneDir(path, _pane_command(attrs)))
+
     for line in text.splitlines():
         stripped = line.strip()
+        if stripped == "}":
+            block = stack.pop() if stack else None
+            if block and block.kind == "pane" and not block.has_child_pane and not block.has_plugin:
+                emit(block.attrs)
+            continue
         m = KDL_BASE_CWD_RE.match(line)
         if m and not base:
             base = m.group(1)
-            continue
+        word = stripped.split(" ", 1)[0].rstrip("{")
         attrs = dict(KDL_ATTR_RE.findall(stripped))
-        if stripped.startswith("tab "):
-            tab_cwd = attrs.get("cwd", "")
-        elif stripped.startswith("pane") and "cwd" in attrs:
-            path = os.path.normpath(os.path.join(base, tab_cwd, attrs["cwd"]))
-            command = attrs.get("command", "").lstrip("-")
-            if command in ("bash", "zsh", "sh", "fish"):
-                command = ""
-            panes.setdefault(path, PaneDir(path, command))
+        opens = stripped.endswith("{")
+        if word == "pane":
+            if stack and stack[-1].kind == "pane":
+                stack[-1].has_child_pane = True
+            if not opens:
+                emit(attrs)
+        elif word == "plugin" and stack and stack[-1].kind == "pane":
+            stack[-1].has_plugin = True
+        if opens:
+            kind = ("pane" if word == "pane" else "tab" if word == "tab"
+                    else "template" if word in KDL_TEMPLATE_BLOCKS else "other")
+            stack.append(_KdlBlock(kind, attrs))
     return list(panes.values())
 
 
@@ -424,6 +477,8 @@ def render_pane_table(session_panes: Sequence[SessionPanes],
     """One row per pane directory, columns aligned across all sessions."""
     rows = []
     for sp in session_panes:
+        if not sp.panes:  # zellij writes its first snapshot a little after the session starts
+            rows.append((sp.session, NO_SNAPSHOT_LABEL, "", 0, 0, 0))
         for i, pane in enumerate(sp.panes):
             c = Counter(states.get((sp.node, sp.session), {}).get(pane.path, []))
             rows.append((sp.session if i == 0 else "", pane_label(pane.path), pane.command,
@@ -440,7 +495,8 @@ def render_pane_table(session_panes: Sequence[SessionPanes],
     out = [f"{'Session':<{sw}}  {'Pane directory':<{dw}}  {'Cmd':<{cw}}  {'Run':>5} {'Queue':>5} {'Held':>5}",
            f"{'-' * sw}  {'-' * dw}  {'-' * cw}  {'-' * 5} {'-' * 5} {'-' * 5}"]
     for session, label, command, r, q, h in rows:
-        out.append(f"{session:<{sw}}  {label:<{dw}}  {command:<{cw}}  "
+        shown = f"{Colors.DIM}{label:<{dw}}{Colors.ENDC}" if label == NO_SNAPSHOT_LABEL else f"{label:<{dw}}"
+        out.append(f"{session:<{sw}}  {shown}  {command:<{cw}}  "
                    f"{count(r, Colors.GREEN)} {count(q, Colors.YELLOW)} {count(h, Colors.RED)}")
     return out
 
@@ -459,6 +515,9 @@ def render_zellij(reports: Sequence[NodeReport], local_host: str,
                 link.directory, []).append(state_by_id[job_id])
     rows = [(r.node, s) for r in reports for s in r.sessions]
     current = os.environ.get("ZELLIJ_SESSION_NAME")
+    for r in reports:
+        if r.warning:
+            out.append(f"{Colors.RED}{r.node}: {r.warning}{Colors.ENDC}")
     if not rows:
         out.append("No live zellij sessions on any login node.")
     else:
