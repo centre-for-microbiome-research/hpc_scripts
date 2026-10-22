@@ -13,7 +13,7 @@ Scope: the coupled system listed in `CLAUDE.md` —
 
 ## 1. Purpose
 
-`mqyolo` runs an autonomous AI coding tool (Claude Code, Codex, Copilot, or
+`mqyolo` runs an autonomous AI coding tool (Claude Code, Codex, or
 opencode) on the QUT *aqua* HPC with all of its permission prompts disabled
 (`--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox` /
 `--auto`).

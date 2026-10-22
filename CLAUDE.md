@@ -79,7 +79,7 @@ Key invariants the tests guard (keep them true):
   read, Pull requests/Issues write, Actions/Statuses/Checks read; never Workflows or
   admin), reads the pasted token and stores it in `~/.config/mqyolo/github-token`
   (mode 600) — GitHub has no API to create one, so that button-press is manual. Each
-  launch (skipped for copilot, which keeps its own `GITHUB_TOKEN`) first refuses
+  launch first refuses
   to start if `$GH_TOKEN`/`$GITHUB_TOKEN` is set at all (`_mqyolo_refuse_github_env_token`
   — the host environment is forwarded wholesale, so a broad token there reaches the
   container however mqyolo behaves), then uses the stored file

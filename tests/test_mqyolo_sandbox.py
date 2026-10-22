@@ -3717,7 +3717,10 @@ def test_launch_ignores_an_expired_stored_token(tmp_path, fake_github):
     assert "rejected by GitHub" in p.stderr
 
 
-def test_copilot_keeps_its_github_token_and_gets_no_warning(tmp_path, fake_github):
-    p, _ = _launch(tmp_path, fake_github, "copilot", GITHUB_TOKEN="ghp_copilot")
-    assert _forwarded(p, "GITHUB_TOKEN") == ["GITHUB_TOKEN=ghp_copilot"]
-    assert "no scoped GitHub token" not in p.stderr
+def test_copilot_is_no_longer_a_tool(tmp_path, fake_github):
+    env, home = _gh_env(tmp_path, fake_github)
+    p = subprocess.run([str(MQYOLO), "--no-broker", "copilot"], text=True,
+                       capture_output=True, env=env, cwd=str(home))
+    assert p.returncode != 0
+    assert "no longer supports copilot" in p.stderr
+    assert "apptainer" not in p.stdout

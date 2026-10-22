@@ -1,5 +1,5 @@
 # Weekly automated rebuild of ai_tool.sif so the bundled AI CLIs
-# (claude, codex, copilot) stay up to date.
+# (claude, codex, opencode) stay up to date.
 #
 # Install on the HPC login node where cron runs (NOT in a container/build node):
 #     crontab -l > ~/crontab.bak                          # back up existing entries
