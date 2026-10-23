@@ -1,0 +1,740 @@
+#!/usr/bin/env python3
+"""
+mqnodes - what you have running on each aqua login node.
+
+Aqua has four login nodes (aquarius01-04). A zellij or tmux session only
+exists on the node it was started on, so `zellij attach` / `tmux attach` only
+show that node's sessions. mqnodes checks every login node (over ssh, all at
+once) and shows:
+
+1. Each login node's load, memory use and number of users (-> marks yours)
+2. Your zellij and tmux sessions on every node: when they started, whether
+   anyone is attached, which folder each pane is in, and how many of your jobs
+   were submitted from that folder
+3. How many of your PBS jobs are interactive, running or queued (held jobs
+   count as queued), and which login node each was submitted from
+
+Pane folders are read live from the shells running inside each session.
+Jobs are matched to a folder through the "Submitted job ... external jobid"
+lines snakemake writes to <folder>/.snakemake/log/.
+
+    mqnodes              show all of the above
+    mqnodes --switch 3   log in to aquarius03 (also: aquarius03, aqua3, 03),
+                         in the folder you are in now; exit to come back
+"""
+from __future__ import annotations
+
+import argparse
+import getpass
+import json
+import os
+import re
+import shlex
+import socket
+import subprocess
+import sys
+import time
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, replace
+from datetime import datetime
+from functools import lru_cache
+from pathlib import Path
+from typing import Dict, FrozenSet, List, Optional, Sequence, Set, Tuple
+
+LOGIN_NODES = ("aquarius01", "aquarius02", "aquarius03", "aquarius04")
+NODE_DOMAIN = "qut.edu.au"
+SSH_TIMEOUT_SECONDS = 20  # per node, so one stuck login node can't hold up the report
+QSTAT_BATCH_SIZE = 500
+QSTAT_PARALLEL = 4  # at once; polite to the PBS server
+BAR_WIDTH = 20
+HIGH_FRACTION = 0.8
+MID_FRACTION = 0.5
+MAX_SNAKEMAKE_LOGS = 50  # per folder, newest first
+LOG_TIME_SLACK_SECONDS = 60
+RUNNING_STATES = ("R", "E", "B")  # running, finishing (exiting), array with subjobs started
+SNAKEMAKE_SUBMIT_RE = re.compile(r"external jobid '([^']+)'")
+
+# Runs on each login node (fed to `bash -s`). Prints one tab-separated line per fact:
+#   load <1-min load> <cpus>           mem <total kB> <available kB>    users <count>
+#   session <zellij|tmux> <name> <start time> <attached clients> <program to attach with>
+#   pane <zellij|tmux> <session> <folder>   (one per pane)
+#   exited <name>                      (an old zellij session it can bring back)
+#   snakemake <folder>                 (a snakemake run is going in this folder right now)
+#   warning <text>
+#
+# zellij is looked for in several places because an ssh command doesn't load
+# ~/.bashrc (where the group's zellij is put on PATH), and each zellij version
+# only lists its own sessions, so every copy found is asked.
+#
+# zellij pane folders come from the processes themselves: each session has one
+# `zellij --server .../<session>` process, its children are the pane shells,
+# and /proc/<pid>/cwd is the folder each shell is in right now.
+#
+# tmux reports all of this itself. Every tmux server (the default one, plus any
+# started with `tmux -L <name>`) has a socket in /tmp/tmux-<uid>/; sockets left
+# behind by a server that has exited simply answer nothing.
+NODE_SCRIPT = r"""
+read load1 _ < /proc/loadavg
+printf 'load\t%s\t%s\n' "$load1" "$(nproc)"
+awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{printf "mem\t%s\t%s\n", t, a}' /proc/meminfo
+printf 'users\t%s\n' "$(who | awk '{print $1}' | sort -u | wc -l)"
+
+# A zellij/tmux server that is frozen would make its client wait forever, so every
+# call to one is cut off after a few seconds instead of losing the whole node.
+# The output goes through a file, not a pipe: tmux hands its stdout to the server,
+# so a frozen server keeps a pipe open and $(...) would wait for it even after the
+# client has been killed.
+if command -v timeout >/dev/null 2>&1; then tmo() { timeout 3 "$@"; }; else tmo() { "$@"; }; fi
+tmpfile=$(mktemp) && trap 'rm -f "$tmpfile"' EXIT
+tmo_out() {  # run a command with the time limit, print its output, keep its exit status
+    tmo "$@" >"$tmpfile" 2>/dev/null </dev/null
+    local rc=$?
+    cat "$tmpfile"
+    return $rc
+}
+
+runtime=${XDG_RUNTIME_DIR:-/tmp}
+checked=" "
+plain=$(readlink -f "$(command -v zellij 2>/dev/null)" 2>/dev/null)  # what typing `zellij` runs here
+for zellij in "$(command -v zellij 2>/dev/null)" /work/microbiome/sw/zellij/zellij \
+              "$HOME/bin/zellij" "$HOME/.cargo/bin/zellij" "$HOME/.local/bin/zellij" \
+              "$HOME"/bin/zellij-*; do  # older copies kept around, e.g. ~/bin/zellij-0.43.1
+    [ -n "$zellij" ] && [ -x "$zellij" ] || continue
+    real=$(readlink -f "$zellij")
+    case "$checked" in *" $real "*) continue ;; esac
+    checked="$checked$real "
+    listing=$(tmo_out "$zellij" list-sessions --no-formatting)
+    if [ $? -eq 124 ]; then printf 'warning\t%s did not answer (a frozen session?)\n' "${zellij##*/}"; continue; fi
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        name=${line%% \[Created*}
+        case "$line" in *EXITED*) printf 'exited\t%s\n' "$name"; continue ;; esac
+        sock=$(ls -d "$runtime"/zellij/*/"$name" /tmp/zellij-"$(id -u)"/*/"$name" 2>/dev/null | head -n 1)
+        if [ -n "$sock" ]; then started=$(stat -c %Y "$sock"); else started=0; fi
+        clients=$(tmo_out "$zellij" -s "$name" action list-clients | tail -n +2 | grep -c .)
+        # a session made by another zellij version is invisible to plain `zellij`
+        if [ "$real" = "$plain" ]; then via=zellij; else via=$zellij; fi
+        printf 'session\tzellij\t%s\t%s\t%s\t%s\n' "$name" "$started" "$clients" "$via"
+    done <<< "$listing"
+done
+[ "$checked" = " " ] && printf 'warning\tzellij not found (looked on PATH, in /work/microbiome/sw/zellij, ~/bin, ~/.cargo/bin and ~/.local/bin)\n'
+
+for server in $(pgrep -u "$(id -u)" -f 'zellij[^ ]* --server '); do
+    session=$(tr '\0' '\n' < "/proc/$server/cmdline" 2>/dev/null | tail -n 1)
+    session=${session##*/}
+    for shell in $(pgrep -P "$server"); do
+        folder=$(readlink "/proc/$shell/cwd" 2>/dev/null) && printf 'pane\tzellij\t%s\t%s\n' "$session" "$folder"
+    done
+done
+
+tmux=$(command -v tmux 2>/dev/null)
+if [ -n "$tmux" ]; then
+    for sock in "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"/*; do
+        [ -S "$sock" ] || continue
+        server=${sock##*/}
+        label=""; [ "$server" = default ] || label=" [-L $server]"
+        listing=$(tmo_out "$tmux" -S "$sock" list-sessions -F '#{session_name}:#{session_created}:#{session_attached}')
+        if [ $? -eq 124 ]; then printf 'warning\ttmux server "%s" did not answer (frozen?)\n' "$server"; continue; fi
+        while IFS=: read -r name started clients; do
+            [ -n "$name" ] && printf 'session\ttmux\t%s\t%s\t%s\ttmux\n' "$name$label" "$started" "$clients"
+        done <<< "$listing"
+        listing=$(tmo_out "$tmux" -S "$sock" list-panes -a -F '#{session_name}:#{pane_current_path}')
+        while IFS=: read -r name folder; do  # tmux session names can't contain ':', folders can
+            [ -n "$name" ] && printf 'pane\ttmux\t%s\t%s\n' "$name$label" "$folder"
+        done <<< "$listing"
+    done
+fi
+
+# Used to tell apart two panes (maybe on different nodes) sitting in the same folder:
+# the jobs belong to the one where snakemake is actually running.
+for pid in $(pgrep -u "$(id -u)" -f snakemake); do
+    folder=$(readlink "/proc/$pid/cwd" 2>/dev/null) && printf 'snakemake\t%s\n' "$folder"
+done
+exit 0
+"""
+
+
+class Colors:
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    CYAN = '\033[96m'
+    DIM = '\033[2m'
+    BOLD = '\033[1m'
+    ENDC = '\033[0m'
+
+    @classmethod
+    def disable(cls) -> None:
+        for attr in ("GREEN", "YELLOW", "RED", "CYAN", "DIM", "BOLD", "ENDC"):
+            setattr(cls, attr, "")
+
+
+@dataclass(frozen=True)
+class Session:
+    tool: str  # "zellij" or "tmux"
+    name: str
+    started: int  # seconds since 1970, 0 if unknown
+    clients: int  # how many terminals are attached
+    attach_with: str = ""  # program that can attach to it; differs from the tool name when
+                           # the session belongs to another zellij version than plain `zellij`
+
+
+@dataclass(frozen=True)
+class NodeReport:
+    node: str
+    error: Optional[str] = None
+    load1: float = 0.0
+    ncpu: int = 0
+    mem_total_kb: int = 0
+    mem_avail_kb: int = 0
+    users: int = 0
+    sessions: Tuple[Session, ...] = ()
+    exited: Tuple[str, ...] = ()
+    panes: Tuple[Tuple[str, str, str], ...] = ()  # (tool, session name, folder), one per distinct folder
+    warning: Optional[str] = None
+    snakemake_folders: FrozenSet[str] = frozenset()  # where a snakemake run is going on this node
+    needs_ssh_key: bool = False  # ssh refused us because there's no key to log in with
+
+    def folders(self, session: Session) -> List[str]:
+        return [folder for tool, name, folder in self.panes
+                if (tool, name) == (session.tool, session.name)]
+
+
+@dataclass(frozen=True)
+class Job:
+    job_id: str
+    state: str  # PBS letter: R running, Q queued, H held, E exiting, ...
+    submit_host: str
+    submitted: float = 0.0  # seconds since 1970, 0 if unknown
+    interactive: bool = False  # started with qsub -I / mqinteractive
+
+    @property
+    def kind(self) -> str:
+        """'interactive', 'running' or 'queued' (anything still waiting, held included)."""
+        if self.interactive:
+            return "interactive"
+        return "running" if self.state in RUNNING_STATES else "queued"
+
+
+@dataclass(frozen=True)
+class JobReport:
+    jobs: Tuple[Job, ...] = ()
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class JobOrigin:
+    """The zellij/tmux session and folder a job was submitted from."""
+    node: str
+    tool: str
+    session: str
+    folder: str
+
+
+# ---------------------------------------------------------------- reading the node and job data
+
+def short_host(host: str) -> str:
+    return host.split(".")[0] if host else "-"
+
+
+def parse_node_output(node: str, text: str) -> NodeReport:
+    """Turn NODE_SCRIPT's output into a NodeReport."""
+    fields: Dict[str, object] = {}
+    sessions: Dict[Tuple[str, str], Session] = {}  # the same session can be reported by two zellij copies
+    exited: List[str] = []
+    panes: Dict[Tuple[str, str, str], None] = {}  # ordered set: several panes can share a folder
+    snakemake_folders: Set[str] = set()
+    warnings: List[str] = []
+    for line in text.splitlines():
+        kind, *values = line.split("\t")
+        try:
+            if kind == "load" and len(values) == 2:
+                fields["load1"], fields["ncpu"] = float(values[0]), int(values[1])
+            elif kind == "mem" and len(values) == 2:
+                fields["mem_total_kb"], fields["mem_avail_kb"] = int(values[0]), int(values[1])
+            elif kind == "users" and len(values) == 1:
+                fields["users"] = int(values[0])
+            elif kind == "session" and len(values) in (4, 5):
+                tool, name, started, clients, *via = values
+                sessions.setdefault((tool, name), Session(tool, name, int(started), int(clients),
+                                                          via[0] if via else tool))
+            elif kind == "exited" and len(values) == 1:
+                exited.append(values[0])
+            elif kind == "pane" and len(values) == 3:
+                panes[(values[0], values[1], values[2])] = None
+            elif kind == "snakemake" and len(values) == 1:
+                snakemake_folders.add(values[0])
+            elif kind == "warning" and len(values) == 1:
+                warnings.append(values[0])
+        except ValueError:
+            continue  # one garbled line shouldn't hide the rest of the node
+    return NodeReport(node=node, sessions=tuple(sessions.values()), exited=tuple(exited),
+                      panes=tuple(panes), snakemake_folders=frozenset(snakemake_folders),
+                      warning="; ".join(warnings) or None, **fields)
+
+
+def parse_pbs_time(value: Optional[str]) -> float:
+    """'Wed Oct 21 15:35:43 2026' -> seconds since 1970, 0 if missing or unreadable."""
+    try:
+        return datetime.strptime(value or "", "%a %b %d %H:%M:%S %Y").timestamp()
+    except ValueError:
+        return 0.0
+
+
+def parse_jobs_json(text: str) -> List[Job]:
+    """Read `qstat -f -F json` output (strict=False because PBS leaves raw control characters in)."""
+    data = json.loads(text, strict=False)
+    jobs = [Job(job_id=job_id,
+                state=j.get("job_state", "?"),
+                submit_host=short_host(j.get("Submit_Host", "")),
+                submitted=parse_pbs_time(j.get("ctime")),
+                interactive=str(j.get("interactive", "")).lower() == "true")
+            for job_id, j in data.get("Jobs", {}).items()]
+    return sorted(jobs, key=lambda job: job.job_id)
+
+
+# ---------------------------------------------------------------- folders, repos and where jobs came from
+
+@lru_cache(maxsize=None)
+def find_repo_root(folder: str) -> str:
+    """The git checkout containing `folder`, or failing that the nearest pixi project.
+
+    Git is preferred so a pixi project inside a checkout (e.g.
+    singlem/extras/update_metapackage) is shown under the checkout's name,
+    which is what tells two clones apart. Your home folder itself doesn't count
+    (it's often a git repo of dotfiles). "" if nothing is found.
+    """
+    home = os.path.expanduser("~")
+    homes = {home, os.path.realpath(home)}  # /home/you and /mnt/hpccs01/home/you
+    d = Path(folder)
+    nearest_pixi = ""
+    while d.parent != d and str(d) not in homes:
+        if (d / ".git").exists():
+            return str(d)
+        if not nearest_pixi and (d / "pixi.toml").is_file():
+            nearest_pixi = str(d)
+        d = d.parent
+    return nearest_pixi
+
+
+def shorten_home(path: str) -> str:
+    home = os.path.expanduser("~")
+    for prefix in sorted({home, os.path.realpath(home)}, key=len, reverse=True):
+        if path == prefix or path.startswith(prefix + "/"):
+            return "~" + path[len(prefix):]
+    return path
+
+
+def describe_folder(folder: str) -> str:
+    """'singlem-myversion/extras/update_metapackage', or a ~/... path if not in a repo."""
+    root = find_repo_root(folder)
+    if not root:
+        return shorten_home(folder)
+    inside = os.path.relpath(folder, root)
+    name = os.path.basename(root)
+    return name if inside == "." else f"{name}/{inside}"
+
+
+@lru_cache(maxsize=None)
+def snakemake_submitted_jobs(folder: str, since: float = 0.0) -> FrozenSet[str]:
+    """Job IDs that snakemake runs in `folder` submitted, from logs written at/after `since`.
+
+    A log that submitted a job that's still in the queue was last written after
+    that job was submitted, so `since` (the oldest queued job's submit time)
+    skips old logs without missing a run that was restarted.
+    """
+    log_dir = os.path.join(folder, ".snakemake", "log")
+    logs = []
+    try:
+        for name in os.listdir(log_dir):
+            if name.endswith(".snakemake.log"):
+                path = os.path.join(log_dir, name)
+                modified = os.path.getmtime(path)
+                if modified >= since:
+                    logs.append((modified, path))
+    except OSError:
+        return frozenset()
+    logs.sort(reverse=True)
+    job_ids: Set[str] = set()
+    for _, log in logs[:MAX_SNAKEMAKE_LOGS]:
+        try:
+            with open(log, errors="replace") as f:  # line by line: a big run's log can be huge
+                for line in f:
+                    m = SNAKEMAKE_SUBMIT_RE.search(line)
+                    if m:
+                        job_ids.add(m.group(1))
+        except OSError:
+            continue
+    return frozenset(job_ids)
+
+
+def find_job_origins(reports: Sequence[NodeReport], jobs: Sequence[Job]) -> Dict[str, JobOrigin]:
+    """For each job still in the queue, the zellij/tmux pane folder it was submitted from (if any).
+
+    If several panes sit in the same folder, the jobs go to a pane on the node
+    where snakemake is running in that folder right now; failing that, the first.
+    """
+    job_ids = {j.job_id for j in jobs}
+    submit_times = [j.submitted for j in jobs if j.submitted]
+    since = min(submit_times) - LOG_TIME_SLACK_SECONDS if submit_times else 0.0
+    panes = [(report, tool, session, folder)
+             for report in reports for tool, session, folder in report.panes]
+    panes.sort(key=lambda p: p[3] not in p[0].snakemake_folders)  # running snakemake first (stable)
+    origins: Dict[str, JobOrigin] = {}
+    for report, tool, session, folder in panes:
+        for job_id in sorted(snakemake_submitted_jobs(folder, since) & job_ids):
+            origins.setdefault(job_id, JobOrigin(report.node, tool, session, folder))
+    return origins
+
+
+# ---------------------------------------------------------------- collecting
+
+SSH_OPTIONS = (
+    "-T",                                  # no pseudo-terminal, even if ~/.ssh/config says RequestTTY force
+    "-o", "ClearAllForwardings=yes",       # ignore port/X forwards from ~/.ssh/config
+    "-o", "BatchMode=yes",                 # never stop to ask for a password
+    "-o", "ConnectTimeout=5",
+    "-o", "StrictHostKeyChecking=accept-new",  # first visit to a node: trust it instead of asking
+    "-o", "LogLevel=ERROR",                # hide the login banner but keep real errors
+)
+
+
+def explain_ssh_failure(node: str, stderr: str, returncode: int) -> NodeReport:
+    """A NodeReport saying why ssh to `node` failed, in plain words."""
+    if "Permission denied" in stderr:
+        number = node[-2:].lstrip("0")
+        return NodeReport(node=node, needs_ssh_key=True,
+                          error=f"no access yet: you need to log in to this node once first "
+                                f"(mqnodes --switch {number})")
+    if "Host key verification failed" in stderr:
+        return NodeReport(node=node, error="its ssh host key changed (see ~/.ssh/known_hosts)")
+    if "Could not resolve hostname" in stderr:
+        return NodeReport(node=node, error="unknown host name")
+    reason = stderr.strip().splitlines()[-1:] or [f"ssh exit code {returncode}"]
+    return NodeReport(node=node, error=f"unreachable ({reason[0]})")
+
+
+def scan_node(node: str, local_host: str) -> NodeReport:
+    """Run NODE_SCRIPT on `node` (directly if we're already on it, so no ssh is needed)."""
+    if node == local_host:
+        cmd = ["bash", "-s"]
+    else:
+        cmd = ["ssh", *SSH_OPTIONS, f"{node}.{NODE_DOMAIN}", "bash", "-s"]
+    try:
+        proc = subprocess.run(cmd, input=NODE_SCRIPT, capture_output=True,
+                              text=True, timeout=SSH_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as e:
+        partial = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+        if not partial.startswith("load\t") and "\nload\t" not in partial:
+            return NodeReport(node=node, error=f"timed out after {SSH_TIMEOUT_SECONDS}s")
+        # most of the answer arrived: show it, and say that something is missing
+        report = parse_node_output(node, partial)
+        slow = f"only partly answered within {SSH_TIMEOUT_SECONDS}s, so some sessions may be missing"
+        return replace(report, warning="; ".join(filter(None, [report.warning, slow])))
+    except OSError as e:
+        return NodeReport(node=node, error=str(e))
+    if proc.returncode != 0 and not proc.stdout:
+        return explain_ssh_failure(node, proc.stderr, proc.returncode)
+    return parse_node_output(node, proc.stdout)
+
+
+def fetch_job_batch(batch: Sequence[str]) -> JobReport:
+    # qstat exits non-zero if a job finished since qselect, which is fine;
+    # only give up if it printed nothing at all.
+    proc = subprocess.run(["qstat", "-f", "-F", "json", *batch], capture_output=True, text=True)
+    if not proc.stdout.strip():
+        return JobReport(error=f"qstat failed: {proc.stderr.strip()}")
+    try:
+        return JobReport(tuple(parse_jobs_json(proc.stdout)))
+    except json.JSONDecodeError as e:
+        return JobReport(error=f"could not read qstat output: {e}")
+
+
+def fetch_jobs(user: str) -> JobReport:
+    try:
+        ids = subprocess.run(["qselect", "-u", user], capture_output=True,
+                             text=True, check=True).stdout.split()
+    except (OSError, subprocess.CalledProcessError) as e:
+        return JobReport(error=f"qselect failed: {e}")
+    batches = [ids[i:i + QSTAT_BATCH_SIZE] for i in range(0, len(ids), QSTAT_BATCH_SIZE)]
+    with ThreadPoolExecutor(max_workers=QSTAT_PARALLEL) as pool:  # a big queue is many batches
+        results = list(pool.map(fetch_job_batch, batches))
+    jobs = tuple(sorted((j for r in results for j in r.jobs), key=lambda job: job.job_id))
+    return JobReport(jobs, next((r.error for r in results if r.error), None))
+
+
+def load_jobs_file(path: str) -> JobReport:
+    with open(path) as f:
+        return JobReport(tuple(parse_jobs_json(f.read())))
+
+
+# ---------------------------------------------------------------- printing
+
+def bar(fraction: float) -> str:
+    fraction = min(max(fraction, 0.0), 1.0)
+    filled = round(fraction * BAR_WIDTH)
+    colour = (Colors.RED if fraction >= HIGH_FRACTION
+              else Colors.YELLOW if fraction >= MID_FRACTION else Colors.GREEN)
+    return f"{colour}{'█' * filled}{Colors.ENDC}{'░' * (BAR_WIDTH - filled)} {fraction * 100:5.1f}%"
+
+
+def human_age(seconds: float) -> str:
+    seconds = int(seconds)
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {rem // 60}m"
+    return f"{rem // 60}m"
+
+
+def render_nodes(reports: Sequence[NodeReport], local_host: str) -> List[str]:
+    out = [f"{Colors.BOLD}=== LOGIN NODES ==={Colors.ENDC}",
+           f"   {'Node':<11} {'Load':>11}  {'Memory':<{BAR_WIDTH + 7}}  {'Users':>5}  Sessions",
+           f"   {'-' * 11} {'-' * 11}  {'-' * (BAR_WIDTH + 7)}  {'-' * 5}  {'-' * 8}"]
+    for r in reports:
+        marker = f"{Colors.CYAN}->{Colors.ENDC} " if r.node == local_host else "   "
+        if r.error:
+            out.append(f"{marker}{r.node:<11} {Colors.RED}{r.error}{Colors.ENDC}")
+            continue
+        mem_used = 1 - r.mem_avail_kb / r.mem_total_kb if r.mem_total_kb else 0.0
+        load = f"{r.load1:.1f}/{r.ncpu}"
+        live = f"{len(r.sessions)} live" if r.sessions else f"{Colors.DIM}-{Colors.ENDC}"
+        out.append(f"{marker}{r.node:<11} {load:>11}  {bar(mem_used)}  {r.users:>5}  {live}")
+    if local_host not in {r.node for r in reports}:
+        out.append(f"{Colors.DIM}(you are on {local_host}, not a login node){Colors.ENDC}")
+    if any(r.needs_ssh_key for r in reports):
+        out += [""] + ssh_key_help()
+    return out
+
+
+def ssh_key_help(ssh_dir: Optional[str] = None) -> List[str]:
+    """How to let mqnodes log in to the other login nodes without a password.
+
+    Logging in to any login node by hand makes aqua create your key and allow it
+    (/etc/profile.d/ssh-oscar.sh), and home folders are shared between the login
+    nodes, so that one login covers all four. The manual commands are a fallback
+    for an account where that did not happen.
+    """
+    ssh_dir = ssh_dir or os.path.expanduser("~/.ssh")
+    existing = next((name for name in ("id_ed25519.pub", "id_rsa.pub", "id_ecdsa.pub")
+                     if os.path.isfile(os.path.join(ssh_dir, name))), None)
+    lines = [f"{Colors.YELLOW}You haven't been given access to some login nodes yet. Log in to one once, e.g."
+             f" `mqnodes --switch 2` (aqua sets up your ssh key for all four), then run mqnodes again.{Colors.ENDC}",
+             f"{Colors.DIM}If that doesn't help, set the key up by hand:{Colors.ENDC}"]
+    if existing is None:
+        existing = "id_ed25519.pub"
+        lines.append("    ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519")
+    lines.append(f"    cat ~/.ssh/{existing} >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys")
+    return lines
+
+
+def current_sessions() -> Dict[str, str]:
+    """The zellij/tmux session this terminal is inside, if any: {tool: session name}."""
+    current = {}
+    if os.environ.get("ZELLIJ_SESSION_NAME"):
+        current["zellij"] = os.environ["ZELLIJ_SESSION_NAME"]
+    if os.environ.get("TMUX"):
+        try:
+            name = subprocess.run(["tmux", "display-message", "-p", "#S"], capture_output=True,
+                                  text=True, timeout=5).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            name = ""
+        if name:
+            current["tmux"] = name
+    return current
+
+
+def render_session_table(sessions: Sequence[Tuple[str, Session]], local_host: str,
+                         current: Optional[Dict[str, str]] = None) -> List[str]:
+    width = max(len("Session"), *(len(s.name) for _, s in sessions))
+    out = [f"{'Node':<11} {'Tool':<6} {'Session':<{width}}  {'Started':<16}  {'Age':>7}  Status",
+           f"{'-' * 11} {'-' * 6} {'-' * width}  {'-' * 16}  {'-' * 7}  {'-' * 12}"]
+    current = current or {}
+    now = time.time()
+    for node, s in sessions:
+        started = datetime.fromtimestamp(s.started).strftime("%Y-%m-%d %H:%M") if s.started else "?"
+        age = human_age(now - s.started) if s.started else "?"
+        if node == local_host and current.get(s.tool) == s.name:
+            status = f"{Colors.CYAN}current{Colors.ENDC}"
+        elif s.clients:
+            status = f"{Colors.YELLOW}{s.clients} attached{Colors.ENDC}"
+        else:
+            status = f"{Colors.GREEN}detached{Colors.ENDC}"
+        out.append(f"{node:<11} {s.tool:<6} {s.name:<{width}}  {started:<16}  {age:>7}  {status}")
+    return out
+
+
+def render_pane_table(reports: Sequence[NodeReport], origins: Dict[str, JobOrigin],
+                      jobs: Sequence[Job]) -> List[str]:
+    """One row per pane folder, with how many jobs came from it."""
+    kind_of = {j.job_id: j.kind for j in jobs}
+    kinds_by_folder: Dict[Tuple[str, str, str, str], Counter] = {}
+    for job_id, o in origins.items():
+        if job_id in kind_of:
+            kinds_by_folder.setdefault((o.node, o.tool, o.session, o.folder), Counter())[kind_of[job_id]] += 1
+
+    rows = []
+    for r in reports:
+        for s in r.sessions:
+            label = f"{s.name} ({s.tool})"
+            for i, folder in enumerate(r.folders(s) or ["?"]):
+                counts = kinds_by_folder.get((r.node, s.tool, s.name, folder), Counter())
+                rows.append((label if i == 0 else "", "?" if folder == "?" else describe_folder(folder),
+                             counts["running"], counts["queued"]))
+    if not rows:
+        return []
+    sw = max(len("Session"), *(len(row[0]) for row in rows))
+    fw = max(len("Panel folder"), *(len(row[1]) for row in rows))
+
+    def count(n: int, colour: str) -> str:
+        return f"{colour}{n:>5}{Colors.ENDC}" if n else f"{Colors.DIM}{'-':>5}{Colors.ENDC}"
+
+    rule = f"{'-' * sw}  {'-' * fw}  {'-' * 5} {'-' * 5}"
+    out = [f"{'Session':<{sw}}  {'Panel folder':<{fw}}  {'Run':>5} {'Queue':>5}", rule]
+    for i, (session, folder, running, queued) in enumerate(rows):
+        if session and i > 0:  # a new session starts: separate it from the one above
+            out.append(f"{Colors.DIM}{rule}{Colors.ENDC}")
+        out.append(f"{session:<{sw}}  {folder:<{fw}}  "
+                   f"{count(running, Colors.GREEN)} {count(queued, Colors.YELLOW)}")
+    return out
+
+
+ATTACH_COMMANDS = {"zellij": "zellij attach <session>", "tmux": "tmux attach -t <session>"}
+
+
+def render_sessions(reports: Sequence[NodeReport], local_host: str,
+                    origins: Optional[Dict[str, JobOrigin]] = None,
+                    jobs: Sequence[Job] = (),
+                    current: Optional[Dict[str, str]] = None) -> List[str]:
+    out = [f"{Colors.BOLD}=== SESSIONS (zellij + tmux) ==={Colors.ENDC}"]
+    out += [f"{Colors.RED}{r.node}: {r.warning}{Colors.ENDC}" for r in reports if r.warning]
+    unchecked = [r.node for r in reports if r.error]
+    if unchecked:
+        out.append(f"{Colors.YELLOW}Not checked (see LOGIN NODES): {', '.join(unchecked)}{Colors.ENDC}")
+    sessions = [(r.node, s) for r in reports for s in r.sessions]
+    if not sessions:
+        out.append("No live zellij or tmux sessions on the nodes that were checked." if unchecked
+                   else "No live zellij or tmux sessions on any login node.")
+    else:
+        out += render_session_table(sessions, local_host, current)
+        out += [""] + render_pane_table(reports, origins or {}, jobs)
+        out.append("")
+        for tool in sorted({s.tool for _, s in sessions}, key=list(ATTACH_COMMANDS).index):
+            out.append(f"{Colors.DIM}Attach ({tool}): ssh -t <node>.{NODE_DOMAIN} {ATTACH_COMMANDS[tool]}{Colors.ENDC}")
+        # Sessions from a different zellij version than plain `zellij` don't show up in
+        # `zellij ls` or attach, so give their exact command.
+        for node, s in sessions:
+            if s.attach_with and s.attach_with != s.tool:
+                out.append(f"{Colors.YELLOW}{s.name} was started by a different zellij version "
+                           f"(plain `zellij` can't see it): ssh -t {node}.{NODE_DOMAIN} "
+                           f"{shorten_home(s.attach_with)} attach {s.name}{Colors.ENDC}")
+
+    # Old zellij sessions are saved in your (shared) home folder, so every node
+    # lists the same ones. Count each once, leaving out any running somewhere.
+    live_names = {s.name for _, s in sessions if s.tool == "zellij"}
+    exited = {name for r in reports for name in r.exited} - live_names
+    if exited:
+        out.append(f"{Colors.DIM}{len(exited)} exited zellij sessions can be brought back (zellij ls on any node){Colors.ENDC}")
+    return out
+
+
+def render_job_summary(report: JobReport, user: str, traced: int = 0) -> List[str]:
+    out = [f"{Colors.BOLD}=== JOBS ({user}) ==={Colors.ENDC}"]
+    if report.error:
+        out.append(f"{Colors.RED}{report.error}{Colors.ENDC}")
+    jobs = report.jobs
+    kinds = Counter(j.kind for j in jobs)
+    out.append(f"Jobs: {Colors.CYAN}{kinds['interactive']} interactive{Colors.ENDC}, "
+               f"{Colors.GREEN}{kinds['running']} running{Colors.ENDC}, "
+               f"{Colors.YELLOW}{kinds['queued']} queued{Colors.ENDC}  ({len(jobs)} total)")
+    if traced:
+        out.append(f"{traced} of {len(jobs)} traced to a zellij/tmux pane (via snakemake logs)")
+    if not jobs:
+        return out
+    by_host: Dict[str, Counter] = {}
+    for j in jobs:
+        by_host.setdefault(j.submit_host, Counter())[j.kind] += 1
+    out += ["",
+            f"{'Submitted from':<14} {'Int':>5} {'Run':>5} {'Queue':>5}",
+            f"{'-' * 14} {'-' * 5} {'-' * 5} {'-' * 5}"]
+    for host in sorted(by_host):
+        c = by_host[host]
+        out.append(f"{host:<14} {c['interactive']:>5} {c['running']:>5} {c['queued']:>5}")
+    return out
+
+
+# ---------------------------------------------------------------- main
+
+NODE_CHOICE_RE = re.compile(r"^(?:aquarius|aqua)?0?([1-4])(?:\.\S+)?$", re.IGNORECASE)
+
+
+def parse_node_choice(text: str) -> str:
+    """'3', '03', 'aqua3', 'aquarius03' or 'aquarius03.qut.edu.au' -> 'aquarius03'."""
+    m = NODE_CHOICE_RE.match(text.strip())
+    if not m:
+        raise argparse.ArgumentTypeError(
+            f"{text!r} is not a login node; use 1-4 or {LOGIN_NODES[0]}-{LOGIN_NODES[-1][-2:]}")
+    return LOGIN_NODES[int(m.group(1)) - 1]
+
+
+def switch_command(node: str, folder: str) -> List[str]:
+    """The ssh command that opens a login shell on `node`, in `folder` if it exists there.
+
+    Deliberately not run in batch mode: if there is no key that works, ssh
+    asks for the password itself, which is what you want when logging in by hand.
+    Home and /work are shared between the login nodes, so `folder` normally exists.
+    """
+    remote = f"cd {shlex.quote(folder)} 2>/dev/null || cd; exec \"$SHELL\" -l"
+    return ["ssh", "-t", "-o", "StrictHostKeyChecking=accept-new", f"{node}.{NODE_DOMAIN}", remote]
+
+
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--switch", type=parse_node_choice, metavar="NODE",
+                   help="log in to another login node (1-4, aqua3 or aquarius03) in the current folder")
+    p.add_argument("--qstat-json-file", help=argparse.SUPPRESS)  # for tests: read jobs from a file
+    p.add_argument("--no-nodes", action="store_true", help=argparse.SUPPRESS)  # for tests: skip ssh
+    return p.parse_args(argv)
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    args = parse_args(argv)
+    if not sys.stdout.isatty():
+        Colors.disable()
+    local_host = short_host(socket.gethostname())
+    if args.switch:
+        if args.switch == local_host:
+            print(f"You are already on {local_host}.")
+            return 0
+        try:
+            here = os.getcwd()
+        except OSError:  # the folder you're in has been deleted
+            here = os.path.expanduser("~")
+        command = switch_command(args.switch, here)
+        print(f"Logging in to {args.switch} (exit to come back to {local_host})...", flush=True)
+        os.execvp(command[0], command)  # replaces this process, so ssh owns the terminal
+    user = getpass.getuser()  # always whoever runs it: sessions are only visible to their owner
+    nodes = [] if args.no_nodes else list(LOGIN_NODES)
+
+    with ThreadPoolExecutor(max_workers=len(nodes) + 1) as pool:
+        job_future = pool.submit(load_jobs_file if args.qstat_json_file else fetch_jobs,
+                                 args.qstat_json_file or user)
+        reports = list(pool.map(lambda n: scan_node(n, local_host), nodes))
+        job_report = job_future.result()
+
+    origins = find_job_origins(reports, job_report.jobs)
+
+    lines: List[str] = []
+    if reports:
+        lines += render_nodes(reports, local_host) + [""]
+        lines += render_sessions(reports, local_host, origins, job_report.jobs, current_sessions()) + [""]
+    lines += render_job_summary(job_report, user, traced=len(origins))
+    print("\n".join(lines))
+    return 1 if job_report.error or any(r.error for r in reports) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
