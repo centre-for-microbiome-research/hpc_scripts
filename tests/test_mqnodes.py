@@ -144,12 +144,22 @@ def test_git_checkout_wins_over_a_pixi_project_inside_it(tmp_path):
     assert mq.describe_folder(str(checkout)) == "singlem-myversion"
 
 
-def test_a_home_folder_is_never_treated_as_a_repo(tmp_path):
-    home = tmp_path / "home" / "someone"
+def test_your_home_folder_is_never_treated_as_a_repo(tmp_path, monkeypatch):
+    home = tmp_path / "users" / "someone"  # not under a folder called "home"
     (home / ".git").mkdir(parents=True)
     (home / "work").mkdir()
+    monkeypatch.setenv("HOME", str(home))
     clear_caches()
     assert mq.find_repo_root(str(home / "work")) == ""
+    assert mq.find_repo_root(str(home)) == ""
+
+
+def test_a_repo_below_a_folder_called_home_is_still_found(tmp_path, monkeypatch):
+    repo = tmp_path / "scratch" / "home" / "project"
+    (repo / ".git").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path / "elsewhere"))
+    clear_caches()
+    assert mq.find_repo_root(str(repo)) == str(repo)
 
 
 # ---------------------------------------------------------------- matching jobs to panes
@@ -335,7 +345,9 @@ def test_node_script_reports_tmux_sessions_and_pane_folders(tmp_path):
 def test_ssh_failures_are_explained_in_plain_words():
     no_key = mq.explain_ssh_failure(
         "aquarius01", "herholdt@aquarius01: Permission denied (publickey,password).\n", 255)
-    assert no_key.needs_ssh_key and "no ssh key" in no_key.error
+    assert no_key.needs_ssh_key
+    assert no_key.error == "no access yet: you need to log in to this node once first (mqnodes --switch 1)"
+    assert "(mqnodes --switch 4)" in mq.explain_ssh_failure("aquarius04", "Permission denied", 255).error
     assert "host key changed" in mq.explain_ssh_failure("a", "Host key verification failed.\n", 255).error
     assert mq.explain_ssh_failure("a", "ssh: Could not resolve hostname a: x\n", 255).error == "unknown host name"
     other = mq.explain_ssh_failure("a", "", 255)
@@ -354,12 +366,13 @@ def test_key_help_creates_a_key_only_when_there_is_none(tmp_path):
 
 
 def test_nodes_without_a_key_still_show_the_rest():
-    reports = [mq.NodeReport("aquarius01", error="can't log in without a password (no ssh key)",
+    reports = [mq.NodeReport("aquarius01", error="no access yet: you need to log in to this node once first",
                              needs_ssh_key=True),
                mq.NodeReport("aquarius04", load1=1.0, ncpu=40, mem_total_kb=100, mem_avail_kb=50,
                              sessions=(zellij("here"),), panes=(("zellij", "here", "/x"),))]
     nodes = "\n".join(mq.render_nodes(reports, "aquarius04"))
     assert "-> aquarius04" in nodes and "authorized_keys" in nodes
+    assert "no access yet" in nodes and "mqnodes --switch 2" in nodes
     sessions = "\n".join(mq.render_sessions(reports, "aquarius04"))
     assert "Not checked (see LOGIN NODES): aquarius01" in sessions
     assert "aquarius04  zellij here" in sessions
@@ -424,3 +437,129 @@ def test_switch_to_the_node_you_are_on_does_nothing(monkeypatch, capsys):
     monkeypatch.setattr(mq.socket, "gethostname", lambda: "aquarius03.qut.edu.au")
     assert mq.main(["--switch", "aqua3"]) == 0
     assert calls == [] and "already on aquarius03" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- things that could break for other users
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed")
+def test_a_frozen_tmux_server_does_not_stop_the_node_scan(tmp_path):
+    """SIGSTOP a real tmux server: its clients would wait forever without the time limit."""
+    env = {**os.environ, "TMUX_TMPDIR": str(tmp_path)}
+    env.pop("TMUX", None)
+    subprocess.run(["tmux", "new-session", "-d", "-s", "frozen"], env=env, check=True)
+    pid = int(subprocess.run(["tmux", "display-message", "-p", "-t", "frozen", "#{pid}"],
+                             env=env, capture_output=True, text=True, check=True).stdout)
+    os.kill(pid, 19)  # SIGSTOP
+    try:
+        started = time.time()
+        out = subprocess.run(["bash", "-s"], input=mq.NODE_SCRIPT, text=True, env=env,
+                             capture_output=True, timeout=60).stdout.splitlines()
+        took = time.time() - started
+    finally:
+        os.kill(pid, 18)  # SIGCONT, so it can be shut down
+        subprocess.run(["tmux", "kill-server"], env=env)
+    assert took < 20, f"scan took {took:.0f}s"
+    assert any(l.startswith("load\t") for l in out)  # the rest of the node still reported
+    assert any(l.startswith("warning\ttmux server") and "did not answer" in l for l in out)
+
+
+def test_a_node_that_answers_only_partly_still_shows_what_arrived(monkeypatch):
+    partial = "load\t2.0\t40\nmem\t100\t50\nusers\t3\nsession\ttmux\tt\t10\t0\ttmux\n"
+
+    def slow(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, 20, output=partial.encode())
+
+    monkeypatch.setattr(mq.subprocess, "run", slow)
+    report = mq.scan_node("aquarius02", "elsewhere")
+    assert report.error is None and report.users == 3 and [s.name for s in report.sessions] == ["t"]
+    assert "only partly answered" in report.warning
+
+
+def test_a_node_that_says_nothing_is_reported_as_timed_out(monkeypatch):
+    def slow(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, 20, output=None)
+
+    monkeypatch.setattr(mq.subprocess, "run", slow)
+    assert "timed out" in mq.scan_node("aquarius02", "elsewhere").error
+
+
+def test_scan_ssh_never_asks_for_a_terminal_or_password(monkeypatch):
+    seen = {}
+
+    def fake(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="load\t1.0\t4\n", stderr="")
+
+    monkeypatch.setattr(mq.subprocess, "run", fake)
+    mq.scan_node("aquarius02", "elsewhere")
+    cmd = seen["cmd"]
+    assert "-T" in cmd and "BatchMode=yes" in cmd and "ClearAllForwardings=yes" in cmd
+
+
+def test_several_warnings_from_one_node_are_all_kept():
+    r = mq.parse_node_output("aquarius01", "warning\ttmux server \"x\" did not answer\nwarning\tzellij not found")
+    assert r.warning == 'tmux server "x" did not answer; zellij not found'
+
+
+def test_a_huge_snakemake_log_is_read_without_loading_it_whole(tmp_path):
+    log_dir = tmp_path / ".snakemake" / "log"
+    log_dir.mkdir(parents=True)
+    with open(log_dir / "big.snakemake.log", "w") as f:
+        f.write("Submitted job 1 with external jobid '1.aqua'.\n")
+        for _ in range(60000):
+            f.write("[Thu Oct 22 09:19:50 2026] rule noise: some long progress line " + "y" * 60 + "\n")
+        f.write("Submitted job 2 with external jobid '2.aqua'.\n")
+    clear_caches()
+    assert mq.snakemake_submitted_jobs(str(tmp_path), 0.0) == {"1.aqua", "2.aqua"}
+
+
+def test_a_big_queue_is_fetched_in_batches_and_put_back_together(monkeypatch):
+    import json
+    ids = [f"{n}.aqua" for n in range(1, 1201)]  # three batches of up to 500
+
+    def fake(cmd, **kwargs):
+        if cmd[0] == "qselect":
+            return subprocess.CompletedProcess(cmd, 0, stdout="\n".join(ids), stderr="")
+        jobs = {i: {"job_state": "Q", "Submit_Host": "aquarius01.x"} for i in cmd[4:]}
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"Jobs": jobs}), stderr="")
+
+    monkeypatch.setattr(mq.subprocess, "run", fake)
+    report = mq.fetch_jobs("someone")
+    assert report.error is None and len(report.jobs) == 1200
+    assert [j.job_id for j in report.jobs] == sorted(ids)
+
+
+def test_a_failed_batch_is_reported_but_the_others_are_kept(monkeypatch):
+    import json
+    ids = [f"{n}.aqua" for n in range(1, 1001)]
+
+    def fake(cmd, **kwargs):
+        if cmd[0] == "qselect":
+            return subprocess.CompletedProcess(cmd, 0, stdout="\n".join(ids), stderr="")
+        if cmd[4] == "501.aqua":
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="server busy")
+        jobs = {i: {"job_state": "R", "Submit_Host": "aquarius01"} for i in cmd[4:]}
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"Jobs": jobs}), stderr="")
+
+    monkeypatch.setattr(mq.subprocess, "run", fake)
+    report = mq.fetch_jobs("someone")
+    assert len(report.jobs) == 500 and "server busy" in report.error
+
+
+def test_no_jobs_at_all_is_not_an_error(monkeypatch):
+    monkeypatch.setattr(mq.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""))
+    assert mq.fetch_jobs("someone") == mq.JobReport()
+
+
+def test_switch_from_a_deleted_folder_lands_in_home(monkeypatch):
+    calls = []
+    monkeypatch.setattr(mq.os, "execvp", lambda prog, argv: calls.append(argv))
+    monkeypatch.setattr(mq.socket, "gethostname", lambda: "cpu1n001")
+
+    def gone():
+        raise FileNotFoundError("deleted")
+
+    monkeypatch.setattr(mq.os, "getcwd", gone)
+    mq.main(["--switch", "1"])
+    assert os.path.expanduser("~") in calls[0][-1]

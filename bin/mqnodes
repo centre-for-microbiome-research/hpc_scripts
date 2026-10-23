@@ -36,7 +36,7 @@ import sys
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -46,6 +46,7 @@ LOGIN_NODES = ("aquarius01", "aquarius02", "aquarius03", "aquarius04")
 NODE_DOMAIN = "qut.edu.au"
 SSH_TIMEOUT_SECONDS = 20  # per node, so one stuck login node can't hold up the report
 QSTAT_BATCH_SIZE = 500
+QSTAT_PARALLEL = 4  # at once; polite to the PBS server
 BAR_WIDTH = 20
 HIGH_FRACTION = 0.8
 MID_FRACTION = 0.5
@@ -79,6 +80,20 @@ printf 'load\t%s\t%s\n' "$load1" "$(nproc)"
 awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{printf "mem\t%s\t%s\n", t, a}' /proc/meminfo
 printf 'users\t%s\n' "$(who | awk '{print $1}' | sort -u | wc -l)"
 
+# A zellij/tmux server that is frozen would make its client wait forever, so every
+# call to one is cut off after a few seconds instead of losing the whole node.
+# The output goes through a file, not a pipe: tmux hands its stdout to the server,
+# so a frozen server keeps a pipe open and $(...) would wait for it even after the
+# client has been killed.
+if command -v timeout >/dev/null 2>&1; then tmo() { timeout 3 "$@"; }; else tmo() { "$@"; }; fi
+tmpfile=$(mktemp) && trap 'rm -f "$tmpfile"' EXIT
+tmo_out() {  # run a command with the time limit, print its output, keep its exit status
+    tmo "$@" >"$tmpfile" 2>/dev/null </dev/null
+    local rc=$?
+    cat "$tmpfile"
+    return $rc
+}
+
 runtime=${XDG_RUNTIME_DIR:-/tmp}
 checked=" "
 plain=$(readlink -f "$(command -v zellij 2>/dev/null)" 2>/dev/null)  # what typing `zellij` runs here
@@ -89,16 +104,19 @@ for zellij in "$(command -v zellij 2>/dev/null)" /work/microbiome/sw/zellij/zell
     real=$(readlink -f "$zellij")
     case "$checked" in *" $real "*) continue ;; esac
     checked="$checked$real "
-    "$zellij" list-sessions --no-formatting </dev/null 2>/dev/null | while IFS= read -r line; do
+    listing=$(tmo_out "$zellij" list-sessions --no-formatting)
+    if [ $? -eq 124 ]; then printf 'warning\t%s did not answer (a frozen session?)\n' "${zellij##*/}"; continue; fi
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
         name=${line%% \[Created*}
         case "$line" in *EXITED*) printf 'exited\t%s\n' "$name"; continue ;; esac
         sock=$(ls -d "$runtime"/zellij/*/"$name" /tmp/zellij-"$(id -u)"/*/"$name" 2>/dev/null | head -n 1)
         if [ -n "$sock" ]; then started=$(stat -c %Y "$sock"); else started=0; fi
-        clients=$("$zellij" -s "$name" action list-clients </dev/null 2>/dev/null | tail -n +2 | grep -c .)
+        clients=$(tmo_out "$zellij" -s "$name" action list-clients | tail -n +2 | grep -c .)
         # a session made by another zellij version is invisible to plain `zellij`
         if [ "$real" = "$plain" ]; then via=zellij; else via=$zellij; fi
         printf 'session\tzellij\t%s\t%s\t%s\t%s\n' "$name" "$started" "$clients" "$via"
-    done
+    done <<< "$listing"
 done
 [ "$checked" = " " ] && printf 'warning\tzellij not found (looked on PATH, in /work/microbiome/sw/zellij, ~/bin, ~/.cargo/bin and ~/.local/bin)\n'
 
@@ -116,14 +134,15 @@ if [ -n "$tmux" ]; then
         [ -S "$sock" ] || continue
         server=${sock##*/}
         label=""; [ "$server" = default ] || label=" [-L $server]"
-        "$tmux" -S "$sock" list-sessions -F '#{session_name}:#{session_created}:#{session_attached}' 2>/dev/null |
+        listing=$(tmo_out "$tmux" -S "$sock" list-sessions -F '#{session_name}:#{session_created}:#{session_attached}')
+        if [ $? -eq 124 ]; then printf 'warning\ttmux server "%s" did not answer (frozen?)\n' "$server"; continue; fi
         while IFS=: read -r name started clients; do
-            printf 'session\ttmux\t%s\t%s\t%s\ttmux\n' "$name$label" "$started" "$clients"
-        done
-        "$tmux" -S "$sock" list-panes -a -F '#{session_name}:#{pane_current_path}' 2>/dev/null |
+            [ -n "$name" ] && printf 'session\ttmux\t%s\t%s\t%s\ttmux\n' "$name$label" "$started" "$clients"
+        done <<< "$listing"
+        listing=$(tmo_out "$tmux" -S "$sock" list-panes -a -F '#{session_name}:#{pane_current_path}')
         while IFS=: read -r name folder; do  # tmux session names can't contain ':', folders can
-            printf 'pane\ttmux\t%s\t%s\n' "$name$label" "$folder"
-        done
+            [ -n "$name" ] && printf 'pane\ttmux\t%s\t%s\n' "$name$label" "$folder"
+        done <<< "$listing"
     done
 fi
 
@@ -226,6 +245,7 @@ def parse_node_output(node: str, text: str) -> NodeReport:
     exited: List[str] = []
     panes: Dict[Tuple[str, str, str], None] = {}  # ordered set: several panes can share a folder
     snakemake_folders: Set[str] = set()
+    warnings: List[str] = []
     for line in text.splitlines():
         kind, *values = line.split("\t")
         try:
@@ -246,11 +266,12 @@ def parse_node_output(node: str, text: str) -> NodeReport:
             elif kind == "snakemake" and len(values) == 1:
                 snakemake_folders.add(values[0])
             elif kind == "warning" and len(values) == 1:
-                fields["warning"] = values[0]
+                warnings.append(values[0])
         except ValueError:
             continue  # one garbled line shouldn't hide the rest of the node
     return NodeReport(node=node, sessions=tuple(sessions.values()), exited=tuple(exited),
-                      panes=tuple(panes), snakemake_folders=frozenset(snakemake_folders), **fields)
+                      panes=tuple(panes), snakemake_folders=frozenset(snakemake_folders),
+                      warning="; ".join(warnings) or None, **fields)
 
 
 def parse_pbs_time(value: Optional[str]) -> float:
@@ -281,12 +302,14 @@ def find_repo_root(folder: str) -> str:
 
     Git is preferred so a pixi project inside a checkout (e.g.
     singlem/extras/update_metapackage) is shown under the checkout's name,
-    which is what tells two clones apart. Home folders themselves don't count
-    (they're often a git repo of dotfiles). "" if nothing is found.
+    which is what tells two clones apart. Your home folder itself doesn't count
+    (it's often a git repo of dotfiles). "" if nothing is found.
     """
+    home = os.path.expanduser("~")
+    homes = {home, os.path.realpath(home)}  # /home/you and /mnt/hpccs01/home/you
     d = Path(folder)
     nearest_pixi = ""
-    while d.parent != d and d.parent.name != "home":
+    while d.parent != d and str(d) not in homes:
         if (d / ".git").exists():
             return str(d)
         if not nearest_pixi and (d / "pixi.toml").is_file():
@@ -336,8 +359,11 @@ def snakemake_submitted_jobs(folder: str, since: float = 0.0) -> FrozenSet[str]:
     job_ids: Set[str] = set()
     for _, log in logs[:MAX_SNAKEMAKE_LOGS]:
         try:
-            with open(log, errors="replace") as f:
-                job_ids.update(SNAKEMAKE_SUBMIT_RE.findall(f.read()))
+            with open(log, errors="replace") as f:  # line by line: a big run's log can be huge
+                for line in f:
+                    m = SNAKEMAKE_SUBMIT_RE.search(line)
+                    if m:
+                        job_ids.add(m.group(1))
         except OSError:
             continue
     return frozenset(job_ids)
@@ -365,6 +391,8 @@ def find_job_origins(reports: Sequence[NodeReport], jobs: Sequence[Job]) -> Dict
 # ---------------------------------------------------------------- collecting
 
 SSH_OPTIONS = (
+    "-T",                                  # no pseudo-terminal, even if ~/.ssh/config says RequestTTY force
+    "-o", "ClearAllForwardings=yes",       # ignore port/X forwards from ~/.ssh/config
     "-o", "BatchMode=yes",                 # never stop to ask for a password
     "-o", "ConnectTimeout=5",
     "-o", "StrictHostKeyChecking=accept-new",  # first visit to a node: trust it instead of asking
@@ -375,8 +403,10 @@ SSH_OPTIONS = (
 def explain_ssh_failure(node: str, stderr: str, returncode: int) -> NodeReport:
     """A NodeReport saying why ssh to `node` failed, in plain words."""
     if "Permission denied" in stderr:
-        return NodeReport(node=node, error="can't log in without a password (no ssh key)",
-                          needs_ssh_key=True)
+        number = node[-2:].lstrip("0")
+        return NodeReport(node=node, needs_ssh_key=True,
+                          error=f"no access yet: you need to log in to this node once first "
+                                f"(mqnodes --switch {number})")
     if "Host key verification failed" in stderr:
         return NodeReport(node=node, error="its ssh host key changed (see ~/.ssh/known_hosts)")
     if "Could not resolve hostname" in stderr:
@@ -394,13 +424,31 @@ def scan_node(node: str, local_host: str) -> NodeReport:
     try:
         proc = subprocess.run(cmd, input=NODE_SCRIPT, capture_output=True,
                               text=True, timeout=SSH_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
-        return NodeReport(node=node, error=f"timed out after {SSH_TIMEOUT_SECONDS}s")
+    except subprocess.TimeoutExpired as e:
+        partial = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+        if not partial.startswith("load\t") and "\nload\t" not in partial:
+            return NodeReport(node=node, error=f"timed out after {SSH_TIMEOUT_SECONDS}s")
+        # most of the answer arrived: show it, and say that something is missing
+        report = parse_node_output(node, partial)
+        slow = f"only partly answered within {SSH_TIMEOUT_SECONDS}s, so some sessions may be missing"
+        return replace(report, warning="; ".join(filter(None, [report.warning, slow])))
     except OSError as e:
         return NodeReport(node=node, error=str(e))
     if proc.returncode != 0 and not proc.stdout:
         return explain_ssh_failure(node, proc.stderr, proc.returncode)
     return parse_node_output(node, proc.stdout)
+
+
+def fetch_job_batch(batch: Sequence[str]) -> JobReport:
+    # qstat exits non-zero if a job finished since qselect, which is fine;
+    # only give up if it printed nothing at all.
+    proc = subprocess.run(["qstat", "-f", "-F", "json", *batch], capture_output=True, text=True)
+    if not proc.stdout.strip():
+        return JobReport(error=f"qstat failed: {proc.stderr.strip()}")
+    try:
+        return JobReport(tuple(parse_jobs_json(proc.stdout)))
+    except json.JSONDecodeError as e:
+        return JobReport(error=f"could not read qstat output: {e}")
 
 
 def fetch_jobs(user: str) -> JobReport:
@@ -409,20 +457,11 @@ def fetch_jobs(user: str) -> JobReport:
                              text=True, check=True).stdout.split()
     except (OSError, subprocess.CalledProcessError) as e:
         return JobReport(error=f"qselect failed: {e}")
-    jobs: List[Job] = []
-    for i in range(0, len(ids), QSTAT_BATCH_SIZE):
-        batch = ids[i:i + QSTAT_BATCH_SIZE]
-        # qstat exits non-zero if a job finished since qselect, which is fine;
-        # only give up if it printed nothing at all.
-        proc = subprocess.run(["qstat", "-f", "-F", "json", *batch],
-                              capture_output=True, text=True)
-        if not proc.stdout.strip():
-            return JobReport(tuple(jobs), f"qstat failed: {proc.stderr.strip()}")
-        try:
-            jobs.extend(parse_jobs_json(proc.stdout))
-        except json.JSONDecodeError as e:
-            return JobReport(tuple(jobs), f"could not read qstat output: {e}")
-    return JobReport(tuple(jobs))
+    batches = [ids[i:i + QSTAT_BATCH_SIZE] for i in range(0, len(ids), QSTAT_BATCH_SIZE)]
+    with ThreadPoolExecutor(max_workers=QSTAT_PARALLEL) as pool:  # a big queue is many batches
+        results = list(pool.map(fetch_job_batch, batches))
+    jobs = tuple(sorted((j for r in results for j in r.jobs), key=lambda job: job.job_id))
+    return JobReport(jobs, next((r.error for r in results if r.error), None))
 
 
 def load_jobs_file(path: str) -> JobReport:
@@ -474,14 +513,17 @@ def render_nodes(reports: Sequence[NodeReport], local_host: str) -> List[str]:
 def ssh_key_help(ssh_dir: Optional[str] = None) -> List[str]:
     """How to let mqnodes log in to the other login nodes without a password.
 
-    Home folders are shared between the login nodes, so adding your own key to
-    your own authorized_keys once works for all of them.
+    Logging in to any login node by hand makes aqua create your key and allow it
+    (/etc/profile.d/ssh-oscar.sh), and home folders are shared between the login
+    nodes, so that one login covers all four. The manual commands are a fallback
+    for an account where that did not happen.
     """
     ssh_dir = ssh_dir or os.path.expanduser("~/.ssh")
     existing = next((name for name in ("id_ed25519.pub", "id_rsa.pub", "id_ecdsa.pub")
                      if os.path.isfile(os.path.join(ssh_dir, name))), None)
-    lines = [f"{Colors.YELLOW}To see the other login nodes, let yourself log in to them without a password"
-             f" (one-off; your home folder is shared, so this covers all of them):{Colors.ENDC}"]
+    lines = [f"{Colors.YELLOW}You haven't been given access to some login nodes yet. Log in to one once, e.g."
+             f" `mqnodes --switch 2` (aqua sets up your ssh key for all four), then run mqnodes again.{Colors.ENDC}",
+             f"{Colors.DIM}If that doesn't help, set the key up by hand:{Colors.ENDC}"]
     if existing is None:
         existing = "id_ed25519.pub"
         lines.append("    ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519")
@@ -667,7 +709,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.switch == local_host:
             print(f"You are already on {local_host}.")
             return 0
-        command = switch_command(args.switch, os.getcwd())
+        try:
+            here = os.getcwd()
+        except OSError:  # the folder you're in has been deleted
+            here = os.path.expanduser("~")
+        command = switch_command(args.switch, here)
         print(f"Logging in to {args.switch} (exit to come back to {local_host})...", flush=True)
         os.execvp(command[0], command)  # replaces this process, so ssh owns the terminal
     user = getpass.getuser()  # always whoever runs it: sessions are only visible to their owner
