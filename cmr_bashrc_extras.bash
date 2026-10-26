@@ -48,3 +48,32 @@ fi
 
 # Add mqinteractive as an alias, so that the history is saved before running mqinteractive
 alias mqinteractive='history -a; real-mqinteractive'
+# qsub -I does not propagate window resizes, so the pty keeps the size from when the job started.
+# Ask the terminal for its real size (CSI 18t) and apply it. Run by hand after resizing the window.
+mqfixsize() {
+  local reply rows cols
+  printf '\e[18t'
+  if read -r -s -d t -t 2 reply; then
+    reply=${reply#*;}; rows=${reply%%;*}; cols=${reply#*;}
+    [[ $rows =~ ^[0-9]+$ && $cols =~ ^[0-9]+$ ]] && stty rows "$rows" cols "$cols"
+  fi
+}
+
+# Run mqyolo in a new tmux session, so ctrl characters work correctly within interactive PBS jobs
+mqyt() {
+  mqfixsize
+  tmux new-session -s "mqyolo-${PWD##*/}-$(printf '%02d' $((RANDOM % 100)))" -c "$PWD" mqyolo "$@"
+}
+
+# Run htop in a new tmux session, so ctrl characters work correctly within interactive PBS jobs
+mqhtop() {
+  mqfixsize
+  tmux new-session -s "mqhtop-$(printf '%02d' $((RANDOM % 100)))" -c "$PWD" htop "$@"
+}
+
+
+# Run htop in a new tmux session, so ctrl characters work correctly within interactive PBS jobs
+mqhtopme() {
+  mqfixsize
+  tmux new-session -s "mqhtop-$(printf '%02d' $((RANDOM % 100)))" -c "$PWD" htop -u $USER "$@"
+}
