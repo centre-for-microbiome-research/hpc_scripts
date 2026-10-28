@@ -244,7 +244,12 @@ Key invariants the tests guard (keep them true):
   --setup-opencode` and mqyolo's opencode launch warn about any stored
   `amazon-bedrock` account that is not an AWS-profile login on the expected
   profile (for mqyolo: the staged one; a non-profile login only matters when our
-  config is selected). Neither logs the account out — that is the user's call,
+  config is selected). The refresh path repeats the `--setup-opencode` warning
+  once a generated config exists, since running `mqbedrock` is the documented
+  fix for an expired opencode key and would otherwise succeed without helping.
+  (A warning on the expired SSO token itself would be noise: that token lasts
+  ~1h, so it is expired on almost every refresh — the state mqbedrock exists to
+  work around.) Neither logs the account out — that is the user's call,
   via `opencode auth logout`. The same probe replaced mqyolo's `auth.json` check
   for "opencode has no credentials", which had silently stopped matching in 2.x.
 - **opencode's `--auto` is declared per command, so mqyolo cannot just prefix it.**

@@ -739,3 +739,17 @@ fi
 with_creds_lock write_static_keys
 
 echo "$STATIC_PROFILE profile refreshed, expires $(jq -r .Expiration <<<"$creds")"
+
+# Running mqbedrock is the documented fix for an expired opencode credential, so
+# say when it cannot be one: a stored opencode Bedrock account means opencode
+# never reads the keys just written (see opencode_bedrock_accounts). Its usual
+# symptom, "Token is expired", is about the SSO login rather than these keys, so
+# without this the refresh succeeds and opencode stays broken with no clue why.
+# Only when --setup-opencode has been run, i.e. opencode is meant to use this
+# profile: an account stored by someone not using our config is their own setup.
+for f in "${XDG_CONFIG_HOME:-$HOME/.config}"/opencode/*.json; do
+  if [[ -f $f ]] && grep -qF "$OPENCODE_MARKER" "$f"; then
+    warn_opencode_bedrock_accounts "$f"
+    break
+  fi
+done

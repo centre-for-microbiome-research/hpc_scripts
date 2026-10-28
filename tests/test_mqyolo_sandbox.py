@@ -2876,6 +2876,31 @@ def test_mqbedrock_setup_opencode_accepts_an_account_on_the_static_profile(tmp_p
     assert "stored Amazon Bedrock account" not in p.stderr
 
 
+def test_mqbedrock_refresh_says_when_opencode_will_not_use_it(tmp_path):
+    # Running mqbedrock is the fix for an expired opencode credential — except
+    # when a stored account means opencode never reads the refreshed profile.
+    # The refresh itself still succeeds; it just says so.
+    home, env = _mqbedrock_refresh_home(
+        tmp_path, "[bedrock]\naws_access_key_id = AKIA_OLD\n", AWS_STUB_LOGGING_SETS)
+    env["MQBEDROCK_TEST_LOG"] = str(tmp_path / "sets.log")
+    env.pop("XDG_CONFIG_HOME", None)
+    env.pop("XDG_DATA_HOME", None)
+    _opencode_store_account(home, "amazon-bedrock", _sso_profile_account())
+
+    # opencode was never pointed at this profile: its account is its own business.
+    p = _run_mqbedrock(env)
+    assert p.returncode == 0, p.stderr
+    assert "stored Amazon Bedrock account" not in p.stderr
+
+    assert _setup_opencode(home).returncode == 0
+    p = _run_mqbedrock(env)
+    assert p.returncode == 0, p.stderr
+    assert "bedrock profile refreshed" in p.stdout
+    assert "stored Amazon Bedrock account" in p.stderr
+    assert str(_opencode_config(home)) in p.stderr
+    assert "AWS profile 'bedrock-sso'" in p.stderr
+
+
 def test_mqbedrock_opencode_options_require_setup_opencode(tmp_path):
     # --opencode-* on their own would silently do nothing.
     env = {**os.environ, "HOME": str(tmp_path)}
