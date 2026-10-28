@@ -27,7 +27,7 @@ From: node:24
 
     # Install Claude Code and opencode (OpenAI Codex CLI is
     # installed separately below). opencode-ai ships the `opencode` binary.
-    npm install -g @anthropic-ai/claude-code@latest opencode-ai@latest
+    npm install -g @anthropic-ai/claude-code@latest @opencode/cli@latest
 
     # Codex doesn't install the newest via npm, try the recommended way. Install
     # into shared image paths: during %post $HOME is /root, and the installer's
