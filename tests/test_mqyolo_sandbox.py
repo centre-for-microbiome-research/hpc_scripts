@@ -23,6 +23,7 @@ import os
 import re
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -2720,8 +2721,10 @@ def _setup_opencode(home, *extra):
     env = {**os.environ, "HOME": str(home)}
     # As on the host: the setup writes config only, and does not forward to the broker.
     env.pop("MQBROKER_SPOOL", None)
-    # mqyolo only ever reads ~/.config/opencode, so the tests write there too.
+    # mqyolo only ever reads ~/.config/opencode (and ~/.local/share/opencode for
+    # stored logins), so the tests use those too.
     env.pop("XDG_CONFIG_HOME", None)
+    env.pop("XDG_DATA_HOME", None)
     return subprocess.run([str(MQBEDROCK), "--setup-opencode", *extra],
                           text=True, capture_output=True, env=env)
 
@@ -2805,6 +2808,72 @@ def test_mqbedrock_setup_opencode_refuses_to_clobber_a_different_config(tmp_path
                if f.name.startswith("bedrock.json.mqbedrock-")]
     assert len(backups) == 1, list(mine.parent.iterdir())
     assert json.loads(backups[0].read_text()) == {"model": "anthropic/claude-sonnet-4-5"}
+
+
+# What `opencode auth login` leaves in opencode 2.x's store, as it was found on a
+# machine where it silently overrode the config above.
+OPENCODE_CREDENTIAL_TABLE = """
+CREATE TABLE IF NOT EXISTS `credential` (
+  `id` text PRIMARY KEY,
+  `integration_id` text,
+  `label` text NOT NULL,
+  `value` text NOT NULL,
+  `connector_id` text,
+  `method_id` text,
+  `active` integer,
+  `time_created` integer NOT NULL,
+  `time_updated` integer NOT NULL
+);
+"""
+
+
+def _opencode_store_account(home, integration, value):
+    """Store an account in a fake opencode.db, as `opencode auth login` does."""
+    data = home / ".local" / "share" / "opencode"
+    data.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(data / "opencode.db"))
+    try:
+        con.executescript(OPENCODE_CREDENTIAL_TABLE)
+        n = con.execute("SELECT count(*) FROM credential").fetchone()[0]
+        con.execute("INSERT INTO credential VALUES (?, ?, ?, ?, NULL, NULL, NULL, 0, 0)",
+                    ("cred_%d" % n, integration, integration, json.dumps(value)))
+        con.commit()
+    finally:
+        con.close()
+
+
+def _sso_profile_account(profile="bedrock-sso"):
+    return {"type": "external", "methodID": "aws-profile",
+            "metadata": {"profile": profile}}
+
+
+def test_mqbedrock_setup_opencode_warns_about_a_stored_bedrock_account(tmp_path):
+    # A stored account outranks every opencode config file, so the one just
+    # written would be ignored — and opencode's own error ("Token is expired",
+    # once the SSO login lapses) never says why. Say so, without logging it out.
+    home = tmp_path / "home"
+    home.mkdir()
+    _opencode_store_account(home, "amazon-bedrock", _sso_profile_account())
+
+    p = _setup_opencode(home)
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "stored Amazon Bedrock account" in p.stderr
+    assert "aws-profile, AWS profile 'bedrock-sso'" in p.stderr
+    assert "opencode auth logout" in p.stderr
+    assert _opencode_config(home).is_file()
+
+
+def test_mqbedrock_setup_opencode_accepts_an_account_on_the_static_profile(tmp_path):
+    # An account that signs with the very profile mqbedrock refreshes is harmless,
+    # and other providers' logins are none of its business.
+    home = tmp_path / "home"
+    home.mkdir()
+    _opencode_store_account(home, "amazon-bedrock", _sso_profile_account("bedrock"))
+    _opencode_store_account(home, "anthropic", {"type": "api", "key": "sk-test"})
+
+    p = _setup_opencode(home)
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "stored Amazon Bedrock account" not in p.stderr
 
 
 def test_mqbedrock_opencode_options_require_setup_opencode(tmp_path):
@@ -2959,6 +3028,79 @@ def test_mqyolo_opencode_points_at_the_setup_command_when_unauthenticated(tmp_pa
                                      extra_env=OPENCODE_BEDROCK_ENV)
     assert p.returncode == 0, p.stderr
     assert "--setup-opencode" not in p.stderr
+
+
+def test_mqyolo_opencode_counts_a_login_in_opencode_db_as_a_credential(tmp_path):
+    # opencode 2.x keeps its logins in opencode.db, not auth.json: one stored
+    # there is a credential too, so no setup hint.
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home)
+    _bedrock_settings(home)
+    _opencode_store_account(home, "anthropic", {"type": "api", "key": "sk-test"})
+
+    p, argv, saved = _mqyolo_dry_run(tmp_path, home, args=("--no-broker", "opencode"),
+                                     extra_env=OPENCODE_BEDROCK_ENV)
+    assert p.returncode == 0, p.stderr
+    assert "--setup-opencode" not in p.stderr
+    assert "stored Amazon Bedrock account" not in p.stderr
+
+
+def test_mqyolo_opencode_warns_about_a_stored_bedrock_account(tmp_path):
+    # The config is selected and its profile staged, but a stored account naming
+    # the SSO profile outranks it — and that profile does not exist in here.
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home)
+    assert _setup_opencode(home).returncode == 0
+    _opencode_store_account(home, "amazon-bedrock", _sso_profile_account())
+
+    p, argv, saved = _mqyolo_dry_run(tmp_path, home, args=("--no-broker", "opencode"),
+                                     extra_env=OPENCODE_BEDROCK_ENV)
+    assert p.returncode == 0, p.stderr
+    assert "stored Amazon Bedrock account" in p.stderr
+    assert "AWS profile 'bedrock-sso', which does not exist in here " \
+           "(only 'bedrock' is staged)" in p.stderr
+    assert "opencode auth logout" in p.stderr
+    # Still launched as before; the account is not ours to remove.
+    assert "OPENCODE_CONFIG=/container_home/.config/opencode/bedrock.json" in argv, argv
+    assert (home / ".local" / "share" / "opencode" / "opencode.db").is_file()
+
+    # --no-bedrock asks for no Bedrock at all, so there is nothing to warn about.
+    p, argv, saved = _mqyolo_dry_run(tmp_path / "second", home,
+                                     args=("--no-broker", "--no-bedrock", "opencode"),
+                                     extra_env=OPENCODE_BEDROCK_ENV)
+    assert p.returncode == 0, p.stderr
+    assert "stored Amazon Bedrock account" not in p.stderr
+
+
+def test_mqyolo_opencode_accepts_a_stored_account_on_the_staged_profile(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home)
+    assert _setup_opencode(home).returncode == 0
+    _opencode_store_account(home, "amazon-bedrock", _sso_profile_account("bedrock"))
+
+    p, argv, saved = _mqyolo_dry_run(tmp_path, home, args=("--no-broker", "opencode"),
+                                     extra_env=OPENCODE_BEDROCK_ENV)
+    assert p.returncode == 0, p.stderr
+    assert "stored Amazon Bedrock account" not in p.stderr
+
+
+def test_mqyolo_opencode_warns_when_a_stored_login_replaces_the_config(tmp_path):
+    # Not an AWS profile at all (an API key, say): it would still be used instead
+    # of the Bedrock config mqyolo selected.
+    home = tmp_path / "home"
+    home.mkdir()
+    _fake_aws_home(home)
+    assert _setup_opencode(home).returncode == 0
+    _opencode_store_account(home, "amazon-bedrock", {"type": "api", "key": "secret-key"})
+
+    p, argv, saved = _mqyolo_dry_run(tmp_path, home, args=("--no-broker", "opencode"),
+                                     extra_env=OPENCODE_BEDROCK_ENV)
+    assert p.returncode == 0, p.stderr
+    assert "a login of type 'api', used instead of" in p.stderr
+    assert "secret-key" not in p.stderr
 
 
 @requires_container

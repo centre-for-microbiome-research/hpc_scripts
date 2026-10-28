@@ -259,6 +259,19 @@ if isinstance(profile, str) and profile.strip():
 PY
 }
 
+# Print the credentials opencode has stored for itself (`opencode auth login`),
+# one "<integration>\t<method>\t<aws profile>" line each, via the probe shared
+# with mqbedrock (it reads opencode.db in 2.x and auth.json before it, and never
+# prints a secret). ~/.local/share/opencode rather than $XDG_DATA_HOME: that is
+# the directory mqyolo binds into the container. Prints nothing if the store
+# cannot be read.
+_mqyolo_opencode_stored_credentials() {
+    command -v python3 &>/dev/null || return 0
+    [[ -f "${SCRIPT_DIR}/_opencode_stored_credentials.py" ]] || return 0
+    python3 "${SCRIPT_DIR}/_opencode_stored_credentials.py" \
+        "${HOME}/.local/share/opencode" 2>/dev/null || true
+}
+
 # --no-bedrock: write a copy of SRC (the real ~/.claude/settings.json) to DEST with
 # env.CLAUDE_CODE_USE_BEDROCK forced to "0", so `claude --settings DEST` disables
 # Bedrock for this session without ever touching the real settings.json (which is
@@ -930,6 +943,10 @@ BEDROCK
     profile's keys and points OPENCODE_CONFIG at the file. opencode has no
     auth-refresh hook, so when the keys expire run `mqbedrock` again (from inside
     the sandbox it is forwarded to the host, which restages them live).
+    An Amazon Bedrock account stored with `opencode auth login` outranks every
+    config file, so with one present that config is ignored and opencode signs
+    with the account's own profile (which is not in the sandbox). mqyolo warns
+    at launch; `opencode auth logout` removes it.
   - Pass --no-bedrock to force Bedrock off for one session instead (for codex and
     opencode that is all it does: their config is simply not selected). For claude,
     regardless of ~/.claude/settings.json or the environment: mqyolo copies the
@@ -967,8 +984,8 @@ CODEX SETTINGS
 OPENCODE SETTINGS
   ~/.config/opencode/       bound read-write so opencode config, agents and
                             commands persist across mqyolo runs
-  ~/.local/share/opencode/  bound read-write so opencode auth (auth.json) and
-                            session storage persist
+  ~/.local/share/opencode/  bound read-write so opencode's stored logins and
+                            session storage (opencode.db) persist
   ~/.local/state/opencode/  bound read-write for opencode's session/TUI state
   ~/.cache/opencode/        bound read-write so its cache and downloaded helper
                             binaries are not re-fetched every session
@@ -1500,7 +1517,7 @@ case "$TOOL" in
         # opencode spreads itself over four XDG dirs and mkdirs ALL of them at
         # startup, so every one must be writable or it dies before the TUI opens:
         # config + its global rules file (AGENTS.md) in ~/.config/opencode,
-        # auth.json + session storage in ~/.local/share/opencode, session/TUI
+        # stored logins + session storage in ~/.local/share/opencode, session/TUI
         # state in ~/.local/state/opencode, and cache + downloaded helper binaries
         # in ~/.cache/opencode. Bind all four real dirs read-write so logins,
         # sessions and state persist across runs, and expose the mqyolo guidance as
@@ -1540,6 +1557,7 @@ case "$TOOL" in
         # Skipped when the caller set OPENCODE_CONFIG themselves, and under
         # --no-bedrock, which is what makes that flag work for opencode: the file
         # stays on disk but is never selected.
+        _oc_stored="$(_mqyolo_opencode_stored_credentials)"
         if [[ -n "$OPENCODE_BEDROCK_FILE" ]]; then
             _oc_bedrock_cfg="/container_home/.config/opencode/$(_mqyolo_opencode_bedrock_config_name).json"
             ENV_ARGS+=(--env "OPENCODE_CONFIG=${_oc_bedrock_cfg}")
@@ -1547,16 +1565,51 @@ case "$TOOL" in
             unset _oc_bedrock_cfg
         elif [[ -n "$BEDROCK_AWS_DIR" && -z "${OPENCODE_CONFIG:-}" ]] \
              && [[ -z "${OPENCODE_API_KEY:-}" && -z "${ANTHROPIC_API_KEY:-}" \
-                   && -z "${OPENAI_API_KEY:-}" \
-                   && ! -s "${HOME}/.local/share/opencode/auth.json" ]]; then
+                   && -z "${OPENAI_API_KEY:-}" && -z "$_oc_stored" ]]; then
             # Bedrock credentials are staged (Claude is set up for it) but opencode
             # has no config naming them and no other credential, so it would open on
             # a login prompt that cannot be completed in the sandbox — or guess a
             # region. Point at the one-off setup instead.
             echo "mqyolo: NOTE: opencode has no credentials here (no OPENCODE_API_KEY/ANTHROPIC_API_KEY," >&2
-            echo "mqyolo:       no ~/.local/share/opencode/auth.json)." >&2
+            echo "mqyolo:       no account stored with 'opencode auth login')." >&2
             echo "mqyolo:       To run it on Bedrock like Claude: mqbedrock --setup-opencode" >&2
         fi
+        # An Amazon Bedrock account stored with `opencode auth login` outranks the
+        # provider settings of every opencode config, the one selected above
+        # included, and opencode's error then names neither. Two ways it bites:
+        # an AWS-profile account naming any profile but the staged one cannot
+        # authenticate at all (only that profile exists in here — on the host it
+        # is usually the SSO profile, which works until its hour-long login token
+        # expires and then fails with "Token is expired"); and any other kind of
+        # account silently replaces the Bedrock config we selected. The store is
+        # bound read-write, but logging out is the user's call, so only say so.
+        # Skipped under --no-bedrock, which asks for no Bedrock at all.
+        _oc_bad=""
+        if [[ "$NO_BEDROCK" -eq 0 ]]; then
+            while IFS=$'\t' read -r _i _m _p; do
+                [[ "$_i" == amazon-bedrock ]] || continue
+                if [[ "$_m" == aws-profile ]]; then
+                    [[ -n "$BEDROCK_AWS_DIR" && "$_p" == "$BEDROCK_PROFILE" ]] && continue
+                    if [[ -n "$BEDROCK_AWS_DIR" ]]; then
+                        _oc_bad+="mqyolo:            - AWS profile '${_p}', which does not exist in here (only '${BEDROCK_PROFILE}' is staged)"$'\n'
+                    else
+                        _oc_bad+="mqyolo:            - AWS profile '${_p}', which does not exist in here (no AWS profile is staged)"$'\n'
+                    fi
+                elif [[ -n "$OPENCODE_BEDROCK_FILE" ]]; then
+                    _oc_bad+="mqyolo:            - a login of type '${_m:-unknown}', used instead of ${OPENCODE_BEDROCK_FILE}"$'\n'
+                fi
+            done <<<"$_oc_stored"
+        fi
+        if [[ -n "$_oc_bad" ]]; then
+            {
+                echo "mqyolo: WARNING: opencode has its own stored Amazon Bedrock account, which takes"
+                echo "mqyolo:          precedence over any opencode config file:"
+                printf '%s' "$_oc_bad"
+                echo "mqyolo:          Remove it with 'opencode auth logout' (once per account) so the"
+                echo "mqyolo:          staged Bedrock credentials are used."
+            } >&2
+        fi
+        unset _oc_stored _oc_bad _i _m _p
         ;;
     *)
         # A repo executable (see arg parsing): run it as-is with no wrapper flags and

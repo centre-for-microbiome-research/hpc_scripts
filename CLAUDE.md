@@ -12,6 +12,8 @@ boxed into the same sandbox:
 - `bin/mqsub-broker` — host-side broker; runs allowlisted commands, forces `--sandbox`
 - `bin/mqbroker-stub` — container-side stub (symlinked as mqsub/mqstat/mqwait/mqdel/qstat/qdel)
 - `bin/mqsub` — `--sandbox` / `--sandbox-rw-paths` wrap the job in `mqsandbox`
+- `bin/_opencode_stored_credentials.py` — read-only probe of opencode's own
+  credential store, shared by `mqbedrock` and `mqyolo` (see the opencode bullets)
 - `bin/generate_mqyolo_non_sensitive_folders.py` — downloads the CMR work-folders
   Google Sheet and writes `mqyolo-non-sensitive-folders.json` (run via the
   `update-non-sensitive-folders` pixi task)
@@ -225,6 +227,26 @@ Key invariants the tests guard (keep them true):
   (nothing like `awsAuthRefresh`/`aws.auth_refresh` exists in it), so an expired
   key means running `mqbedrock` again — from inside the sandbox that is the broker
   stub, which restages the credentials live.
+- **A Bedrock account stored with `opencode auth login` outranks every config
+  file**, `OPENCODE_CONFIG` layer included — the layer only "wins on the keys it
+  sets" for non-credential settings. With one present, opencode signs with the
+  account's profile and never reads `[bedrock]`. In practice that is the SSO
+  profile, whose login token lasts about an hour: opencode then fails with
+  `AWS default credential chain failed: Token is expired ... run 'aws sso login'`
+  while `mqbedrock` happily refreshes keys opencode ignores, and nothing in
+  opencode's output names the stored account (`opencode debug config` shows the
+  config's profile, which is not the one used). Inside the sandbox it cannot work
+  at all, since only the staged profile exists there. Accounts live in
+  `~/.local/share/opencode/opencode.db` (`credential` table; 1.x used
+  `auth.json`), read by `bin/_opencode_stored_credentials.py` — read-only, never
+  printing secrets, and degrading to "nothing found" on any format it does not
+  recognise, since this is opencode's internal storage. `mqbedrock
+  --setup-opencode` and mqyolo's opencode launch warn about any stored
+  `amazon-bedrock` account that is not an AWS-profile login on the expected
+  profile (for mqyolo: the staged one; a non-profile login only matters when our
+  config is selected). Neither logs the account out — that is the user's call,
+  via `opencode auth logout`. The same probe replaced mqyolo's `auth.json` check
+  for "opencode has no credentials", which had silently stopped matching in 2.x.
 - **opencode's `--auto` is declared per command, so mqyolo cannot just prefix it.**
   Both the default interactive command and `run` declare it, other subcommands do
   not, and the parser is strict about unknown options — so `opencode --auto run ...`
