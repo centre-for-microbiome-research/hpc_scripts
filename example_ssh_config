@@ -12,40 +12,33 @@ Host myaqua
     HostName aquarius0X.qut.edu.au # Choose aquarius01, aquarius02, aquarius03, or aquarius04 here - choose randomly
     User woodcrob
     Compression no
-    ProxyJump aqua0
 
 Host aqua1
     HostName aquarius01.qut.edu.au
     User woodcrob
     Compression no
-    ProxyJump aqua0
 
 Host aqua2
     HostName aquarius02.qut.edu.au
     User woodcrob
     Compression no
-    ProxyJump aqua0
 
 Host aqua3
     HostName aquarius03.qut.edu.au
     User woodcrob
     Compression no
-    ProxyJump aqua0
 
 Host aqua4
     HostName aquarius04.qut.edu.au
     User woodcrob
     Compression no
-    ProxyJump aqua0
 
 Host transfer1
     HostName eresdtn01
     User woodcrob
     Compression no
-    ProxyJump aqua0
 
 Host transfer2
     HostName eresdtn02
     User woodcrob
     Compression no
-    ProxyJump aqua0
