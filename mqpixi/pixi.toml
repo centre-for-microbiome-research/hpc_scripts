@@ -20,6 +20,16 @@ env = { PYTHONNOUSERSITE = "1" }
 [dependencies]
 python = ">=3.11"
 
+# ---------- amrfinderplus-v4-2-7 ----------
+[feature.amrfinderplus-v4-2-7.dependencies]
+ncbi-amrfinderplus = "==4.2.7"
+
+# AMRFINDER_DB pins the dated database release (via `amrfinder --database_version`)
+# rather than the "latest" symlink `amrfinder_update` maintains, so results stay
+# reproducible across a later database update.
+[feature.amrfinderplus-v4-2-7.activation]
+env = { PYTHONNOUSERSITE = "1", AMRFINDER_DB = "/work/microbiome/db/amrfinder/2026-08-07.1" }
+
 # ---------- aniclustermap-v1-4-0 ----------
 [feature.aniclustermap-v1-4-0.dependencies]
 aniclustermap = "==1.4.0"
@@ -302,6 +312,15 @@ env = { PYTHONNOUSERSITE = "1" }
 expressbetadiversity = "==1.0.10"
 
 [feature.expressbetadiversity-v1-0-10.activation]
+env = { PYTHONNOUSERSITE = "1" }
+
+# ---------- fargene-v0-1 ----------
+# fargene's only bioconda build requires python <3 (last released 2019,
+# unmaintained) - pixi resolves that build automatically, no explicit pin needed.
+[feature.fargene-v0-1.dependencies]
+fargene = "==0.1"
+
+[feature.fargene-v0-1.activation]
 env = { PYTHONNOUSERSITE = "1" }
 
 # ---------- fastani-v1-34 ----------
@@ -660,6 +679,16 @@ env = { PYTHONNOUSERSITE = "1" }
 # [feature.recurm-v0-3-0.dependencies]
 # recurm = "==0.3.0"
 
+# ---------- resfinder-v4-7-2 ----------
+[feature.resfinder-v4-7-2.dependencies]
+resfinder = "==4.7.2"
+
+# resfinder_db/pointfinder_db are separate git repos, pinned to their
+# "resfinder-4.7.2" tags to match this app version (CGE tags each db repo with
+# every resfinder app release it was validated against).
+[feature.resfinder-v4-7-2.activation]
+env = { PYTHONNOUSERSITE = "1", CGE_RESFINDER_RESGENE_DB = "/work/microbiome/db/resfinder/resfinder_db", CGE_RESFINDER_RESPOINT_DB = "/work/microbiome/db/resfinder/pointfinder_db" }
+
 # ---------- rgi-v6-0-5 ----------
 [feature.rgi-v6-0-5.dependencies]
 rgi = "==6.0.5"
@@ -833,6 +862,7 @@ virsorter = "==2.2.4"
 env = { PYTHONNOUSERSITE = "1" }
 
 [environments]
+amrfinderplus-v4-2-7 = { features = ["amrfinderplus-v4-2-7"], no-default-feature = true }
 aniclustermap-v1-4-0 = { features = ["aniclustermap-v1-4-0"], no-default-feature = true }
 antismash-v7-1-0 = { features = ["antismash-v7-1-0"], no-default-feature = true }
 anvio-v7 = { features = ["anvio-v7"], no-default-feature = true }
@@ -869,6 +899,7 @@ emu-v3-5-1 = { features = ["emu-v3-5-1"], no-default-feature = true }
 enrichm-v0-6-5 = { features = ["enrichm-v0-6-5"], no-default-feature = true }
 entrez-direct-v22-4 = { features = ["entrez-direct-v22-4"], no-default-feature = true }
 expressbetadiversity-v1-0-10 = { features = ["expressbetadiversity-v1-0-10"], no-default-feature = true }
+fargene-v0-1 = { features = ["fargene-v0-1"], no-default-feature = true }
 fastani-v1-34 = { features = ["fastani-v1-34"], no-default-feature = true }
 fastx-toolkit-v0-0-14 = { features = ["fastx-toolkit-v0-0-14"], no-default-feature = true }
 fegenie-v1-2 = { features = ["fegenie-v1-2"], no-default-feature = true }
@@ -921,6 +952,7 @@ quast-v5-3-0 = { features = ["quast-v5-3-0"], no-default-feature = true }
 r-base-v4-4-1 = { features = ["r-base-v4-4-1"], no-default-feature = true }
 r-v4-4 = { features = ["r-v4-4"], no-default-feature = true }
 # recurm-v0-3-0 = { features = ["recurm-v0-3-0"], no-default-feature = true }
+resfinder-v4-7-2 = { features = ["resfinder-v4-7-2"], no-default-feature = true }
 rgi-v6-0-5 = { features = ["rgi-v6-0-5"], no-default-feature = true }
 rseqc-v5-0-3 = { features = ["rseqc-v5-0-3"], no-default-feature = true }
 samtools-v1-21 = { features = ["samtools-v1-21"], no-default-feature = true }
