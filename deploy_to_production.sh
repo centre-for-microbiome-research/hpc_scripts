@@ -29,6 +29,12 @@
 #      This is retrospective only: the script runs the install under umask 002,
 #      so envs and cache files created by a normal run are already group-writable.
 #   4. Runs `pixi run postinstall`, which chains every env's postinstall task.
+#   Every run (with or without --fix-permissions), after steps 2 and 4, makes
+#   each env's etc/conda/{activate,deactivate,env_vars}.d scripts owned by
+#   $ADMIN_GROUP and readable by everyone, and the directories above them
+#   traversable (see
+#   fix_activation_permissions); packages ship e.g. mode-660 scripts that
+#   otherwise break `conda activate` for ordinary users.
 #
 # Usage: deploy_to_production.sh [--fix-permissions] [path-to-production-checkout]
 # Defaults to /work/microbiome/sw/hpc_scripts.
@@ -144,6 +150,44 @@ fix_task_cache_permissions() {
             done' "$ADMIN_GROUP"
 }
 
+# Every conda/pixi activation reads the scripts in etc/conda/{activate,
+# deactivate}.d (and env_vars.d) as whoever is activating, so one that "other"
+# cannot read - or a directory above it that "other" cannot traverse - breaks
+# the env for ordinary users. Ordinary microbiome members are not in
+# $ADMIN_GROUP, so they get read via "other"; $ADMIN_GROUP owns the paths and
+# has rw(x), with setgid on directories so later files stay in that group.
+# umask cannot prevent this: package files keep the mode stored in the package
+# (e.g. resfinder.sh is 660) and rattler creates the directories 770, so this
+# runs on every deploy, not just --fix-permissions.
+# Only a path owned by the invoking user can be changed; for anything else the
+# owner has to run this script (the warning names the path).
+fix_activation_permissions() {
+    if [[ ! -d "$PIXI_ENVS_DIR" ]]; then
+        return 0
+    fi
+    local p
+    local -a dirs files
+    shopt -s nullglob
+    dirs=("$PIXI_ENVS_DIR"/*/ "$PIXI_ENVS_DIR"/*/etc "$PIXI_ENVS_DIR"/*/etc/conda
+          "$PIXI_ENVS_DIR"/*/etc/conda/{activate,deactivate,env_vars}.d)
+    files=("$PIXI_ENVS_DIR"/*/etc/conda/{activate,deactivate,env_vars}.d/*)
+    shopt -u nullglob
+    if [[ ${#dirs[@]} -gt 0 ]]; then
+        while IFS= read -r -d '' p; do
+            { chgrp "$ADMIN_GROUP" "$p" && chmod g+rwxs,o+rx "$p"; } \
+                || echo "WARNING: could not fix permissions on $p" >&2
+        done < <(find "${dirs[@]}" -maxdepth 0 -type d \
+                      \( ! -group "$ADMIN_GROUP" -o ! -perm -g=rwxs -o ! -perm -o=rx \) -print0)
+    fi
+    if [[ ${#files[@]} -gt 0 ]]; then
+        while IFS= read -r -d '' p; do
+            { chgrp "$ADMIN_GROUP" "$p" && chmod g+rw,o+r "$p"; } \
+                || echo "WARNING: could not fix permissions on $p" >&2
+        done < <(find "${files[@]}" -maxdepth 0 -type f \
+                      \( ! -group "$ADMIN_GROUP" -o ! -perm -g=rw -o ! -perm -o=r \) -print0)
+    fi
+}
+
 fix_env_permissions() {
     if [[ "$FIX_PERMISSIONS" -ne 1 ]]; then
         return 0
@@ -182,9 +226,12 @@ cd "$MQPIXI_DIR"
 pixi install -a --frozen
 
 fix_env_permissions
+fix_activation_permissions
 
 echo "==> Running mqpixi postinstall"
 cd "$MQPIXI_DIR"
 pixi run postinstall
 
 fix_env_permissions
+# After postinstall too: it (re)writes pixi_vars.sh in every activate.d.
+fix_activation_permissions
