@@ -61,6 +61,30 @@ PIXI_ENVS_DIR="$MQPIXI_DIR/.pixi/envs"
 ADMIN_GROUP="${ADMIN_GROUP:-microbiome-admin}"
 
 if [[ "$NOT_BEN" -eq 0 ]]; then
+    # Production only gets what is on GitHub (the pull below), so deploying
+    # from a checkout with unpushed work would silently leave it out.
+    SCRIPT_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+    if git -C "$SCRIPT_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "==> Checking $SCRIPT_REPO is pushed to GitHub"
+        if [[ -n "$(git -C "$SCRIPT_REPO" status --porcelain --untracked-files=no)" ]]; then
+            echo "ERROR: $SCRIPT_REPO has uncommitted changes to tracked files; commit" >&2
+            echo "and push them before deploying." >&2
+            exit 1
+        fi
+        git -C "$SCRIPT_REPO" fetch --quiet
+        if ! UPSTREAM="$(git -C "$SCRIPT_REPO" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"; then
+            echo "ERROR: the current branch of $SCRIPT_REPO has no upstream, so it has" >&2
+            echo "not been pushed to GitHub. Push it before deploying." >&2
+            exit 1
+        fi
+        UNPUSHED="$(git -C "$SCRIPT_REPO" rev-list --count "$UPSTREAM..HEAD")"
+        if [[ "$UNPUSHED" -gt 0 ]]; then
+            echo "ERROR: $SCRIPT_REPO has $UNPUSHED commit(s) not pushed to $UPSTREAM." >&2
+            echo "Run 'git push' before deploying - production only pulls from GitHub." >&2
+            exit 1
+        fi
+    fi
+
     if [[ ! -d "$PRODUCTION_REPO/.git" ]]; then
         echo "ERROR: $PRODUCTION_REPO is not a git checkout" >&2
         exit 1
