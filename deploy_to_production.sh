@@ -22,8 +22,12 @@
 #      anyone outside the owning group. /pkg (weka) does not take the POSIX ACLs
 #      that would let microbiome-admin be a *second* group, so $ADMIN_GROUP is
 #      made the owning group and "other" carries the read-only access.
+#      Also makes pixi's .pixi/task-cache-v0 writable by $ADMIN_GROUP (see
+#      fix_task_cache_permissions).
 #      Runs before the install (which needs write access to every env), and
 #      again after the install and postinstall steps, since those create files.
+#      This is retrospective only: the script runs the install under umask 002,
+#      so envs and cache files created by a normal run are already group-writable.
 #   4. Runs `pixi run postinstall`, which chains every env's postinstall task.
 #
 # Usage: deploy_to_production.sh [--fix-permissions] [path-to-production-checkout]
@@ -91,10 +95,36 @@ if [[ "$NOT_BEN" -eq 0 ]]; then
     fi
 fi
 
+# Pixi records every finished task as a file in .pixi/task-cache-v0 and fails
+# with a bare "Permission denied (os error 13)" - after the task itself has
+# succeeded - if it cannot create one. Created under a 022 umask the directory
+# is not group-writable, so a second admin hits that on the first task that has
+# no cache file yet (e.g. postinstall for a newly added env). Group is
+# $ADMIN_GROUP, not the checkout's setgid group, because only deployers write
+# here; setgid keeps files created later in that group.
+fix_task_cache_permissions() {
+    local cache_dir="$MQPIXI_DIR/.pixi/task-cache-v0"
+    if [[ ! -d "$cache_dir" ]]; then
+        return 0
+    fi
+    echo "==> Setting $ADMIN_GROUP:rw on $cache_dir"
+    # Only the owner can change these; keep going past files owned by others.
+    chgrp "$ADMIN_GROUP" "$cache_dir" || echo "WARNING: could not chgrp $cache_dir" >&2
+    chmod g+rwxs "$cache_dir" || echo "WARNING: could not chmod $cache_dir" >&2
+    find "$cache_dir" -maxdepth 1 -type f \
+        \( ! -group "$ADMIN_GROUP" -o ! -perm -g=rw \) -print0 \
+        | xargs -0 -r sh -c '
+            for f; do
+                chgrp "$0" "$f" && chmod g+rw "$f" \
+                    || echo "WARNING: could not fix permissions on $f" >&2
+            done' "$ADMIN_GROUP"
+}
+
 fix_env_permissions() {
     if [[ "$FIX_PERMISSIONS" -ne 1 ]]; then
         return 0
     fi
+    fix_task_cache_permissions
     echo "==> Setting $ADMIN_GROUP:rwx, others:r-x on $PIXI_ENVS_DIR"
     if [[ ! -d "$PIXI_ENVS_DIR" ]]; then
         echo "WARNING: $PIXI_ENVS_DIR not found (no envs built yet?), skipping" >&2
@@ -108,6 +138,12 @@ fix_env_permissions() {
     # mpermissions keeps going past failures on files owned by someone else.
     "$PRODUCTION_REPO/bin/mpermissions" -g "$ADMIN_GROUP" --other-read "$(realpath "$PIXI_ENVS_DIR")"
 }
+
+# Everything pixi creates from here on (new env prefixes, task-cache files) is
+# group-writable, so a new env needs no --fix-permissions afterwards. That flag
+# is only for what was created before, or by someone with a 022 umask. Set after
+# the git pull so the production checkout's own files keep git's modes.
+umask 002
 
 # Before the install as well: `pixi install` needs write access to every env
 # prefix (install lock, conda-meta), so envs built by another user must be
