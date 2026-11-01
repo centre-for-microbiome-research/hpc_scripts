@@ -24,8 +24,11 @@ python = ">=3.11"
 [feature.amrfinderplus-v4-2-7.dependencies]
 ncbi-amrfinderplus = "==4.2.7"
 
+# AMRFINDER_DB pins the dated database release (via `amrfinder --database_version`)
+# rather than the "latest" symlink `amrfinder_update` maintains, so results stay
+# reproducible across a later database update.
 [feature.amrfinderplus-v4-2-7.activation]
-env = { PYTHONNOUSERSITE = "1" }
+env = { PYTHONNOUSERSITE = "1", AMRFINDER_DB = "/work/microbiome/db/amrfinder/2026-08-07.1" }
 
 # ---------- aniclustermap-v1-4-0 ----------
 [feature.aniclustermap-v1-4-0.dependencies]
@@ -680,8 +683,11 @@ env = { PYTHONNOUSERSITE = "1" }
 [feature.resfinder-v4-7-2.dependencies]
 resfinder = "==4.7.2"
 
+# resfinder_db/pointfinder_db are separate git repos, pinned to their
+# "resfinder-4.7.2" tags to match this app version (CGE tags each db repo with
+# every resfinder app release it was validated against).
 [feature.resfinder-v4-7-2.activation]
-env = { PYTHONNOUSERSITE = "1" }
+env = { PYTHONNOUSERSITE = "1", CGE_RESFINDER_RESGENE_DB = "/work/microbiome/db/resfinder/resfinder_db", CGE_RESFINDER_RESPOINT_DB = "/work/microbiome/db/resfinder/pointfinder_db" }
 
 # ---------- rgi-v6-0-5 ----------
 [feature.rgi-v6-0-5.dependencies]
