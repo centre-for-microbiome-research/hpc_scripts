@@ -5,10 +5,6 @@ its own pixi `[environments]` entry). This walks through adding one, using
 the `aviary-v0-14-0` and `phagespotter-v0-3-0` additions in PR #91 as the
 worked examples.
 
-Before starting, check there isn't already an open PR adding the same tool -
-two separate PRs added the same `aviary-v0-14-0` block independently (#90 and
-#91); only one was needed.
-
 ## 1. Add to `pixi.toml`
 
 Environment names are `<tool>-v<major>-<minor>-<patch>` (dots become dashes -
@@ -64,13 +60,6 @@ alphabetically sorted:
 
 ```toml
 mytool-v1-2-3 = { features = ["mytool-v1-2-3"], no-default-feature = true }
-```
-
-Sanity-check the file still parses before moving on - a typo in a
-1000+ line hand-edited TOML file is easy to miss:
-
-```bash
-python3 -c "import tomllib; tomllib.load(open('mqpixi/pixi.toml', 'rb'))"
 ```
 
 ## 2. `pixi install`
