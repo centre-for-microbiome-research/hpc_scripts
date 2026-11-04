@@ -28,6 +28,14 @@
 #      again after the install and postinstall steps, since those create files.
 #      This is retrospective only: the script runs the install under umask 002,
 #      so envs and cache files created by a normal run are already group-writable.
+#      mpermissions is run per env rather than once over the whole envs dir, and
+#      an env that comes back clean (no "CMD FAILED" in its output - mpermissions
+#      itself always exits 0, see fix_env_permissions) gets a permissions.done
+#      marker written at its root so future --fix-permissions runs skip it,
+#      rather than re-walking every file of ~100+ envs every time. An env left
+#      with some other-owned files has no marker written, so it's retried on
+#      every run until whoever owns those files runs this themselves. Delete an
+#      env's permissions.done to force it to be re-checked.
 #   4. Runs `pixi run postinstall`, which chains every env's postinstall task.
 #   Every run (with or without --fix-permissions), after steps 2 and 4, makes
 #   each env's etc/conda/{activate,deactivate,env_vars}.d scripts owned by
@@ -193,7 +201,6 @@ fix_env_permissions() {
         return 0
     fi
     fix_task_cache_permissions
-    echo "==> Setting $ADMIN_GROUP:rwx, others:r-x on $PIXI_ENVS_DIR"
     if [[ ! -d "$PIXI_ENVS_DIR" ]]; then
         echo "WARNING: $PIXI_ENVS_DIR not found (no envs built yet?), skipping" >&2
         return 0
@@ -203,8 +210,26 @@ fix_env_permissions() {
     local envs_root
     envs_root="$(dirname "$(realpath "$PIXI_ENVS_DIR")")/.."
     chmod o+rx "$envs_root" || echo "WARNING: could not chmod o+rx $envs_root" >&2
-    # mpermissions keeps going past failures on files owned by someone else.
-    "$PRODUCTION_REPO/bin/mpermissions" -g "$ADMIN_GROUP" --other-read "$(realpath "$PIXI_ENVS_DIR")"
+
+    local env_dir marker output
+    shopt -s nullglob
+    for env_dir in "$PIXI_ENVS_DIR"/*/; do
+        env_dir="${env_dir%/}"
+        marker="$env_dir/permissions.done"
+        if [[ -e "$marker" ]]; then
+            continue
+        fi
+        echo "==> Setting $ADMIN_GROUP:rwx, others:r-x on $env_dir"
+        # mpermissions keeps going past failures on files owned by someone
+        # else and always exits 0 regardless, so a clean run is judged by its
+        # output (it logs "CMD FAILED" per failed step), not its exit code.
+        output="$("$PRODUCTION_REPO/bin/mpermissions" -g "$ADMIN_GROUP" --other-read "$(realpath "$env_dir")" 2>&1)" || true
+        echo "$output"
+        if [[ "$output" != *"CMD FAILED"* ]]; then
+            touch "$marker" 2>/dev/null || echo "WARNING: could not write $marker" >&2
+        fi
+    done
+    shopt -u nullglob
 }
 
 # Everything pixi creates from here on (new env prefixes, task-cache files) is
