@@ -35,6 +35,10 @@
 # `mqbedrock --setup-opencode` writes the opencode config that points at it —
 # see setup_opencode() below.
 #
+# After a successful refresh it warns if the Claude Code settings, Codex profiles or
+# opencode config and last-used model name a model older or newer than --setup-*
+# would deploy: see check_claude_models() below.
+#
 # Inside an mqyolo sandbox this script cannot do its job — ~/.aws there is a
 # generated Bedrock-only credential dir, and the SSO token plus its cache live on
 # the host — so it forwards itself to the host broker, which runs the real thing
@@ -292,8 +296,8 @@ CLAUDE_SETTINGS_JSON=$(cat <<EOF
     "CLAUDE_CODE_USE_BEDROCK": "1",
     "AWS_REGION": "$REGION",
     "AWS_PROFILE": "$STATIC_PROFILE",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "au.anthropic.claude-sonnet-5",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "au.anthropic.claude-opus-5[1m]",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "au.anthropic.claude-sonnet-5-5",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "au.anthropic.claude-opus-5-5[1m]",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "au.anthropic.claude-haiku-4-5-20251001-v1:0"
   }
 }
@@ -562,6 +566,171 @@ setup_opencode() {
   echo "  Use it with 'OPENCODE_CONFIG=$file opencode'; mqyolo opencode selects it for you."
 }
 
+# --- Are the configured models the ones --setup-* would deploy? --------------
+# --setup-* never replaces a user's file without --force, so changing the model IDs
+# in this script does nothing for anyone already set up: they keep the old model
+# until told otherwise. The refresh below therefore compares what the Claude Code
+# settings and Codex profiles name against what would be deployed today, and warns
+# either way. An older model is the user's to fix; a newer one means this script is
+# behind, which only its maintainers can fix.
+#
+# Versions are compared rather than strings, so the `[1m]` suffix and the region
+# prefix (au./global.) are not differences, and an alias such as "opus[1m]" follows
+# whatever is pinned and has no version to compare. So does anything else without a
+# recognisable version: no opinion rather than a false alarm.
+
+# model_parts ID — print "family major minor date" (date may be absent), or fail if
+# ID is not a versioned Claude or GPT model. Handles the current
+# claude-opus-5-5[1m] order, the older claude-3-5-sonnet-20241022-v2:0 one, and
+# openai.gpt-5.6-sol. GPT tiers (sol, luna...) are ignored: only one is deployed.
+model_parts() {
+  local id=${1%%\[*} family="" major="" minor="" date="" tail token
+  case "$id" in
+    *claude-*) tail=${id##*claude-} ;;
+    *gpt-*)    tail=${id##*gpt-}; family=gpt ;;
+    *)         return 1 ;;
+  esac
+  for token in ${tail//-/ }; do
+    case "$token" in
+      opus|sonnet|haiku|fable|mythos) family=$token ;;
+      [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) date=$token ;;
+      [0-9]|[0-9][0-9]) if [[ -z $major ]]; then major=$token; elif [[ -z $minor ]]; then minor=$token; fi ;;
+      [0-9].[0-9]|[0-9][0-9].[0-9]) major=${token%.*}; minor=${token#*.} ;;
+    esac
+  done
+  [[ -n $family && -n $major ]] || return 1
+  echo "$family $major ${minor:-0} $date"
+}
+
+# compare_to_deployed ID DEPLOYED... — print "older" or "newer" followed by the
+# deployed ID of the same family, or nothing if ID matches it or has no counterpart.
+# The date only separates two snapshots of one version, so needs to be on both.
+compare_to_deployed() {
+  local id=$1 parts deployed f a b c x y z w mine theirs
+  shift
+  parts=$(model_parts "$id") || return 0
+  read -r f a b c <<<"$parts"
+  for deployed in "$@"; do
+    parts=$(model_parts "$deployed") || continue
+    read -r x y z w <<<"$parts"
+    [[ $x == "$f" ]] || continue
+    mine=$(( 10#$a * 1000 + 10#$b )); theirs=$(( 10#$y * 1000 + 10#$z ))
+    if [[ $mine -eq $theirs && -n $c && -n $w ]]; then mine=$((10#$c)); theirs=$((10#$w)); fi
+    if   (( mine < theirs )); then echo "older $deployed"
+    elif (( mine > theirs )); then echo "newer $deployed"
+    fi
+    return 0
+  done
+}
+
+# warn_model_versions FILE TOOL FIX DEPLOYED_LIST — read "LABEL<tab>ID" lines from
+# stdin and report the ones that differ. FIX is what to tell the user about an older
+# model; DEPLOYED_LIST is a newline-separated list of what --setup-* would write.
+warn_model_versions() {
+  local file=$1 tool=$2 fix=$3 label id verdict older="" newer=""
+  local -a deployed
+  mapfile -t deployed <<<"$4"
+  while IFS=$'\t' read -r label id; do
+    verdict=$(compare_to_deployed "$id" "${deployed[@]}")
+    case "$verdict" in
+      older*) older+="mqbedrock:   $label = $id (current: ${verdict#older })"$'\n' ;;
+      newer*) newer+="mqbedrock:   $label = $id (deployed: ${verdict#newer })"$'\n' ;;
+    esac
+  done
+  if [[ -n $older ]]; then
+    {
+      echo "mqbedrock: WARNING: $file names an out-of-date $tool model:"
+      printf '%s' "$older"
+      printf '%s\n' "$fix" | sed 's/^/mqbedrock: /'
+    } >&2
+  fi
+  if [[ -n $newer ]]; then
+    {
+      echo "mqbedrock: WARNING: $file names a newer $tool model than mqbedrock deploys:"
+      printf '%s' "$newer"
+      echo "mqbedrock: Please alert Ben or Sam, so that mqbedrock can be updated."
+    } >&2
+  fi
+}
+
+# Only keys that name a model: the rest of settings.json is not ours to judge.
+CLAUDE_MODEL_KEYS='^ANTHROPIC_(MODEL|SMALL_FAST_MODEL|DEFAULT_(OPUS|SONNET|HAIKU)_MODEL)$'
+
+check_claude_models() {
+  local file=$HOME/.claude/settings.json configured deployed
+  [[ -s $file ]] || return 0
+  configured=$(jq -r --arg keys "$CLAUDE_MODEL_KEYS" '
+      ["model", .model],
+      (.env // {} | to_entries[] | select(.key | test($keys)) | ["env.\(.key)", .value])
+      | select(.[1] | type == "string") | @tsv' "$file" 2>/dev/null) || return 0
+  [[ -n $configured ]] || return 0
+  deployed=$(jq -r --arg keys "$CLAUDE_MODEL_KEYS" '
+      .env | to_entries[] | select(.key | test($keys)) | .value' <<<"$CLAUDE_SETTINGS_JSON")
+  warn_model_versions "$file" "Claude" \
+"Fix: change those lines to the current models in that file by hand, or run
+'mqbedrock --setup-claude --force', which replaces the whole file (a backup is
+kept), so copy back any other settings of yours. Then restart Claude Code." \
+    "$deployed" <<<"$configured"
+}
+
+# Only profiles we generated: an unmarked file is the user's own, and is not what
+# --setup-codex deploys. CODEX_MODEL here is the default, since --codex-model is
+# rejected outside --setup-codex.
+check_codex_models() {
+  local file name model fix
+  for file in "${CODEX_HOME:-$HOME/.codex}"/*.config.toml; do
+    [[ -f $file ]] && grep -qF "$CODEX_MARKER" "$file" || continue
+    model=$(awk -F'"' '/^[ \t]*\[/ { exit } /^[ \t]*model[ \t]*=/ { print $2; exit }' "$file")
+    [[ -n $model ]] || continue
+    name=$(basename "$file" .config.toml)
+    fix="Fix: run 'mqbedrock --setup-codex"
+    [[ $name == "$CODEX_PROFILE" ]] || fix+=" --codex-profile $name"
+    fix+="', then restart Codex."
+    warn_model_versions "$file" "Codex" "$fix" "$CODEX_MODEL" <<<"model"$'\t'"$model"
+  done
+}
+
+# opencode, again only if it is using a config we generated. --setup-opencode only
+# deploys small_model, so its main model is compared with what --setup-claude pins:
+# the same au.* IDs work in both (minus Claude Code's own [1m] suffix, which would be
+# bad advice here). That model is normally not in a config at all: with no `model`
+# pinned, opencode uses the first entry of `recent` in model.json, the last /models
+# pick. Later entries are just history, and a pin outranks them all. A family
+# --setup-* does not deploy, such as a GPT picked in /models, has nothing to compare
+# with, so only amazon-bedrock Claude models can ever warn.
+check_opencode_models() {
+  local file name configured deployed fix last pinned=0 found=0
+  deployed=$(printf '%s\n' "$OPENCODE_SMALL_MODEL"
+             jq -r --arg keys "$CLAUDE_MODEL_KEYS" '
+               .env | to_entries[] | select(.key | test($keys)) | .value' \
+               <<<"$CLAUDE_SETTINGS_JSON" | sed 's/\[.*//')
+  for file in "${XDG_CONFIG_HOME:-$HOME/.config}"/opencode/*.json; do
+    [[ -f $file ]] && grep -qF "$OPENCODE_MARKER" "$file" || continue
+    found=1
+    configured=$(jq -r '
+        ["model", .model], ["small_model", .small_model]
+        | select(.[1] | type == "string" and startswith("amazon-bedrock/")) | @tsv' \
+        "$file" 2>/dev/null) || continue
+    [[ $configured == model$'\t'* ]] && pinned=1
+    [[ -n $configured ]] || continue
+    name=$(basename "$file" .json)
+    fix="Fix: run 'mqbedrock --setup-opencode --force"
+    [[ $name == "$OPENCODE_CONFIG_NAME" ]] || fix+=" --opencode-config $name"
+    fix+="', which also removes
+any pinned model so opencode keeps your /models pick (a backup is kept). Then restart opencode."
+    warn_model_versions "$file" "opencode" "$fix" "$deployed" <<<"$configured"
+  done
+  [[ $found -eq 1 && $pinned -eq 0 ]] || return 0
+  file=${XDG_STATE_HOME:-$HOME/.local/state}/opencode/model.json
+  [[ -s $file ]] || return 0
+  last=$(jq -r '.recent[0] | select(.providerID == "amazon-bedrock") | .modelID // empty' \
+         "$file" 2>/dev/null) || return 0
+  [[ -n $last ]] || return 0
+  warn_model_versions "$file" "opencode" \
+    "Fix: pick the current model with /models in opencode." \
+    "$deployed" <<<"last-used model"$'\t'"$last"
+}
+
 # --- The static credential file --------------------------------------------
 # `aws configure set` is an unlocked read-modify-write. It reads the whole file,
 # rewrites it in place through open(..., 'w') — so there is a window in which the
@@ -753,3 +922,9 @@ for f in "${XDG_CONFIG_HOME:-$HOME/.config}"/opencode/*.json; do
     break
   fi
 done
+
+# Purely advisory: the credentials are already written, so nothing here may turn a
+# successful refresh into a failed one.
+check_claude_models || true
+check_codex_models || true
+check_opencode_models || true

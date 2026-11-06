@@ -167,6 +167,22 @@ Key invariants the tests guard (keep them true):
   the backup matters. `--force` without a `--setup-*`, `--codex-*` without
   `--setup-codex` and `--opencode-*` without `--setup-opencode` are errors rather
   than silent no-ops.
+- **The refresh path warns when configured models differ from what `--setup-*` would
+  deploy**, because `--setup-*` never replaces a user's file without `--force`, so
+  bumping a model ID here reaches nobody already set up. `check_claude_models` reads
+  `model` and the `ANTHROPIC_*_MODEL` env keys in `~/.claude/settings.json`;
+  `check_codex_models` reads the Codex profiles carrying the generated-by marker;
+  `check_opencode_models` reads marked opencode configs and, when no `model` is pinned,
+  `recent[0]` of `~/.local/state/opencode/model.json` (the model actually in use, since
+  `--setup-opencode` deliberately pins none; later entries are history). opencode's
+  main model is compared with what `--setup-claude` pins, without the Claude-Code-only
+  `[1m]` suffix. The deployed values are read from `CLAUDE_SETTINGS_JSON`/`CODEX_MODEL`/
+  `OPENCODE_SMALL_MODEL` themselves, so there is no second list to maintain. Older → how to fix it; newer → alert Ben or
+  Sam, since this script is what is behind. It compares *versions* within a model
+  family, so aliases (`opus[1m]`), the `[1m]` suffix, region prefixes and undeployed
+  families are never a difference. Advisory only, and run last: it must never fail a
+  refresh that has already written the keys. On the broker path it reads the host's
+  files and its stderr is replayed by the stub.
 - **Codex on Bedrock is a different backend from Claude on Bedrock.** Codex speaks
   only the OpenAI protocol, so it cannot reach Claude there at all; its built-in
   `amazon-bedrock-runtime` provider is Bedrock's OpenAI-compatible endpoint
