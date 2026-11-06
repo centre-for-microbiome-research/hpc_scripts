@@ -182,7 +182,11 @@ Key invariants the tests guard (keep them true):
   family, so aliases (`opus[1m]`), the `[1m]` suffix, region prefixes and undeployed
   families are never a difference. Advisory only, and run last: it must never fail a
   refresh that has already written the keys. On the broker path it reads the host's
-  files and its stderr is replayed by the stub.
+  files and its stderr is replayed by the stub. `--setup-claude` also deploys
+  `"model": "sonnet"` (Claude Code's built-in default on Bedrock is Opus), and
+  `warn_claude_default_model` warns a Bedrock user whose settings choose no starting
+  model at all. An explicit `model`, including `opus`, never warns: `/model` can write
+  it, so it is a choice, and warning would nag with no way to stop it.
 - **Codex on Bedrock is a different backend from Claude on Bedrock.** Codex speaks
   only the OpenAI protocol, so it cannot reach Claude there at all; its built-in
   `amazon-bedrock-runtime` provider is Bedrock's OpenAI-compatible endpoint

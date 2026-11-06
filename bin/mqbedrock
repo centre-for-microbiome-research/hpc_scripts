@@ -276,9 +276,11 @@ check() {
 #
 #   ~/.claude/settings.json  turns Bedrock on, names the region and the static
 #                            profile this script maintains, pins the au.* (data
-#                            stays in Australia) inference-profile IDs, and wires
-#                            this script in as awsAuthRefresh so an expired key is
-#                            renewed automatically — including inside an mqyolo
+#                            stays in Australia) inference-profile IDs, starts
+#                            sessions on Sonnet (Claude Code's own default on Bedrock
+#                            is Opus, at about twice the price; /model still switches),
+#                            and wires this script in as awsAuthRefresh so an expired
+#                            key is renewed automatically — including inside an mqyolo
 #                            sandbox, where the mqbedrock on PATH is the broker stub.
 #   ~/.claude.json           just the onboarding flag, so the first run does not
 #                            open the interactive theme/login walkthrough (which in
@@ -292,6 +294,7 @@ check() {
 CLAUDE_SETTINGS_JSON=$(cat <<EOF
 {
   "awsAuthRefresh": "mqbedrock",
+  "model": "sonnet",
   "env": {
     "CLAUDE_CODE_USE_BEDROCK": "1",
     "AWS_REGION": "$REGION",
@@ -656,9 +659,32 @@ warn_model_versions() {
 # Only keys that name a model: the rest of settings.json is not ours to judge.
 CLAUDE_MODEL_KEYS='^ANTHROPIC_(MODEL|SMALL_FAST_MODEL|DEFAULT_(OPUS|SONNET|HAIKU)_MODEL)$'
 
+# warn_claude_default_model FILE — a Bedrock user whose settings choose no starting
+# model is on Claude Code's built-in default rather than the one --setup-claude now
+# deploys. Only then: an explicit `model` is a choice, which /model can also write,
+# so warning about one would nag with no way to make it stop. Settings without
+# Bedrock turned on are some other setup, not an out-of-date one of ours.
+warn_claude_default_model() {
+  local file=$1 want
+  jq -e '(.env.CLAUDE_CODE_USE_BEDROCK // "0" | tostring | . != "0" and . != "")
+         and .model == null and .env.ANTHROPIC_MODEL == null
+         and .env.ANTHROPIC_DEFAULT_MODEL == null' "$file" >/dev/null 2>&1 || return 0
+  want=$(jq -r .model <<<"$CLAUDE_SETTINGS_JSON")
+  {
+    echo "mqbedrock: WARNING: the default Claude model has changed: 'mqbedrock --setup-claude' now"
+    echo "mqbedrock: starts sessions on '$want', but $file"
+    echo "mqbedrock: sets no default, so Claude Code uses its own built-in one (normally Opus)."
+    echo "mqbedrock: Fix: add \"model\": \"$want\" to that file by hand, or run"
+    echo "mqbedrock: 'mqbedrock --setup-claude --force', which replaces the whole file (a backup is"
+    echo "mqbedrock: kept), so copy back any other settings of yours. Then restart Claude Code."
+    echo "mqbedrock: To stay on Opus, add \"model\": \"opus\" instead; this warning then stops."
+  } >&2
+}
+
 check_claude_models() {
   local file=$HOME/.claude/settings.json configured deployed
   [[ -s $file ]] || return 0
+  warn_claude_default_model "$file"
   configured=$(jq -r --arg keys "$CLAUDE_MODEL_KEYS" '
       ["model", .model],
       (.env // {} | to_entries[] | select(.key | test($keys)) | ["env.\(.key)", .value])

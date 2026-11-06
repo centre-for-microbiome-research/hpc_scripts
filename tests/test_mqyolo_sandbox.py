@@ -2373,6 +2373,39 @@ def test_mqbedrock_also_checks_the_top_level_model_key(tmp_path, model, verdict)
     assert f"model = {model}" in p.stderr
 
 
+def test_mqbedrock_warns_when_settings_choose_no_default_model(tmp_path):
+    # Everyone set up before "model": "sonnet" was added: current model IDs, but
+    # still starting on Claude Code's built-in default.
+    p = _refresh_with_claude_settings(tmp_path, {"env": {
+        "CLAUDE_CODE_USE_BEDROCK": "1",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "au.anthropic.claude-sonnet-5-5",
+    }})
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "WARNING: the default Claude model has changed" in p.stderr
+    assert "now\nmqbedrock: starts sessions on 'sonnet'" in p.stderr
+    assert '"model": "sonnet"' in p.stderr
+    assert "mqbedrock --setup-claude --force" in p.stderr
+    assert '"model": "opus"' in p.stderr
+    assert p.stderr.count("WARNING") == 1
+
+
+@pytest.mark.parametrize("settings", [
+    # Any explicit choice is respected, including the one the warning replaces.
+    {"model": "opus", "env": {"CLAUDE_CODE_USE_BEDROCK": "1"}},
+    {"model": "sonnet", "env": {"CLAUDE_CODE_USE_BEDROCK": "1"}},
+    {"env": {"CLAUDE_CODE_USE_BEDROCK": "1", "ANTHROPIC_MODEL": "opus"}},
+    {"env": {"CLAUDE_CODE_USE_BEDROCK": "1", "ANTHROPIC_DEFAULT_MODEL": "opus"}},
+    # Not on Bedrock, so not an out-of-date copy of what --setup-claude writes.
+    {"env": {}},
+    {},
+    {"env": {"CLAUDE_CODE_USE_BEDROCK": "0"}},
+])
+def test_mqbedrock_does_not_warn_about_the_default_for_these_settings(tmp_path, settings):
+    p = _refresh_with_claude_settings(tmp_path, settings)
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "default Claude model" not in p.stderr
+
+
 def test_mqbedrock_compares_the_model_to_its_own_family(tmp_path):
     # An Opus in the Sonnet slot is judged as an Opus: it is current, not "newer
     # than the deployed Sonnet".
@@ -2736,6 +2769,8 @@ def test_mqbedrock_setup_claude_writes_both_settings_files(tmp_path):
     # The refresh hook is this same script, which works on the host and (via the
     # broker stub) inside a sandbox.
     assert settings["awsAuthRefresh"] == "mqbedrock"
+    # Sessions start on Sonnet rather than Claude Code's built-in Opus default.
+    assert settings["model"] == "sonnet"
     env = settings["env"]
     assert env["CLAUDE_CODE_USE_BEDROCK"] == "1"
     assert env["AWS_REGION"] == "ap-southeast-2"
