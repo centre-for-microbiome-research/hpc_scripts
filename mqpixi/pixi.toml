@@ -113,7 +113,10 @@ snakemake-executor-plugin-cluster-generic = ">=1"
 postinstall-base = { cmd = ["bash", "-c", "umask 002 && aviary build --gpu"], env = { CONDA_OVERRIDE_CUDA = "12.1" }, depends-on = [{ task = "postinstall-aviary-config-v0-13-4", environment = "default" }] }
 
 [feature.aviary-v0-13-4.activation]
-env = { PYTHONNOUSERSITE = "1", GTDBTK_DATA_PATH = "/work/microbiome/db/gtdb/gtdb_release232/auxillary_files/gtdbtk_package/full_package/release232", CHECKM2DB = "/work/microbiome/db/CheckM2_database/uniref100.KO.1.dmnd", EGGNOG_DATA_DIR = "/mnt/hpccs01/work/microbiome/db/eggnog-mapper/2.1.3", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S6.5.0.GTDB_r232.metapackage_20260319.smpkg.zb", METABULI_DB_PATH = "/work/microbiome/db/metabuli/2024-3-28-GTDB214.1+humanT2T" }
+# PIXI_NO_INSTALL: see aviary-v0-14-0.activation. (0.13.4's own aviary/pixi.toml also
+# needs `environment = "main"` -> "default" on its postinstall task, or pixi >= 0.84
+# rejects the manifest outright; that file is inside the aviary package, not here.)
+env = { PYTHONNOUSERSITE = "1", PIXI_NO_INSTALL = "true", GTDBTK_DATA_PATH = "/work/microbiome/db/gtdb/gtdb_release232/auxillary_files/gtdbtk_package/full_package/release232", CHECKM2DB = "/work/microbiome/db/CheckM2_database/uniref100.KO.1.dmnd", EGGNOG_DATA_DIR = "/mnt/hpccs01/work/microbiome/db/eggnog-mapper/2.1.3", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S6.5.0.GTDB_r232.metapackage_20260319.smpkg.zb", METABULI_DB_PATH = "/work/microbiome/db/metabuli/2024-3-28-GTDB214.1+humanT2T" }
 
 # ---------- aviary-v0-14-0 ----------
 [feature.aviary-v0-14-0.dependencies]
@@ -125,7 +128,11 @@ snakemake-executor-plugin-cluster-generic = ">=1"
 postinstall-base = { cmd = ["bash", "-c", "umask 002 && aviary build --gpu"], env = { CONDA_OVERRIDE_CUDA = "12.1" }, depends-on = [{ task = "postinstall-aviary-config-v0-14-0", environment = "default" }] }
 
 [feature.aviary-v0-14-0.activation]
-env = { PYTHONNOUSERSITE = "1", GTDBTK_DATA_PATH = "/work/microbiome/db/gtdb/gtdb_release232/auxillary_files/gtdbtk_package/full_package/release232", CHECKM2DB = "/work/microbiome/db/CheckM2_database/uniref100.KO.1.dmnd", EGGNOG_DATA_DIR = "/mnt/hpccs01/work/microbiome/db/eggnog-mapper/2.1.3", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S6.5.0.GTDB_r232.metapackage_20260319.smpkg.zb", METABULI_DB_PATH = "/work/microbiome/db/metabuli/2024-3-28-GTDB214.1+humanT2T" }
+# PIXI_NO_INSTALL: aviary's rules run plain `pixi run` against the read-only shared
+# install; pixi >= 0.84 takes a write lock on the env prefix on every `pixi run`
+# ("failed to acquire install lock ... Permission denied"). This is the env-var form
+# of `pixi run --no-install`, which skips that step without touching the envs.
+env = { PYTHONNOUSERSITE = "1", PIXI_NO_INSTALL = "true", GTDBTK_DATA_PATH = "/work/microbiome/db/gtdb/gtdb_release232/auxillary_files/gtdbtk_package/full_package/release232", CHECKM2DB = "/work/microbiome/db/CheckM2_database/uniref100.KO.1.dmnd", EGGNOG_DATA_DIR = "/mnt/hpccs01/work/microbiome/db/eggnog-mapper/2.1.3", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S6.5.0.GTDB_r232.metapackage_20260319.smpkg.zb", METABULI_DB_PATH = "/work/microbiome/db/metabuli/2024-3-28-GTDB214.1+humanT2T" }
 
 # ---------- bakta-v1-11-0 ----------
 [feature.bakta-v1-11-0.dependencies]
