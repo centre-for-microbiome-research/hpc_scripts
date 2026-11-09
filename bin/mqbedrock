@@ -204,7 +204,7 @@ if ! command -v aws >/dev/null 2>&1; then
     echo "aws not on PATH, and no pixi + $PIXI_CENTRAL_TOML to run it from" >&2
     exit 1
   fi
-  aws() { "$PIXI" run --manifest-path "$PIXI_CENTRAL_TOML" aws "$@"; }
+  aws() { "$PIXI" run --as-is --manifest-path "$PIXI_CENTRAL_TOML" aws "$@"; }
 fi
 
 # Section header for a profile: "default" has no prefix, everything else does.
