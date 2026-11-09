@@ -9,6 +9,7 @@ rather than creating a separate one.
 """
 import sys
 import json
+import re
 import tomllib
 import pathlib
 
@@ -48,3 +49,20 @@ with open(p, "w") as f:
         f.write(k + " = " + json.dumps(v) + "\n")
 
 print(f"wrote {p}")
+
+# Older aviary releases (<= 0.13.4) ship a pixi.toml whose `postinstall` task
+# depends on `{ task = ..., environment = "main" }`, but "main" is a feature, not
+# an environment (it is in the "default" env). pixi >= 0.84 rejects the whole
+# manifest for that ("task 'postinstall' depends on task 'postinstall-base' in
+# environment 'main', which is not defined"), which breaks `aviary build` and
+# every `pixi run --manifest-path` aviary does at runtime. Task definitions are
+# not part of the lock file, so rewriting the reference keeps the existing
+# pixi.lock valid and nothing is re-solved.
+manifest = pkg_dirs[0] / "pixi.toml"
+if manifest.exists():
+    text = manifest.read_text()
+    envs = tomllib.loads(text).get("environments", {})
+    bad = re.compile(r'(environment\s*=\s*)"main"')
+    if "main" not in envs and "default" in envs and bad.search(text):
+        manifest.write_text(bad.sub(r'\1"default"', text))
+        print(f'patched {manifest}: environment "main" -> "default"')
