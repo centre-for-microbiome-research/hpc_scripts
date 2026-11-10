@@ -174,9 +174,14 @@ fix_task_cache_permissions() {
         return 0
     fi
     echo "==> Setting $ADMIN_GROUP:rw on $cache_dir"
-    # Only the owner can change these; keep going past files owned by others.
-    chgrp "$ADMIN_GROUP" "$cache_dir" || echo "WARNING: could not chgrp $cache_dir" >&2
-    chmod g+rwxs "$cache_dir" || echo "WARNING: could not chmod $cache_dir" >&2
+    # Only the owner can change these, and chgrp/chmod fail for anyone else
+    # even when nothing would change, so only touch what is actually wrong.
+    if [[ -n "$(find "$cache_dir" -maxdepth 0 ! -group "$ADMIN_GROUP" -print)" ]]; then
+        chgrp "$ADMIN_GROUP" "$cache_dir" || echo "WARNING: could not chgrp $cache_dir" >&2
+    fi
+    if [[ -n "$(find "$cache_dir" -maxdepth 0 ! -perm -g=rwxs -print)" ]]; then
+        chmod g+rwxs "$cache_dir" || echo "WARNING: could not chmod $cache_dir" >&2
+    fi
     find "$cache_dir" -maxdepth 1 -type f \
         \( ! -group "$ADMIN_GROUP" -o ! -perm -g=rw \) -print0 \
         | xargs -0 -r sh -c '
@@ -236,8 +241,10 @@ fix_env_permissions() {
     # Directory above the envs: others need execute (traverse) to reach them.
     # Not recursive - .git etc. in there are not meant for everyone.
     local envs_root
-    envs_root="$(dirname "$(realpath "$PIXI_ENVS_DIR")")/.."
-    chmod o+rx "$envs_root" || echo "WARNING: could not chmod o+rx $envs_root" >&2
+    envs_root="$(realpath "$(dirname "$(realpath "$PIXI_ENVS_DIR")")/..")"
+    if [[ -n "$(find "$envs_root" -maxdepth 0 ! -perm -o=rx -print)" ]]; then
+        chmod o+rx "$envs_root" || echo "WARNING: could not chmod o+rx $envs_root" >&2
+    fi
 
     local env_dir marker output name
     local -a env_dirs=()
