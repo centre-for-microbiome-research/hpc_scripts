@@ -125,14 +125,14 @@ def load_module():
     return module
 
 
-def test_pyc_failures_are_not_reported(tmp_path, monkeypatch):
+def test_bytecode_cache_failures_are_not_reported(tmp_path, monkeypatch):
     """Simulates files owned by another user: chmod fails with EPERM. Only
-    the non-.pyc file counts as a failure."""
+    the file that is neither a .pyc nor a __pycache__ dir counts."""
     mod = load_module()
     cache = tmp_path / "__pycache__"
     cache.mkdir()
     os.chmod(tmp_path, 0o2775)
-    os.chmod(cache, 0o2775)
+    os.chmod(cache, 0o700)  # needs a chmod, which fails, but is ignored
     for p in (cache / "x.cpython-312.pyc", tmp_path / "x.py"):
         p.write_text("x")
         os.chmod(p, 0o600)
