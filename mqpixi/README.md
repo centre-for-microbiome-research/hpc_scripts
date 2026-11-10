@@ -95,8 +95,13 @@ Against the production checkout (default `/work/microbiome/sw/hpc_scripts`),
 this re-pulls merged `main`, runs `pixi install -a --frozen` for every
 environment, fixes permissions group-wide, and runs the aggregate
 `postinstall`. `--fix-permissions` skips any environment that already has a
-`permissions.done` marker from a previous clean run - delete that file inside
-an env's directory to force it to be re-checked.
+`permissions.done` marker from a previous clean run. To force specific envs to
+be re-checked, name them instead (repeatable; implies `--fix-permissions` and
+only fixes the named envs):
+
+```bash
+~/src/hpc_scripts/deploy_to_production.sh --fix-permissions-env mytool-v1-2-3
+```
 
 ## 4. Commit and PR
 

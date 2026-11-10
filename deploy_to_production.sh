@@ -35,7 +35,11 @@
 #      rather than re-walking every file of ~100+ envs every time. An env left
 #      with some other-owned files has no marker written, so it's retried on
 #      every run until whoever owns those files runs this themselves. Delete an
-#      env's permissions.done to force it to be re-checked.
+#      env's permissions.done to force it to be re-checked, or use
+#      --fix-permissions-env NAME (repeatable), which implies --fix-permissions,
+#      restricts this per-env step to the named env(s) and always re-checks
+#      them, ignoring (and refreshing) their markers. The task-cache fix and the
+#      activation-script fix below still cover everything.
 #   4. Runs `pixi run postinstall`, which chains every env's postinstall task.
 #   Every run (with or without --fix-permissions), after steps 2 and 4, makes
 #   each env's etc/conda/{activate,deactivate,env_vars}.d scripts owned by
@@ -44,17 +48,39 @@
 #   fix_activation_permissions); packages ship e.g. mode-660 scripts that
 #   otherwise break `conda activate` for ordinary users.
 #
-# Usage: deploy_to_production.sh [--fix-permissions] [path-to-production-checkout]
+# Usage: deploy_to_production.sh [--fix-permissions] [--fix-permissions-env NAME]...
+#                                [path-to-production-checkout]
+#   --fix-permissions          fix permissions on every env without a permissions.done marker
+#   --fix-permissions-env NAME fix permissions on env NAME only, even if it has a marker
+#                              (repeatable; implies --fix-permissions)
 # Defaults to /work/microbiome/sw/hpc_scripts.
 
 set -euo pipefail
 
 FIX_PERMISSIONS=0
+FIX_PERMISSIONS_ENVS=()
 NOT_BEN=0
 POSITIONAL=()
+add_fix_permissions_env() {
+    local name="${1%/}"
+    if [[ -z "$name" || "$name" == */* || "$name" == .* ]]; then
+        echo "ERROR: --fix-permissions-env expects an environment name (e.g. aviary-v0-12-0), got: '$1'" >&2
+        exit 1
+    fi
+    FIX_PERMISSIONS=1
+    FIX_PERMISSIONS_ENVS+=("$name")
+}
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --fix-permissions) FIX_PERMISSIONS=1 ;;
+        --fix-permissions-env)
+            if [[ $# -lt 2 ]]; then
+                echo "ERROR: --fix-permissions-env requires an environment name" >&2
+                exit 1
+            fi
+            add_fix_permissions_env "$2"
+            shift ;;
+        --fix-permissions-env=*) add_fix_permissions_env "${1#*=}" ;;
         --not-ben) NOT_BEN=1 ;;
         -h|--help)
             sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^# \{0,1\}//'
@@ -211,12 +237,29 @@ fix_env_permissions() {
     envs_root="$(dirname "$(realpath "$PIXI_ENVS_DIR")")/.."
     chmod o+rx "$envs_root" || echo "WARNING: could not chmod o+rx $envs_root" >&2
 
-    local env_dir marker output
-    shopt -s nullglob
-    for env_dir in "$PIXI_ENVS_DIR"/*/; do
+    local env_dir marker output name
+    local -a env_dirs=()
+    local forced=0
+    if [[ ${#FIX_PERMISSIONS_ENVS[@]} -gt 0 ]]; then
+        # Explicitly targeted: re-check even if a marker says it was clean.
+        forced=1
+        for name in "${FIX_PERMISSIONS_ENVS[@]}"; do
+            if [[ -d "$PIXI_ENVS_DIR/$name" ]]; then
+                env_dirs+=("$PIXI_ENVS_DIR/$name")
+            else
+                # Can legitimately be missing on the pass before the install.
+                echo "WARNING: environment '$name' not found in $PIXI_ENVS_DIR (not installed yet?), skipping" >&2
+            fi
+        done
+    else
+        shopt -s nullglob
+        env_dirs=("$PIXI_ENVS_DIR"/*/)
+        shopt -u nullglob
+    fi
+    for env_dir in ${env_dirs[@]+"${env_dirs[@]}"}; do
         env_dir="${env_dir%/}"
         marker="$env_dir/permissions.done"
-        if [[ -e "$marker" ]]; then
+        if [[ "$forced" -eq 0 && -e "$marker" ]]; then
             continue
         fi
         echo "==> Setting $ADMIN_GROUP:rwx, others:r-x on $env_dir"
@@ -227,9 +270,12 @@ fix_env_permissions() {
         echo "$output"
         if [[ "$output" != *"CMD FAILED"* ]]; then
             touch "$marker" 2>/dev/null || echo "WARNING: could not write $marker" >&2
+        else
+            # A forced re-check that is no longer clean must not leave a stale
+            # marker claiming it is.
+            rm -f "$marker" 2>/dev/null || true
         fi
     done
-    shopt -u nullglob
 }
 
 # Everything pixi creates from here on (new env prefixes, task-cache files) is
