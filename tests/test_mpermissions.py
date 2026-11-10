@@ -113,3 +113,39 @@ def test_unknown_group_fails(tmp_path):
         env=env, capture_output=True, text=True)
     assert result.returncode == 1
     assert "CMD FAILED" in result.stderr
+
+
+def load_module():
+    import importlib.machinery
+    import importlib.util
+    loader = importlib.machinery.SourceFileLoader("mpermissions_mod", str(SCRIPT))
+    spec = importlib.util.spec_from_loader("mpermissions_mod", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def test_pyc_failures_are_not_reported(tmp_path, monkeypatch):
+    """Simulates files owned by another user: chmod fails with EPERM. Only
+    the non-.pyc file counts as a failure."""
+    mod = load_module()
+    cache = tmp_path / "__pycache__"
+    cache.mkdir()
+    os.chmod(tmp_path, 0o2775)
+    os.chmod(cache, 0o2775)
+    for p in (cache / "x.cpython-312.pyc", tmp_path / "x.py"):
+        p.write_text("x")
+        os.chmod(p, 0o600)
+
+    def eperm(path, *args, **kwargs):
+        raise PermissionError(1, "Operation not permitted", str(path))
+    monkeypatch.setattr(mod.os, "chmod", eperm)
+
+    failures = mod.fix_without_acls(str(tmp_path), os.getgid(), True, True,
+                                    dry_run=False, no_continue=False)
+    assert [os.path.basename(p) for p, _ in failures] == ["x.py"]
+
+    # --no-continue must not stop on an ignored .pyc either.
+    (tmp_path / "x.py").unlink()
+    assert mod.fix_without_acls(str(tmp_path), os.getgid(), True, True,
+                                dry_run=False, no_continue=True) == []

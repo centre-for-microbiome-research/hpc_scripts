@@ -115,11 +115,21 @@ def fix_without_acls(folder, gid, group_write, other_read, dry_run, no_continue)
     come back clean. Paths that genuinely need a change and that we do not own
     still fail, and are reported.
 
+    Failures on .pyc files are not reported: Python writes them into
+    __pycache__ at import time as whoever happens to run the tool, with that
+    user's umask, so a shared env collects other-owned ones that no deployer
+    can fix - and they are only a cache, regenerated (or skipped) if they
+    cannot be read. They are still fixed where possible, and counted.
+
     Returns the list of (path, error) failures.'''
     failures = []
+    ignored_pyc = [0]
     counts = {'chgrp': 0, 'chmod': 0}
 
     def fail(path, err):
+        if path and str(path).endswith('.pyc'):
+            ignored_pyc[0] += 1
+            return
         failures.append((path, err))
         if no_continue:
             raise err
@@ -179,6 +189,9 @@ def fix_without_acls(folder, gid, group_write, other_read, dry_run, no_continue)
 
     logging.info('{} {} path(s) needed chgrp, {} needed chmod'.format(
         'Dry run:' if dry_run else 'Done:', counts['chgrp'], counts['chmod']))
+    if ignored_pyc[0]:
+        logging.info('Ignored {} .pyc file(s) that could not be fixed (bytecode cache; '
+                     'not counted as a failure)'.format(ignored_pyc[0]))
     return failures
 
 
