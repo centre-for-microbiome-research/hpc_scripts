@@ -12,6 +12,9 @@ import argparse
 import logging
 import subprocess
 import os
+import grp
+import stat
+import sys
 from argparse import RawTextHelpFormatter
 
 def run(command, stdin=None):
@@ -67,6 +70,118 @@ class ExternCalledProcessError(subprocess.CalledProcessError):
                 self.stderr,
                 self.stdout)
 
+# /mnt/weka/pkg (weka) does not take POSIX ACLs, so paths there get plain
+# chgrp/chmod. Overridable only so the tests can point it at a temp dir.
+WEKA_PREFIX = os.environ.get('MPERMISSIONS_WEKA_PREFIX', '/mnt/weka/pkg')
+
+S_RWX_O = stat.S_IROTH | stat.S_IWOTH | stat.S_IXOTH
+S_ANY_X_UG = stat.S_IXUSR | stat.S_IXGRP
+
+
+def desired_mode(mode, is_dir, group_write, other_read):
+    '''The mode a path should end up with, given its current mode. Mirrors
+    what the chmod commands of the ACL-free (weka) path used to apply.'''
+    m = mode
+    if is_dir:
+        m |= stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_ISGID
+        if group_write:
+            m |= stat.S_IWGRP
+        if other_read:
+            m = (m | stat.S_IROTH | stat.S_IXOTH) & ~stat.S_IWOTH
+        else:
+            m &= ~S_RWX_O
+    else:
+        executable = bool(mode & S_ANY_X_UG)
+        m |= stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP
+        if group_write:
+            m |= stat.S_IWGRP
+        if other_read:
+            m = (m | stat.S_IROTH) & ~(stat.S_IWOTH | stat.S_IXOTH)
+        else:
+            m &= ~S_RWX_O
+        if executable:
+            m |= stat.S_IXGRP
+            if other_read:
+                m |= stat.S_IXOTH
+    return m
+
+
+def fix_without_acls(folder, gid, group_write, other_read, dry_run, no_continue):
+    '''chgrp/chmod every path under folder, but only where the group or mode
+    is actually wrong. chmod(2) and chown(2) fail with EPERM for anyone but the
+    owner even when they would change nothing, so running them unconditionally
+    made every already-correct path owned by someone else a failure - and a
+    shared tree (e.g. an mqpixi env installed by another admin) could never
+    come back clean. Paths that genuinely need a change and that we do not own
+    still fail, and are reported.
+
+    Returns the list of (path, error) failures.'''
+    failures = []
+    counts = {'chgrp': 0, 'chmod': 0}
+
+    def fail(path, err):
+        failures.append((path, err))
+        if no_continue:
+            raise err
+
+    def fix(path, dir_walked):
+        try:
+            st = os.lstat(path)
+        except OSError as e:
+            fail(path, e)
+            return
+        if st.st_gid != gid:
+            counts['chgrp'] += 1
+            if dry_run:
+                logging.info('Would chgrp: {}'.format(path))
+            else:
+                try:
+                    os.chown(path, -1, gid, follow_symlinks=False)
+                    # chown may clear the setgid bit, so recompute from the new mode.
+                    st = os.lstat(path)
+                except OSError as e:
+                    fail(path, e)
+        # Like the find -type d / -type f commands this replaces: symlinks and
+        # special files get their group fixed but no chmod.
+        if stat.S_ISDIR(st.st_mode) and dir_walked:
+            is_dir = True
+        elif stat.S_ISREG(st.st_mode):
+            is_dir = False
+        else:
+            return
+        current = stat.S_IMODE(st.st_mode)
+        wanted = desired_mode(current, is_dir, group_write, other_read)
+        if wanted != current:
+            counts['chmod'] += 1
+            if dry_run:
+                logging.info('Would chmod {:o} -> {:o}: {}'.format(current, wanted, path))
+            else:
+                try:
+                    os.chmod(path, wanted)
+                except OSError as e:
+                    fail(path, e)
+
+    def walk_error(e):
+        fail(e.filename, e)
+
+    if os.path.isdir(folder) and not os.path.islink(folder):
+        for dirpath, dirnames, filenames in os.walk(folder, onerror=walk_error):
+            fix(dirpath, True)
+            for name in filenames:
+                fix(os.path.join(dirpath, name), False)
+            # os.walk lists symlinks to directories here but does not descend.
+            for name in dirnames:
+                p = os.path.join(dirpath, name)
+                if os.path.islink(p):
+                    fix(p, False)
+    else:
+        fix(folder, False)
+
+    logging.info('{} {} path(s) needed chgrp, {} needed chmod'.format(
+        'Dry run:' if dry_run else 'Done:', counts['chgrp'], counts['chmod']))
+    return failures
+
+
 ## TODO: Code below copied from the mqsub script. Code shouldn't really be copied but imported.
 
 #%% parse
@@ -100,64 +215,70 @@ if __name__ == '__main__':
     # ~/src/hpc_scripts/bin/mpermissions -g microbiome test
     # ls -alh . && ls -alh test && ls -alh test/dir && getfacl test/file && getfacl test/dir/file
 
+    # The commands below are the POSIX ACL path; folders on weka, which does
+    # not take ACLs, are handled by fix_without_acls instead.
     dir_group_permissions = 'rwx'
     file_group_permissions = 'rw'
-    file_group_additions = 'rw'
     if args.no_group_write:
         dir_group_permissions = 'r-x'
         file_group_permissions = 'r-'
-        file_group_additions = 'r'
-    # Permissions for users who are neither the owner nor in the group.
-    # chmod (weka) form, then POSIX ACL form for dirs / plain files / executables.
+    # ACL permissions for users who are neither the owner nor in the group,
+    # for dirs / plain files / executables.
     if args.other_read:
-        other_chmod_dir = 'o+rx,o-w'
-        other_chmod_file = 'o+r,o-wx'
-        other_chmod_exec = 'o+x'
         other_acl_dir = 'r-x'
         other_acl_file = 'r--'
         other_acl_exec = 'r-x'
     else:
-        other_chmod_dir = 'o-rwx'
-        other_chmod_file = 'o-rwx'
-        other_chmod_exec = None
         other_acl_dir = '---'
         other_acl_file = '---'
         other_acl_exec = '---'
-    other_exec_cmd = 'chmod {} \"$file\"; '.format(other_chmod_exec) if other_chmod_exec else ''
     # Loop over "$@": find ... -exec {} + passes many directories per bash
     # invocation, and handling only "$1" silently skipped all but the first.
     cmd1 = (
         "find {} -type d -exec bash -c '".format(folder2) +
         "for dir in \"$@\"; do "
-        "if [[ $(realpath \"$dir\") == /mnt/weka/pkg* ]]; then "
-        "chmod g+{} \"$dir\"; chmod u+rwx,g+{} \"$dir\"; chmod {} \"$dir\"; ".format(dir_group_permissions, dir_group_permissions, other_chmod_dir) +
-        "else "
         "setfacl -dm g:microbiome-admin:rwx,g::{},u::rwx,o::{} \"$dir\"; ".format(dir_group_permissions, other_acl_dir) +
         "setfacl -m g:microbiome-admin:rwx,g::{},u::rwx,o::{} \"$dir\"; ".format(dir_group_permissions, other_acl_dir) +
-        "fi; "
         "done' _ {} +"
     )
     cmd2 = (
         "find {} -type f -exec bash -c '".format(folder2) +
         "for file in \"$@\"; do "
-        "if [[ $(realpath \"$file\") == /mnt/weka/pkg* ]]; then "
-        "chmod u+rw,g+{},{} \"$file\"; ".format(file_group_additions, other_chmod_file) +
-        "if [ -x \"$file\" ]; then chmod g+x \"$file\"; {}fi; ".format(other_exec_cmd) +
-        "else "
         "if [ -x \"$file\" ]; then "
         "setfacl -m g:microbiome-admin:rwx,g::{}x,u::rwx,m::rwx,o::{} \"$file\"; ".format(file_group_permissions, other_acl_exec) +
         "else "
         "setfacl -m g:microbiome-admin:rw-,g::{}-,u::rw-,m::rw-,o::{} \"$file\"; ".format(file_group_permissions, other_acl_file) +
         "fi; "
-        "fi; "
         "done' _ {} +"
     )
-    # chgrp and chmod g+s are always run
-    cmd3 = 'chgrp -R {} {}'.format(owner_group, folder2)
-    cmd4 = 'find {} -type d -exec chmod g+s {{}} +'.format(folder2)
+    # chgrp and chmod g+s, only where needed: chgrp/chmod fail for non-owners even when nothing changes.
+    cmd3 = "find {} ! -group '{}' -exec chgrp -h '{}' {{}} +".format(folder2, owner_group, owner_group)
+    cmd4 = 'find {} -type d ! -perm -g+s -exec chmod g+s {{}} +'.format(folder2)
 
     if not os.path.exists(folder):
         raise Exception("Folder {} does not exist".format(folder))
+
+    # find does not follow symlinks below the folder, so whether a path is on
+    # weka is decided by the folder itself.
+    real_folder = os.path.realpath(folder)
+    if real_folder == WEKA_PREFIX or real_folder.startswith(WEKA_PREFIX.rstrip('/') + '/'):
+        try:
+            gid = grp.getgrnam(owner_group).gr_gid
+        except KeyError:
+            logging.error("CMD FAILED: unknown group {}".format(owner_group))
+            sys.exit(1)
+        logging.info("{} is on weka (no ACLs): fixing group and mode only where they differ".format(real_folder))
+        failures = fix_without_acls(real_folder, gid, not args.no_group_write, args.other_read,
+                                    args.dry_run, args.no_continue)
+        if failures:
+            # deploy_to_production.sh judges a run by this string in the output.
+            logging.error("CMD FAILED: could not fix {} path(s) under {}; only the owner of a "
+                          "path can change it, so its owner must run this".format(len(failures), real_folder))
+            for path, err in failures[:20]:
+                logging.error("  {}: {}".format(path, err.strerror or err))
+            if len(failures) > 20:
+                logging.error("  ... and {} more".format(len(failures) - 20))
+        sys.exit(0)
 
     for cmd in [cmd1, cmd2, cmd3, cmd4]:
         logging.info('Running: {}'.format(cmd))

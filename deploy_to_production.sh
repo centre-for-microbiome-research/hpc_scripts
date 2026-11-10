@@ -32,9 +32,11 @@
 #      an env that comes back clean (no "CMD FAILED" in its output - mpermissions
 #      itself always exits 0, see fix_env_permissions) gets a permissions.done
 #      marker written at its root so future --fix-permissions runs skip it,
-#      rather than re-walking every file of ~100+ envs every time. An env left
-#      with some other-owned files has no marker written, so it's retried on
-#      every run until whoever owns those files runs this themselves. Delete an
+#      rather than re-walking every file of ~100+ envs every time. mpermissions
+#      only touches paths whose group or mode is wrong, so files owned by
+#      someone else are fine as long as they are already correct; an env with
+#      other-owned files that do need a change has no marker written, so it's
+#      retried on every run until whoever owns those files runs this. Delete an
 #      env's permissions.done to force it to be re-checked, or use
 #      --fix-permissions-env NAME (repeatable), which implies --fix-permissions,
 #      restricts this per-env step to the named env(s) and always re-checks
