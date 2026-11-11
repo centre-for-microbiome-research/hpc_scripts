@@ -412,7 +412,7 @@ def test_mqyolo_does_not_forward_general_aws_credentials(tmp_path):
 
 def test_mqyolo_rejects_disallowed_launch_dir(tmp_path):
     # The working directory is bound read-write into the sandbox, so mqyolo only
-    # allows launching from /work/microbiome, $HOME, /scratch/microbiome/$USER or
+    # allows launching from /work, $HOME, /scratch/microbiome/$USER or
     # /tmp. A directory outside those (here "/") is refused up front, before the
     # container is even built.
     fake_home = tmp_path / "home"

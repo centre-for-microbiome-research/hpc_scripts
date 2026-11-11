@@ -284,7 +284,7 @@ Key invariants the tests guard (keep them true):
   than appending it also keeps it out of `run`'s variadic message — appended after a
   `--` separator it would become part of the prompt instead of a flag. Guarded by
   `test_mqyolo_opencode_run_puts_auto_after_the_subcommand` and friends.
-- mqyolo refuses to launch unless the working directory is within `/work/microbiome`,
+- mqyolo refuses to launch unless the working directory is within `/work`,
   `$HOME`, `/scratch/microbiome/$USER`, or `/tmp` (anti-leakage; the CWD is bound
   read-write). Checked before the runtime/image checks.
 - Jobs submitted from inside the container are always `--sandbox`ed and inherit
