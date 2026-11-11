@@ -15,7 +15,7 @@
 #   - $HOME:                    isolated ephemeral directory, not your real home
 #
 # mqyolo refuses to launch unless the working directory is within an allowed root
-# (/work/microbiome, $HOME, /scratch/microbiome/$USER, or /tmp), since the CWD is
+# (/work, $HOME, /scratch/microbiome/$USER, or /tmp), since the CWD is
 # bound read-write — this limits accidental exposure of unrelated data.
 #
 # Usage:
@@ -109,7 +109,7 @@ PY
 # covered too (/work/microbiome -> /mnt/hpccs01/..., /scratch -> /mnt/weka/...).
 _mqyolo_allowed_launch_roots() {
     printf '%s\n' \
-        /work/microbiome \
+        /work \
         "${HOME:-}" \
         "/scratch/microbiome/${USER:-}" \
         /tmp
@@ -1126,7 +1126,7 @@ CWD="$(realpath "$(pwd)")"
 if ! _mqyolo_allowed_cwd "$CWD"; then
     {
         echo "Error: mqyolo must be launched from within one of:"
-        echo "  - /work/microbiome (or a subdirectory)"
+        echo "  - /work (or a subdirectory)"
         echo "  - \$HOME (${HOME:-unset}) (or a subdirectory)"
         echo "  - /scratch/microbiome/${USER:-<username>} (or a subdirectory)"
         echo "  - /tmp (or a subdirectory)"
