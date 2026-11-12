@@ -445,6 +445,13 @@ gtdbtk = "==2.4.1"
 [feature.gtdbtk-v2-4-1.activation]
 env = { PYTHONNOUSERSITE = "1" }
 
+# ---------- gtdbtk-v2-8-0 ----------
+[feature.gtdbtk-v2-8-0.dependencies]
+gtdbtk = "==2.8.0"
+
+[feature.gtdbtk-v2-8-0.activation]
+env = { PYTHONNOUSERSITE = "1", GTDBTK_DATA_PATH = "/work/microbiome/db/gtdb/gtdb_release232/auxillary_files/gtdbtk_package/full_package/release232" }
+
 # [feature.h2o-v3-18-0-2.dependencies]
 # h2o = "==3.18.0.2"
 
@@ -947,6 +954,7 @@ gmgc-mapper-v0-2-0 = { features = ["gmgc-mapper-v0-2-0"], no-default-feature = t
 graftm-v0-15-1 = { features = ["graftm-v0-15-1"], no-default-feature = true }
 gtdbtk-v2-4-0 = { features = ["gtdbtk-v2-4-0"], no-default-feature = true }
 gtdbtk-v2-4-1 = { features = ["gtdbtk-v2-4-1"], no-default-feature = true }
+gtdbtk-v2-8-0 = { features = ["gtdbtk-v2-8-0"], no-default-feature = true }
 # h2o-v3-18-0-2 = { features = ["h2o-v3-18-0-2"], no-default-feature = true }
 hmmer-v3-4 = { features = ["hmmer-v3-4"], no-default-feature = true }
 humann-v3-9 = { features = ["humann-v3-9"], no-default-feature = true }
