@@ -450,7 +450,7 @@ env = { PYTHONNOUSERSITE = "1" }
 gtdbtk = "==2.8.0"
 
 [feature.gtdbtk-v2-8-0.activation]
-env = { PYTHONNOUSERSITE = "1" }
+env = { PYTHONNOUSERSITE = "1", GTDBTK_DATA_PATH = "/work/microbiome/db/gtdb/gtdb_release232/auxillary_files/gtdbtk_package/full_package/release232" }
 
 # [feature.h2o-v3-18-0-2.dependencies]
 # h2o = "==3.18.0.2"
