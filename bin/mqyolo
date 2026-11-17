@@ -286,15 +286,26 @@ _mqyolo_opencode_stored_credentials() {
 # e.g. "au.anthropic.claude-sonnet-5[1m]") in the top-level "model" key and/or the
 # ANTHROPIC_MODEL / ANTHROPIC_DEFAULT_OPUS_MODEL / ANTHROPIC_DEFAULT_SONNET_MODEL /
 # ANTHROPIC_DEFAULT_HAIKU_MODEL env vars. None of those IDs are valid once the
-# session talks to the direct Anthropic API instead of Bedrock, so strip them and
-# pin a known-good direct-API model (Opus with the 1M-context beta) instead.
+# session talks to the direct Anthropic API instead of Bedrock, so translate them
+# to direct-API IDs and pin a known-good model (Opus with the 1M-context beta).
+#
+# OVERLAY (optional, default ~/.claude/settings.no-bedrock.json) is then applied
+# on top as a JSON merge patch (RFC 7386: objects merge key by key, any other
+# value replaces, null deletes), so it wins over everything above. It holds the
+# settings that only make sense on a non-Bedrock (claude.ai / API) account — e.g.
+# "remoteControlAtStartup": true, which needs a claude.ai login — or a different
+# "model". A missing overlay is not an error; a malformed one is warned about and
+# skipped rather than failing the launch.
+_mqyolo_no_bedrock_overlay() {
+    echo "${MQYOLO_NO_BEDROCK_SETTINGS:-${HOME}/.claude/settings.no-bedrock.json}"
+}
 _mqyolo_write_no_bedrock_settings() {
-    local src="$1" dest="$2"
+    local src="$1" dest="$2" overlay="${3:-}"
     command -v python3 &>/dev/null || return 1
-    python3 - "$src" "$dest" <<'PY'
-import json, sys
+    python3 - "$src" "$dest" "$overlay" <<'PY'
+import json, os, sys
 
-src, dest = sys.argv[1], sys.argv[2]
+src, dest, overlay = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     with open(src) as f:
         settings = json.load(f) or {}
@@ -302,10 +313,51 @@ except Exception:
     settings = {}                 # no/unreadable/malformed settings.json is not an error
 env = settings.setdefault("env", {})
 env["CLAUDE_CODE_USE_BEDROCK"] = "0"
-for _k in ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",
-           "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"):
-    env.pop(_k, None)
+
+# The copy is passed with --settings, which is a layer OVER the real
+# settings.json, and Claude Code merges `env` across layers: deleting a key here
+# does not unset it, the real file still supplies it. So each model var the real
+# file sets is overridden instead, with the direct-API equivalent of its Bedrock
+# ID: "au.anthropic.claude-opus-5-5[1m]" -> "claude-opus-5-5[1m]",
+# "au.anthropic.claude-haiku-4-5-20251001-v1:0" -> "claude-haiku-4-5-20251001".
+# Anything untranslatable (an inference-profile ARN, say) gets a fixed default.
+import re
+_FALLBACK = {
+    "ANTHROPIC_MODEL": "opus[1m]",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-5-5",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-5-5",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-5-5",
+}
+def direct_api_model(value, fallback):
+    m = re.fullmatch(r"(?:(?:[a-z]{2,6}\.)?anthropic\.)?(claude-[A-Za-z0-9.-]+?)"
+                     r"(?:-v\d+(?::\d+)?)?(\[1m\])?", str(value).strip())
+    return m.group(1) + (m.group(2) or "") if m else fallback
+for _k, _fb in _FALLBACK.items():
+    if _k in env:
+        env[_k] = direct_api_model(env[_k], _fb)
 settings["model"] = "opus[1m]"
+
+def merge_patch(target, patch):
+    if not isinstance(patch, dict):
+        return patch
+    if not isinstance(target, dict):
+        target = {}
+    for k, v in patch.items():
+        if v is None:
+            target.pop(k, None)
+        else:
+            target[k] = merge_patch(target.get(k), v)
+    return target
+
+if overlay and os.path.exists(overlay):
+    try:
+        with open(overlay) as f:
+            patch = json.load(f)
+        if not isinstance(patch, dict):
+            raise ValueError("top level is not a JSON object")
+        settings = merge_patch(settings, patch)
+    except Exception as e:
+        print(f"mqyolo: WARNING: ignoring {overlay}: {e}", file=sys.stderr)
 with open(dest, "w") as f:
     json.dump(settings, f, indent=2)
 PY
@@ -798,13 +850,17 @@ OPTIONS
                        (see BEDROCK); for claude it goes further. Copies the real
                        settings.json (or {} if absent/unreadable) into the ephemeral
                        container home with env.CLAUDE_CODE_USE_BEDROCK set to "0",
-                       strips any Bedrock-only model env vars (ANTHROPIC_MODEL,
-                       ANTHROPIC_DEFAULT_OPUS_MODEL/_SONNET_MODEL/_HAIKU_MODEL) and
+                       overrides any Bedrock-only model env vars (ANTHROPIC_MODEL,
+                       ANTHROPIC_DEFAULT_OPUS_MODEL/_SONNET_MODEL/_HAIKU_MODEL) with
+                       their direct-API equivalents and
                        forces "model": "opus[1m]" (Bedrock model IDs like
                        "au.anthropic.claude-sonnet-5" are not valid on the direct
                        API), then passes it to claude via --settings; the real
                        settings.json is never modified. Also skips staging Bedrock
-                       AWS credentials.
+                       AWS credentials. ~/.claude/settings.no-bedrock.json, if
+                       present, is merged over that copy last (JSON merge patch;
+                       null deletes a key) for non-Bedrock-only settings such as
+                       "remoteControlAtStartup": true.
   --print-guidance     Print the mqsub guidance injected into the AI tool, then exit
   --setup-github       Set up GitHub access for `gh` inside the sandbox, then exit. Prints
                        a pre-filled link for a fine-grained token (90-day expiry,
@@ -951,12 +1007,18 @@ BEDROCK
     opencode that is all it does: their config is simply not selected). For claude,
     regardless of ~/.claude/settings.json or the environment: mqyolo copies the
     real settings.json into the ephemeral container home with
-    env.CLAUDE_CODE_USE_BEDROCK set to "0", strips any Bedrock-only model env vars,
+    env.CLAUDE_CODE_USE_BEDROCK set to "0", replaces any Bedrock-only model env
+    vars with their direct-API equivalents (au.anthropic.claude-opus-5-5[1m] ->
+    claude-opus-5-5[1m]),
     and forces "model": "opus[1m]" — a Bedrock settings.json routinely pins a
     region-prefixed inference-profile ID (e.g. "au.anthropic.claude-sonnet-5",
     sometimes with a "[1m]" long-context suffix) that the direct API rejects — then
     passes the copy to claude via --settings, leaving the real settings.json
     untouched. No Bedrock AWS credentials are staged in this case.
+    Settings for non-Bedrock accounts go in ~/.claude/settings.no-bedrock.json
+    (MQYOLO_NO_BEDROCK_SETTINGS overrides the path), merged over that copy as a
+    JSON merge patch (objects merge, null deletes a key) and so winning over it,
+    e.g. {"remoteControlAtStartup": true}.
 
 CLAUDE SETTINGS
   ~/.cache/           bound read-write so tools can read and write the
@@ -1439,7 +1501,8 @@ case "$TOOL" in
         if [[ "$NO_BEDROCK" -eq 1 ]]; then
             mkdir -p "${CONTAINER_HOME}/.mqyolo"
             if _mqyolo_write_no_bedrock_settings "${HOME}/.claude/settings.json" \
-                    "${CONTAINER_HOME}/.mqyolo/settings-no-bedrock.json"; then
+                    "${CONTAINER_HOME}/.mqyolo/settings-no-bedrock.json" \
+                    "$(_mqyolo_no_bedrock_overlay)"; then
                 YOLO_ARGS+=("--settings" "/container_home/.mqyolo/settings-no-bedrock.json")
             else
                 echo "mqyolo: WARNING: --no-bedrock needs python3, which is unavailable in this" >&2

@@ -4220,3 +4220,112 @@ def test_copilot_is_no_longer_a_tool(tmp_path, fake_github):
     assert p.returncode != 0
     assert "no longer supports copilot" in p.stderr
     assert "apptainer" not in p.stdout
+
+
+# ---------------------------------------------------------------------------
+# --no-bedrock claude settings copy, and the non-Bedrock overlay merged over it
+# ---------------------------------------------------------------------------
+def _no_bedrock_settings(tmp_path, home, overlay=None, extra_env=None):
+    """Launch claude under --no-bedrock and return (proc, argv, the settings
+    JSON handed to claude via --settings)."""
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    (home / ".claude" / "settings.json").write_text(json.dumps({
+        "awsAuthRefresh": "mqbedrock",
+        "statusLine": {"type": "command", "command": "echo hi"},
+        "env": {
+            "CLAUDE_CODE_USE_BEDROCK": "1",
+            "AWS_PROFILE": "bedrock",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "au.anthropic.claude-opus-5-5[1m]",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "au.anthropic.claude-sonnet-5-5",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL":
+                "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "ANTHROPIC_MODEL": "arn:aws:bedrock:ap-southeast-2:1:inference-profile/x",
+        },
+        "model": "au.anthropic.claude-sonnet-5-5",
+    }))
+    if overlay is not None:
+        (home / ".claude" / "settings.no-bedrock.json").write_text(overlay)
+    p, argv, saved = _mqyolo_dry_run(
+        tmp_path, home, args=("--no-broker", "--no-bedrock", "claude"),
+        extra_env=extra_env,
+    )
+    assert p.returncode == 0, p.stderr
+    assert argv[argv.index("--settings") + 1] == \
+        "/container_home/.mqyolo/settings-no-bedrock.json", argv
+    copy = json.loads((saved / ".mqyolo" / "settings-no-bedrock.json").read_text())
+    return p, argv, copy
+
+
+def test_mqyolo_no_bedrock_overrides_bedrock_models_without_an_overlay(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    _, _, copy = _no_bedrock_settings(tmp_path, home)
+    assert copy["env"]["CLAUDE_CODE_USE_BEDROCK"] == "0"
+    # --settings is a layer over the real settings.json and Claude Code merges
+    # `env` across layers, so a deleted key would still come from the real file
+    # (and "opus[1m]" would resolve to the Bedrock ID through it). Each one must
+    # be overridden with its direct-API equivalent instead.
+    assert copy["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "claude-opus-5-5[1m]"
+    assert copy["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "claude-sonnet-5-5"
+    assert copy["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "claude-haiku-4-5-20251001"
+    assert copy["env"]["ANTHROPIC_MODEL"] == "opus[1m]"      # untranslatable ARN
+    assert copy["model"] == "opus[1m]"
+    assert "remoteControlAtStartup" not in copy
+    # The real settings.json is untouched.
+    real = json.loads((home / ".claude" / "settings.json").read_text())
+    assert real["env"]["CLAUDE_CODE_USE_BEDROCK"] == "1"
+
+
+def test_mqyolo_no_bedrock_overlay_is_merged_over_the_copy(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    overlay = json.dumps({
+        "remoteControlAtStartup": True,
+        "model": "sonnet",
+        "awsAuthRefresh": None,                 # null deletes
+        "env": {"AWS_PROFILE": None, "FOO": "bar"},
+        "statusLine": {"command": "echo overlay"},
+    })
+    _, _, copy = _no_bedrock_settings(tmp_path, home, overlay=overlay)
+    assert copy["remoteControlAtStartup"] is True
+    assert copy["model"] == "sonnet"
+    assert "awsAuthRefresh" not in copy
+    assert "AWS_PROFILE" not in copy["env"]
+    assert copy["env"]["FOO"] == "bar"
+    # Objects merge key by key rather than being replaced wholesale ...
+    assert copy["statusLine"] == {"type": "command", "command": "echo overlay"}
+    assert copy["env"]["CLAUDE_CODE_USE_BEDROCK"] == "0"
+    # ... and the Bedrock model IDs stay translated.
+    assert copy["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "claude-opus-5-5[1m]"
+
+
+def test_mqyolo_no_bedrock_overlay_path_can_be_overridden(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    alt = tmp_path / "alt.json"
+    alt.write_text('{"remoteControlAtStartup": true}')
+    _, _, copy = _no_bedrock_settings(
+        tmp_path, home, overlay='{"remoteControlAtStartup": false}',
+        extra_env={"MQYOLO_NO_BEDROCK_SETTINGS": str(alt)},
+    )
+    assert copy["remoteControlAtStartup"] is True
+
+
+def test_mqyolo_no_bedrock_malformed_overlay_warns_and_is_skipped(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    p, _, copy = _no_bedrock_settings(tmp_path, home, overlay="{not json")
+    assert "settings.no-bedrock.json" in p.stderr
+    assert copy["model"] == "opus[1m]"
+    assert copy["env"]["CLAUDE_CODE_USE_BEDROCK"] == "0"
+
+
+def test_mqyolo_overlay_is_ignored_without_no_bedrock(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".claude").mkdir()
+    (home / ".claude" / "settings.no-bedrock.json").write_text(
+        '{"remoteControlAtStartup": true}')
+    p, argv, _ = _mqyolo_dry_run(tmp_path, home, args=("--no-broker", "claude"))
+    assert p.returncode == 0, p.stderr
+    assert "--settings" not in argv, argv
