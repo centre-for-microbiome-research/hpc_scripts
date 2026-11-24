@@ -199,6 +199,16 @@ def _load_jobs_from_json(path: str, user: str | None) -> list[dict]:
     return unique
 
 
+def _finished_only(jobs: list[dict]) -> list[dict]:
+    """Keep only finished (C/F) jobs.
+
+    The history snapshot (qstatx.json) lags qstat.json, so its Q/R entries are
+    stale: jobs seen there as queued may since have run, finished or been
+    deleted. Live state comes from qstat.json; history is only for finished jobs.
+    """
+    return [j for j in jobs if j.get("state") in ("C", "F")]
+
+
 def _fetch_job(job_id: str, user: str) -> dict | None:
     """Return job info for *job_id* using ``qstat -xf``."""
     try:
@@ -742,7 +752,7 @@ def main() -> None:
         if include_history and len(job_dict) <= MAX_JOBS:
             if args.qstatx_json:
                 hist_user = user if args.qstatx_json == DEFAULT_QSTATX_JSON else None
-                hist = _load_jobs_from_json(args.qstatx_json, hist_user)
+                hist = _finished_only(_load_jobs_from_json(args.qstatx_json, hist_user))
                 for job in hist:
                     if len(job_dict) >= MAX_JOBS:
                         break
@@ -1064,7 +1074,7 @@ def main() -> None:
             elif fetch_history:
                 now = time.time()
                 existing = {j["id"] for j in running + queued} | set(finished)
-                hist = _load_jobs_from_json(args.qstatx_json, user)
+                hist = _finished_only(_load_jobs_from_json(args.qstatx_json, user))
                 for job in hist:
                     if job["id"] not in existing:
                         finished[job["id"]] = job
