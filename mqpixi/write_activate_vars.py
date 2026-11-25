@@ -25,8 +25,21 @@ for env, ecfg in cfg.get("environments", {}).items():
     for feat_name in ecfg.get("features", []):
         vs.update(feats.get(feat_name, {}).get("activation", {}).get("env", {}))
 
-    script_path = activate_d / "pixi_vars.sh"
-    script_path.write_text(
-        "\n".join(f'export {k}="{v}"' for k, v in vs.items()) + "\n"
-    )
-    print(f"wrote {script_path}")
+    # Nested envs (e.g. binchicken's embedded .pixi/envs/*): programs run from them
+    # (binchicken -> aviary -> snakemake --profile aqua) submit jobs whose script does
+    # `conda activate $CONDA_PREFIX` of the *nested* prefix, so the outer env's vars
+    # (PIXI_FROZEN, PIXI_NO_INSTALL) never reach the cluster job otherwise.
+    targets = [activate_d]
+    targets += [
+        p / "etc/conda/activate.d"
+        for p in env_prefix.glob("lib/python*/site-packages/*/.pixi/envs/*")
+        if (p / "conda-meta").is_dir()
+    ]
+
+    for d in targets:
+        d.mkdir(parents=True, exist_ok=True)
+        script_path = d / "pixi_vars.sh"
+        script_path.write_text(
+            "\n".join(f'export {k}="{v}"' for k, v in vs.items()) + "\n"
+        )
+        print(f"wrote {script_path}")
