@@ -164,6 +164,9 @@ def test_mqyolo_print_guidance_login_node(tmp_path):
     assert "login node" in out
     assert "Offload heavy work" in out
     assert "snakemake --profile aqua" in out
+    assert "compute nodes have internet access" in out
+    assert "Always pass `--no-email`" in out
+    assert re.search(r"mqsub (?!--no-email|--help)-", out) is None
 
 
 def test_mqyolo_print_guidance_pbs_job():
@@ -179,6 +182,9 @@ def test_mqyolo_print_guidance_pbs_job():
     # Larger jobs should still go to the queue even inside an interactive session.
     assert "submit it to the batch queue" in out
     assert "snakemake --profile aqua" in out
+    assert "compute nodes have internet access" in out
+    assert "Always pass `--no-email`" in out
+    assert re.search(r"mqsub (?!--no-email|--help)-", out) is None
 
 
 def test_mqyolo_print_guidance_local_no_queue():
@@ -194,6 +200,7 @@ def test_mqyolo_print_guidance_local_no_queue():
     assert "login node" not in out
     assert "Offload heavy work" not in out
     assert "profile aqua" not in out
+    assert "compute nodes" not in out
 
 
 def test_mqyolo_codex_uses_current_auto_mode_flag(tmp_path):

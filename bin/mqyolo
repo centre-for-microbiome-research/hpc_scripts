@@ -688,10 +688,14 @@ GUIDE
 - For anything that needs MORE CPUs/RAM than this job has, or many jobs at once,
   submit it to the batch queue with `mqsub` instead of overloading this job — it
   runs on a separately-sized compute node:
-      mqsub -t <cpus> -m <GB_RAM> --hours <H> -- <command>
+      mqsub --no-email -t <cpus> -m <GB_RAM> --hours <H> -- <command>
   Such jobs run inside this same restricted sandbox (only the working directory,
   plus any paths granted to mqyolo at launch, is writable). Companions: `qstat`,
   `qdel`.
+- Always pass `--no-email` to `mqsub`, so the user's inbox is not flooded with
+  job start/finish/abort emails for jobs you submit.
+- The aqua compute nodes have internet access, so queued jobs can download
+  data, fetch databases, install packages, etc.
 
 **Snakemake:** for a few rules that each fit this allocation, run
 `snakemake --cores <N>` locally. For large or highly parallel workflows, prefer
@@ -721,7 +725,7 @@ here adapts automatically.)
 or `cargo run` directly here, always pass `--jobs 1` (e.g.
 `cargo build --release --jobs 1`) so the compile uses a single job and does not
 spawn many parallel rustc/codegen processes on the shared head node. For a fuller
-parallel build, submit it to the queue instead: `mqsub -t 8 -m 32 -- cargo build --release`.
+parallel build, submit it to the queue instead: `mqsub --no-email -t 8 -m 32 -- cargo build --release`.
 
 **Avoid large-scale filesystem traversal on the login node.** Commands that walk
 many thousands of files (5000+) — e.g. `find` over a big tree, recursive `ls -R`,
@@ -737,10 +741,15 @@ and returns its output. Usage:
     mqsub --no-email --bg -t 8 -m 32 --days 2 -- <command>     # submit and return immediately
 
 - `-t` cpus, `-m` GB RAM, `--hours/--days/--weeks` walltime. Size them to the job.
+- Always pass `--no-email`, so the user's inbox is not flooded with job
+  start/finish/abort emails for jobs you submit.
 - Jobs run inside this SAME restricted sandbox on the compute node: only the
   working directory (plus any paths granted to mqyolo at launch) is writable;
   everything else is read-only. Write outputs under the current directory.
 - Companions: `qstat` (queue status), `qdel` (cancel). Run `mqsub --help` for all options.
+- The compute nodes have internet access, so queued jobs can download data,
+  fetch databases, install packages, etc. Large downloads therefore belong in
+  `mqsub` rather than on the login node.
 
 **Checking the queue.** `qstat` here lists only YOUR (`$USER`) jobs — other users'
 jobs are NOT shown, so a short `qstat` does not mean the cluster is idle. `mqstat`
@@ -759,7 +768,7 @@ rules in `mqsub` yourself. This suits workflows with a modest number of larger
 jobs. When instead there are MANY small/quick rules, one queue job each floods
 the scheduler and is dominated by queue latency — in that case run snakemake
 itself inside a single allocation and let it run rules locally within it, e.g.
-`mqsub -t 24 -m 96 -- snakemake --cores 24` (no aqua profile). Pick per-rule
+`mqsub --no-email -t 24 -m 96 -- snakemake --cores 24` (no aqua profile). Pick per-rule
 queue submission vs. one wrapping job based on the number and size of the rules.
 GUIDE
     _mqyolo_scratch_guidance
