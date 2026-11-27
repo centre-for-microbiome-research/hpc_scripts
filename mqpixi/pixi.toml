@@ -185,7 +185,7 @@ postinstall-base = { cmd = ["bash", "-c", "umask 002 && binchicken build --build
 # PIXI_NO_INSTALL, PIXI_FROZEN: see aviary-v0-14-0.activation. binchicken's rules (and
 # the nested aviary envs they call) run plain `pixi run` against the read-only shared
 # install, so non-owners hit "failed to acquire install lock ... Permission denied".
-env = { PYTHONNOUSERSITE = "1", PIXI_NO_INSTALL = "true", PIXI_FROZEN = "true", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S4.3.0.GTDB_r220.metapackage_20240523.smpkg.zb", GTDBTK_DATA_PATH = "/work/microbiome/conda/envs/gtdbtk-v2.4.0/share/gtdbtk-2.4.0/db", CHECKM2DB = "/work/microbiome/db/CheckM2_database" }
+env = { PYTHONNOUSERSITE = "1", PIXI_NO_INSTALL = "true", PIXI_FROZEN = "true", SINGLEM_METAPACKAGE_PATH = "/work/microbiome/db/singlem/S4.3.0.GTDB_r220.metapackage_20240523.smpkg.zb", GTDBTK_DATA_PATH = "/work/microbiome/conda/envs/gtdbtk-v2.4.0/share/gtdbtk-2.4.0/db", CHECKM2DB = "/work/microbiome/db/CheckM2_database/uniref100.KO.1.dmnd" }
 
 # ---------- biolib-v0-1-9 ----------
 [feature.biolib-v0-1-9.dependencies]
